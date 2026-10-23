@@ -36,6 +36,9 @@
 
 - main 禁止直推 / force push / 删除（admin 同样受限）；一切改动 = feature 分支 → PR → 合并（0 评审，自助）。
 - **未经允许不推送、不开 PR、不删远端分支**（红线 6）；合并后的 feature 分支才谈得上删除（先要许可）。
+- **推送后必验（agent 义务，2026-10-23 起）**：每次 push / 开 PR 后，立即自查并向负责人报告：
+  ① rebase 是否真完成（半途 rebase 遗留是事故来源——2026-10-23 PR #4 README 冲突即此因）；
+  ② PR 可合并性（mergeable / 冲突）与 check 状态；③ 远端分支 tip 是否已更新。没验完不算推完，不等人来查。
 - 合入 main 触发 publish.yml → Pages 更新；打 market-* tag 触发 release.yml → Release 存档。
 - 小步 PR：一个 PR 一件事。
 
