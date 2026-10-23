@@ -57,7 +57,8 @@ DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 com
   ref（tag 优先）+ **pinnedCommit（必填，40-hex；构建时校验 ref 解析结果必须等于 pinnedCommit，
   不等 = tag 被 move，fail 并提示「有意更新就改 pinnedCommit，无意见就还原 tag」——堵住同名 tag 内容漂移）**、
   registry（npm 可选）、distTags（市场提供的 tag→版本映射）、
-  meta（双语 title/description、icon、author、homepage、repository、category、labels、keywords、sortKeys）。
+  meta（双语 title/description、icon、author、homepage、repository、category、labels、keywords）。
+  sortKeys（stars/downloads 统计）= P3 项，P1/P2 不生成（策展顺序 = catalog 行顺序；与 review-fixes 的 schema 同步，防双事实源）。
 - 加条目 = 加一行 + 一个 PR（CONTRIBUTING 有流程）；粘贴别人的 GitHub URL 上架前：
   先核该仓库许可（红线 1）、找 dsh.bundle 所在目录（path）、确认 manifest 有 engines.dsh（没有提示作者补）。
 - taxonomy v0（写死在 generate.mjs 的 MARKET.metadata）：
