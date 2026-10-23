@@ -10,7 +10,8 @@ permissions:
   pages: write
   id-token: write
 concurrency:
-  group: "pages"
+  # per-ref group: a PR check run must not cancel an in-flight main deploy (cancel caused the 2026-10-23 Pages 404)
+  group: "pages-${{ github.ref }}"
   cancel-in-progress: true
 jobs:
   build:
