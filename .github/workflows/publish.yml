@@ -2,6 +2,9 @@ name: publish
 on:
   push:
     branches: [main]
+  # PRs get the full check (test + build + strict validate) without deploying;
+  # nothing is required, so a red check never blocks the merge (no false block).
+  pull_request: {}
 permissions:
   contents: read
   pages: write
@@ -28,6 +31,8 @@ jobs:
           path: dist
   deploy:
     needs: build
+    # deploy only on real main pushes, never on PR runs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
