@@ -11,6 +11,8 @@
   "scripts": {
     "build": "node build/generate.mjs",
     "validate": "node build/validate.mjs dist/index.json",
-    "ci": "npm run build && npm run validate"
+    "test": "node --test",
+    "pin": "node build/pin.mjs",
+    "ci": "npm test && npm run build && npm run validate"
   }
 }

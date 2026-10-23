@@ -18,6 +18,7 @@ jobs:
         with:
           node-version: 24
       - run: npm install --no-audit --no-fund
+      - run: npm test
       - run: node build/generate.mjs
       - run: node build/validate.mjs
       - name: Fail build on dry-run-only output
