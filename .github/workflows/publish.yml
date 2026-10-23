@@ -22,7 +22,7 @@ jobs:
       - run: node build/validate.mjs
       - name: Fail build on dry-run-only output
         run: test ! -f dist/index.json || ! grep -q '0.0.0-dry' dist/index.json || { echo 'index contains unresolved dry-run entries'; exit 1; }
-      - uses: actions/upload-pages-artifact@v1
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
   deploy:
