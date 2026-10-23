@@ -1,64 +1,79 @@
 # dsh-nano-market
 
-[English](README.md) | [中文](#中文说明)
+[English](README.md) | [中文](README.zh-CN.md)
 
 **oh-summy's DSH nano-market** — a personal [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 plugin market: one curated catalog, one strictly-validated [index format 1](https://deepseek-harness.github.io/deepseek-harness/en/guide/plugin-market)
 document, hosted on GitHub Pages, consumed by DSH's native **Discover** tab. No second UI, no
 second install path — browsing, searching, and installing all happen inside DSH.
 
-## Quick start
+> Honest cost disclosure: at P1 scale the minimum real need is a single install command
+> (dsh plugin add git+https://…#<commit>&path:/<dir>). The market mechanism (index, CI,
+> Pages) exists because this repo is also intended as a reference sample of a small, mature,
+> well-engineered plugin market — the mechanism is part of the point.
 
-1. In DSH's web profile, enable the experimental market bundle and pre-configure the built-in sources:
+## Quick start (3 lines)
 
-   ```sh
-   dsh plugin --profile web add @deepseek-ai/dsh-experimental-plugin-market-bundle
-   # then append install/preset.patch.yml to ~/.dsh/profiles/web/cordis.patch.yml
-   # (or try without touching the profile:  dsh web --patch /path/to/install/preset.patch.yml)
-   ```
+1. **What this is**: a curated DSH plugin market you can browse in DSH's native Discover tab.
+2. **One-time enable**: dsh plugin --profile web add @deepseek-ai/dsh-experimental-plugin-market-bundle
+   then add this index in Discover (10-second official flow) — or pre-configure your profile
+   (no separate config files in this repo, by design):
+   代码块 yaml：
+   entries:
+     - id: plugin-market
+       service: "@deepseek-ai/dsh-plugin-market"
+       config:
+         indexes: ["https://oh-summy.github.io/dsh-nano-market/index.json"]
+3. **Install anything** from any source via the native confirmation flow. Whether to install a
+   plugin is always your call; this market curates and distributes, it does not replace your judgment.
 
-2. In the Web UI: **Plugins → More (Experimental plugins) → turn on “Custom plugin markets”**.
-   The **Discover** tab opens with the built-in sources already listed — browse them.
-3. Install anything you like from any source via the native confirmation flow. Whether to
-   install a plugin is always your call; built-in sources are browse-only defaults.
+## Adding a plugin (paste-a-GitHub-URL = registration)
 
-## Adding a plugin (paste-a-GitHub-URL flow)
+Listing in Discover **is** registration: a plugin only appears when a catalog line exists, passes
+CI, and lands in main. Code without registration is never visible.
 
-1. Check the repo's license — **no LICENSE file = no go** (license redline, AGENTS.md §1).
-2. Find the directory whose package.json declares `dsh.bundle`, and make sure that manifest
-   declares `engines.dsh` (ask the author to add it if not).
-3. Add one JSON line to `catalog/entries.jsonl` (schema: `catalog/schema.json`):
-
-   ```json
+1. License check — **no LICENSE file = no go** (redline 1, AGENTS.md).
+2. Find the directory whose package.json declares dsh.bundle; that manifest must declare engines.dsh.
+3. Add one JSON line to catalog/entries.jsonl (schema: catalog/schema.json) — initially WITHOUT
+   pinnedCommit, e.g.:
+   代码块 json：
    {"kind":"git","name":"@oh-summy/dsh-<short>","repo":"https://github.com/owner/repo","path":"plugin","ref":"v1.0.0",
     "distTags":{"latest":"0.1.0"},
     "meta":{"title":{"en":"…","zh":"…"},"description":{"en":"…","zh":"…"},"icon":"icons/…","author":"…",
             "homepage":"…","repository":{"url":"https://github.com/owner/repo","directory":"plugin"},
             "category":"infra","labels":["mine"],"keywords":["…"]}}
-   ```
+4. Run npm run pin — the ref is resolved once and the 40-hex commit is written back into the line.
+   From then on every build verifies ref resolution == pinnedCommit; a moved tag fails the build
+   until you deliberately update the pin (blocks silent content drift behind an unchanged tag name).
+5. PR → CI (tests + build + official validator) → merge = registered.
 
-4. Open a PR — CI builds the index, resolves the ref to a pinned commit, validates it with the
-   official DSH validator, and deploys to GitHub Pages on merge.
+Full rules, originality redline, and push discipline: **CONTRIBUTING.md** (BLOCKLIST.md is the
+enforcement record for the originality redline).
 
 ## Building locally
 
-```sh
-npm install && npm run ci        # build + strict format-1 validation
-DRY_RUN=1 npm run build          # offline smoke test (no GitHub resolution)
-```
+代码块 sh：
+npm install && npm run ci   # tests + build + strict format-1 validation (official validator)
+npm test                    # offline golden tests for the generator core
+DRY_RUN=1 npm run build     # offline smoke test (placeholder commits)
 
 ## Trust & provenance
 
-- The index is a **market claim**: titles, authors, and sources are asserted by this market, not
-  verified by DSH. Every install confirmation in DSH shows the exact source (npm package +
-  registry, or git repo + commit + directory); the installed manifest is the final fact.
-- Git entries are commit-pinned (40-hex SHA); market releases are tag-pinned (market-vX.Y.Z
-  Releases keep an auditable snapshot of every index document).
-- Built-in sources: this market + [awesome-dsh-plugins](https://github.com/dshworks/awesome-dsh-plugins)
-  (MIT open-data registry). An unlicensed community index (REALOIYO/dsh-plugin-market) is
-  **link-only** in this README by policy: add it in Discover at your own risk.
+- The index is a **market claim**: titles/authors/sources are asserted by this market, not verified
+  by DSH. Every install confirmation shows the exact source (npm package + registry, or git repo +
+  commit + directory); the installed manifest is the final fact.
+- Git entries are commit-pinned (40-hex, tag-checked against pinnedCommit). Auditing is reproducible:
+  any historical index = checkout that commit + npm run build. Market releases (market-* tags) mark
+  **semantic** changes only — data refreshes (catalog commits) are unversioned (docs/versioning.md,
+  CHANGELOG.md).
+- Default index source = this market only. [awesome-dsh-plugins](https://github.com/dshworks/awesome-dsh-plugins)
+  (MIT community registry) is a documented optional source: add its URL in Discover if you want it
+  (https://dsh.works/awesome-dsh-plugins/market/index.json, exact URL — DSH refuses redirects).
+  An unlicensed community index (REALOIYO/dsh-plugin-market) is **link-only** by policy: evaluate
+  and add at your own risk; this market neither embeds nor endorses it.
 
-## 中文说明
+## Development conventions
 
-个人 DSH 插件小市场：策展 catalog → 严格校验的 Format-1 索引 → GitHub Pages → DSH 原生 Discover。
-安装走 DSH 官方确认流程；市场只策展与分发，不替代你对插件本身的判断。开发规范见 AGENTS.md。
+**AGENTS.md** is the single source of truth (Claude-family agents read the same file via the
+claude.md pointer; it must never carry rules of its own). Registration flow and contribution
+rules: **CONTRIBUTING.md**. Market's own changelog: **CHANGELOG.md**.

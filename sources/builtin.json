@@ -1,15 +1,9 @@
 {
-  "$comment": "Built-in index sources (P1: browse-on-open). Consumed by install/preset.patch.yml and the P2 CLI 'sources' command. License redline: only licensed sources are built in; unlicensed markets get a README link only (AGENTS.md section 1.1).",
+  "$comment": "Default index sources for the DSH market config. Default = this market only (curation identity). Other public registries are documented options in the README, added by the user in Discover (10-second official flow) — the market does not blanket-trust uncurated sources.",
   "indexes": [
-    {
-      "url": "https://oh-summy.github.io/dsh-nano-market/index.json",
-      "title": { "en": "oh-summy's DSH Nano Market", "zh": "oh-summy 的 DSH 纳米市场" },
-      "note": "this market"
-    },
-    {
-      "url": "https://dsh.works/awesome-dsh-plugins/market/index.json",
-      "title": { "en": "awesome-dsh-plugins", "zh": "DSH 社区策展注册表" },
-      "note": "MIT open-data registry (20k+ entries). Use this exact URL: the dshworks.github.io address 301-redirects and DSH refuses redirects."
-    }
+    "https://oh-summy.github.io/dsh-nano-market/index.json"
+  ],
+  "optional": [
+    { "name": "awesome-dsh-plugins", "url": "https://dsh.works/awesome-dsh-plugins/market/index.json", "note": "MIT community registry, 20k+ entries, auto-maintained" }
   ]
 }

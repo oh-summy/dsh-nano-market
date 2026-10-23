@@ -4,11 +4,12 @@
   "type": "object",
   "required": ["kind", "name"],
   "properties": {
-    "kind": { "enum": ["git", "npm", "local"] },
-    "name": { "type": "string", "description": "npm package name (must equal the installed manifest's name for git sources)" },
+    "kind": { "enum": ["git", "npm", "local"], "description": "git = install from GitHub (commit-pinned); npm = registry; local = dev-only, never built" },
+    "name": { "type": "string", "description": "npm package name; MUST equal the installed source's manifest name (build enforces)" },
     "repo": { "type": "string", "pattern": "^https://github.com/[^/]+/[^/]+$", "description": "canonical https GitHub repo URL (git source)" },
-    "path": { "type": "string", "description": "package directory inside the repo (ascii segments); absent = repo root" },
-    "ref": { "type": "string", "description": "tag preferred, else branch; resolved to a pinned commit at build time" },
+    "path": { "type": "string", "description": "package directory inside the repo (ascii); absent = repo root" },
+    "ref": { "type": "string", "description": "human alias, tag preferred; build resolves it and checks it equals pinnedCommit" },
+    "pinnedCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$", "description": "REQUIRED for git entries: first-resolved commit; tag moves fail the build until the pin is updated deliberately" },
     "registry": { "type": "string", "description": "optional npm registry URL (npm source)" },
     "distTags": { "type": "object", "description": "market-supplied tag-to-exact-version map, e.g. {"latest": "0.1.0"}" },
     "meta": {
@@ -22,8 +23,7 @@
         "repository": { "type": "object", "description": "{url, directory?} display only, never selects the install source" },
         "category": { "type": "string", "description": "declared category id (AGENTS.md §4 taxonomy)" },
         "labels": { "type": "array", "items": { "type": "string" } },
-        "keywords": { "type": "array", "items": { "type": "string" } },
-        "sortKeys": { "type": "object" }
+        "keywords": { "type": "array", "items": { "type": "string" } }
       }
     }
   }
