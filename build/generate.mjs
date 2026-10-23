@@ -76,7 +76,7 @@ const seen = new Set();
 const doc = Object.assign({}, MARKET, {
   generatedAt: Math.floor(Date.now() / 1000),
   plugins: plugins.filter((x) => !seen.has(x.name) && seen.add(x.name))
-  // market version = git tag only (docs/versioning.md); the index carries no version claim of its own.
+  // market version = git tag only (AGENTS.md §8); the index carries no version claim of its own.
 });
 mkdirSync(join(OUT, "icons"), { recursive: true });
 const iconDir = join(root, "catalog/icons");
