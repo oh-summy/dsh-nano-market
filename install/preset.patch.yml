@@ -1,0 +1,20 @@
+# dsh-nano-market preset: pre-configure the DSH plugin-market service's built-in index sources.
+#
+# One-time use (P1):
+#   1) install the experimental market bundle into your web profile:
+#        dsh plugin --profile web add @deepseek-ai/dsh-experimental-plugin-market-bundle
+#   2) either append this file's content to ~/.dsh/profiles/web/cordis.patch.yml,
+#      or try without touching the profile:
+#        dsh web --patch /path/to/install/preset.patch.yml
+#   3) in the Web UI: Plugins -> More (Experimental plugins) -> turn ON "Custom plugin markets"
+#   4) Discover tab -> the market menu already lists every built-in source; browse freely,
+#      installing individual plugins stays a separate, confirmed action.
+#
+# The 'plugin-market' row is inserted by the experimental market bundle; this patch only
+# sets its config.indexes (a volatile field - the Web UI can also change it, last write wins).
+- id: plugin-market
+  name: "@deepseek-ai/dsh-plugin-market"
+  config:
+    indexes:
+      - "https://oh-summy.github.io/dsh-nano-market/index.json"
+      - "https://dsh.works/awesome-dsh-plugins/market/index.json"
