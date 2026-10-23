@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.plugin-market-cache/
+.DS_Store
+*.log
