@@ -19,10 +19,18 @@
 4. **URL 规则**：索引必须最终地址直读（无重定向）、公网 https；awesome-dsh 索引用
    https://dsh.works/awesome-dsh-plugins/market/index.json 原样（其 github.io 地址会 301，DSH 拒重定向）。
 5. **安装永远精确版本**（DSH 规则：绝不 name@latest）；市场版本 = Release tag 固定（SHA 可审计）。
+6. **推送/PR 纪律（对 agent 与人类同等生效，2026-10-23 起）**：未经允许，**禁止 git push、禁止开 PR、禁止删远端分支**；
+   一切工作先在本地分支完成，向负责人（oh-summy）申请许可后再推送/开 PR/删分支。agent 不得默认执行推送。
+7. **抄袭零容忍（贡献红线）**：直接复制、抄袭他人作品（代码、文案、数据、界面）一律禁止；
+   贡献只接受原创，或按许可证规范署名/致敬的引用。一旦发现复制抄袭 → **永久拉黑**
+   （GitHub block、移除贡献者、下架其全部条目）。
+8. **注册定义**：插件「出现在 Discover」= **注册**（catalog/entries.jsonl 加一行）+ CI 校验通过 + 合入 main。
+   **只提供代码（GitHub 仓库）而未注册 = 市场页面永远不可见**。注册流程见 CONTRIBUTING.md。
 
 ## 2. 分支与推送纪律（main 已启用分支保护）
 
 - main 禁止直推 / force push / 删除（admin 同样受限）；一切改动 = feature 分支 → PR → 合并（0 评审，自助）。
+- **未经允许不推送、不开 PR、不删远端分支**（红线 6）；合并后的 feature 分支才谈得上删除（先要许可）。
 - 合入 main 触发 publish.yml → Pages 更新；打 market-* tag 触发 release.yml → Release 存档。
 - 小步 PR：一个 PR 一件事。
 
@@ -54,7 +62,8 @@ DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 com
 
 ## 6. 环境与账号
 
-- 本地 gh 双账号：默认 OneSami；操作 oh-summy 仓库先 gh auth switch --user oh-summy，完事切回。
+- 本地 gh 双账号：默认 OneSami；操作 oh-summy 仓库先 gh auth switch --user oh-summy，完事切回（只读操作可随手做，写操作=红线 6）。
+- agent 入口：`claude.md` 是 `AGENTS.md` 的符号链接（Claude 系 agent 读 claude.md）；**唯一事实来源永远是 AGENTS.md**，只改它。
   本仓库 remote 走 git@github-personal:oh-summy/dsh-nano-market（SSH 别名，与 remote-control 一致）。
 - DSH 本机 0.2.1-rc.2；web profile 在 ~/.dsh/profiles/web（patchReload live）。
 - 内置源清单：sources/builtin.json（本市场 + awesome-dsh-plugins）；DSH 侧配置片：install/preset.patch.yml。
