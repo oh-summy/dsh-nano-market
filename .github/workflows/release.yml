@@ -22,6 +22,10 @@ jobs:
         with: { node-version: 24 }
       - run: npm install
       - run: npm run ci
-      - run: gh release create "${{ github.ref_name }}" --title "market ${{ github.ref_name }}" --notes "Semantic release: pipeline/redline/format change. Data refreshes are unversioned (docs/versioning.md). Historical index reproducible: git checkout ${{ github.ref_name }} && npm ci && npm run build."
+      - name: Create semantic release
+        run: |
+          gh release create "${{ github.ref_name }}" \\
+            --title "market ${{ github.ref_name }}" \\
+            --notes "Semantic release: pipeline/redline/format change. Data refreshes are unversioned (docs/versioning.md). Historical index reproducible: git checkout ${{ github.ref_name }} and run npm ci, npm run build, npm run validate."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
