@@ -1,5 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
+  "$comment": "Descriptive contract only - no tool validates this file. The enforcers are build/generate.mjs + build/lib.mjs (including repo/pinnedCommit requirements for git entries); schema and generator must change in the same PR (AGENTS.md §4).",
   "title": "dsh-nano-market catalog entry (one JSONL line)",
   "type": "object",
   "required": ["kind", "name"],

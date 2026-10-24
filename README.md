@@ -51,8 +51,8 @@ CI, and lands in main. Code without registration is never visible.
    until you deliberately update the pin (blocks silent content drift behind an unchanged tag name).
 5. PR → CI (tests + build + official validator) → merge = registered.
 
-Full rules, originality redline, and push discipline: **CONTRIBUTING.md** (BLOCKLIST.md is the
-enforcement record for the originality redline).
+Full rules, originality redline, and push discipline: **CONTRIBUTING.md** (originality-redline
+carrier = an `originality-violation` issue + git history, AGENTS.md redline 7).
 
 ## Building locally
 

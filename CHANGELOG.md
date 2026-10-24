@@ -12,4 +12,5 @@
 
 ## 修复行（无 tag，契约不变）
 
+- 2026-10-24 · 审查修复批：release.yml 的 `gh release create` 续行符（`\\` 在 shell 里=转义+结束命令，`--title`/`--notes` 从未生效）；双语 README 代码围栏恢复（zh-CN 内容同步到现状：preset 已砍、默认源=本市场、claude.md 为实体指针）；生成器重名条目改 fail-loud、git distTags 校验、npm author 取 dist-tags.latest；CI 改 `npm ci` + Pages 权限收窄到 deploy job；删除零消费的 sources/builtin.json；原创红线载体从 BLOCKLIST.md 改为 issue + git（AGENTS 红线 7 重写，记录不再单开文件）。
 - 2026-10-24 · CI：Pages action 升到当前 v5 对（v1 钉死弃用组件被 GitHub 判死）；PR 检查触发 + per-ref 并发组（防 PR 检查误杀 main 部署）；release.yml YAML 解析修复。

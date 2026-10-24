@@ -6,11 +6,11 @@
 ## 1. 注册流程（paste-a-GitHub-URL）
 
 1. **粘贴仓库 URL**（如 https://github.com/owner/repo）。
-2. **许可自查（红线，不过 = 拒收）**：
+2. **许可自查（红线，不过 = 拒收；人工门——生成器不校验许可，登记前必须人工核）**：
    - 仓库有 LICENSE 且许可可用（MIT / Apache-2.0 / BSD 等）→ 可注册；
    - **无 LICENSE 文件 → 拒收**（无许可 = 默认保留所有权利，本市场不使用）；
-   - 第三方代码进 manifest 前，作者须保证代码原创或引用合规（红线 7，BLOCKLIST.md 为执行载体；
-     认定/下架/申诉流程见 AGENTS.md 红线 7 与 BLOCKLIST.md「操作说明」）。
+   - 第三方代码进 manifest 前，作者须保证代码原创或引用合规（红线 7，载体 = originality-violation issue + git 历史；
+     认定/下架/申诉流程见 AGENTS.md 红线 7）。
 3. **结构自查**：找到声明 dsh.bundle 的目录（path，缺省 = 仓库根）；
    该目录 package.json 必须有 name、version、engines.dsh（缺就提示作者补，不替作者猜）。
 4. **加一行 + 登记 pin**：
@@ -42,7 +42,7 @@
 
 - 更新插件版本 = 上游打新 tag → 条目改 ref → npm run pin 回填新 pinnedCommit → PR。旧版本保留在索引里，
   Discover 显示 update-available（DSH 无原地升级：安装新版本 = 卸载旧 bundle 再装，原生确认门保障）。
-- 下架 = 删行 + PR（市场方行为；被下架方联系负责人）。若涉及原创红线处分，先走 BLOCKLIST.md 流程。
+- 下架 = 删行 + PR（市场方行为；被下架方联系负责人）。若涉及原创红线处分，先走 AGENTS.md 红线 7 的 issue 程序。
 - 市场自身版本纪律见 **AGENTS.md §8**（数据刷新无版本；有用户可见成果才打 market-* tag + Release；x/y/z 边界与 1.0.0 门槛同表）。
 
 ## 3. 推送纪律（红线 6，出处引用制）
