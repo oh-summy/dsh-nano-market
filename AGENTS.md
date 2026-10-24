@@ -48,7 +48,7 @@ npm install            # 首次（devDeps: @deepseek-ai/dsh-plugin-market-index�
 npm run build          # node build/generate.mjs → dist/index.json（+ catalog/icons → dist/icons）
 npm run validate       # node build/validate.mjs dist/index.json（官方校验器严格校验，整索引拒绝=失败）
 npm run ci             # build + validate（PR 必须绿）
-npm test               # 生成器断言测试（node --test：合法/缺 engines.dsh/name 不等 三个黄金用例，离线）
+npm test               # 生成器断言测试（node --test：合法 / 缺 engines.dsh / name 不等 黄金用例 + pin 锁 / distTags / author / CLI 重名，全离线）
 npm run pin            # 新增条目后：解析 ref → 回填 pinnedCommit（首次登记），再提交
 DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 commit），仅验证管线
 构建失败的定位标准：第一条错误必须含 catalog 行号 + 仓库 + 缺什么，不打开生成器源码也能修（验收标准）。
