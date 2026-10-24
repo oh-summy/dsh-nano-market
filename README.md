@@ -2,8 +2,7 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-**oh-summy's DSH nano-market** — a personal [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-plugin market: one curated catalog, one strictly-validated [index format 1](https://deepseek-harness.github.io/deepseek-harness/en/guide/plugin-market)
+**oh-summy's personal DeepSeek Harness plugin market** — a hand-reviewed plugin catalog, one strictly-validated [index format 1](https://deepseek-harness.github.io/deepseek-harness/en/guide/plugin-market)
 document, hosted on GitHub Pages, consumed by DSH's native **Discover** tab. No second UI, no
 second install path — browsing, searching, and installing all happen inside DSH.
 
@@ -27,7 +26,7 @@ second install path — browsing, searching, and installing all happen inside DS
    ```
 
 3. **Install anything** from any source via the native confirmation flow. Whether to install a
-   plugin is always your call; this market curates and distributes, it does not replace your judgment.
+   plugin is always your call; this market reviews what it lists and distributes it, it does not replace your judgment.
 
 ## Adding a plugin (paste-a-GitHub-URL = registration)
 
@@ -62,6 +61,8 @@ npm test                    # offline golden tests for the generator core
 DRY_RUN=1 npm run build     # offline smoke test (placeholder commits)
 ```
 
+Toolchain: Node 24 (see `.nvmrc`; CI pins the same major).
+
 ## Trust & provenance
 
 - The index is a **market claim**: titles/authors/sources are asserted by this market, not verified
@@ -79,6 +80,5 @@ DRY_RUN=1 npm run build     # offline smoke test (placeholder commits)
 
 ## Development conventions
 
-**AGENTS.md** is the single source of truth (Claude-family agents read the same file via the
-claude.md pointer; it must never carry rules of its own). Registration flow and contribution
+**AGENTS.md** is the single source of truth. Registration flow and contribution
 rules: **CONTRIBUTING.md**. Market's own changelog: **CHANGELOG.md**.
