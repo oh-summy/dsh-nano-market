@@ -64,7 +64,7 @@ DRY_RUN=1 npm run build     # offline smoke test (placeholder commits)
   commit + directory); the installed manifest is the final fact.
 - Git entries are commit-pinned (40-hex, tag-checked against pinnedCommit). Auditing is reproducible:
   any historical index = checkout that commit + npm run build. Market releases (market-* tags) mark
-  **semantic** changes only — data refreshes (catalog commits) are unversioned (docs/versioning.md,
+  **user-visible milestones** only — data refreshes (catalog commits) are unversioned (AGENTS.md §8,
   CHANGELOG.md).
 - Default index source = this market only. [awesome-dsh-plugins](https://github.com/dshworks/awesome-dsh-plugins)
   (MIT community registry) is a documented optional source: add its URL in Discover if you want it

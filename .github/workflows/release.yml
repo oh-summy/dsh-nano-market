@@ -3,7 +3,7 @@ on:
   push:
     tags: ["market-*"]
 
-# Semantic releases only (docs/versioning.md): market-* tags mark pipeline/redline/format changes.
+# User-visible milestones only (AGENTS.md §8): market-* tags mark first entry / taxonomy / contract changes.
 # Data refreshes (catalog commits) deploy to Pages WITHOUT a tag — no version, by design.
 # Audit trail = git: every catalog line carries a 40-hex pin; any historical index is reproducible
 # by checking out that commit and running "npm ci && npm run build && npm run validate".
@@ -26,6 +26,6 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" \\
             --title "market ${{ github.ref_name }}" \\
-            --notes "Semantic release: pipeline/redline/format change. Data refreshes are unversioned (docs/versioning.md). Historical index reproducible: git checkout ${{ github.ref_name }} and run npm ci, npm run build, npm run validate."
+            --notes "Semantic release: pipeline/redline/format change. Data refreshes are unversioned (AGENTS.md §8). Historical index reproducible: git checkout ${{ github.ref_name }} and run npm ci, npm run build, npm run validate."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

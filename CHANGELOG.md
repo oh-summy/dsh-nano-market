@@ -1,12 +1,15 @@
-# Changelog（市场自身，不含数据刷新）
+# Changelog（市场自身）
 
-> 数据刷新（catalog 提交 + Pages 重部署）无版本号，不入本文件。本文件只记语义变更
-> （管线/红线/格式/工具链），与 market-* tag 一一对应。机制见 docs/versioning.md。
+> 写法规则（3 行，不再另开文档）：
+> ① 每个 market-* tag 必配一条条目（tag = 本文件的物理载体）；条目 = 一行成果 + Added/Changed/Fixed/Removed，写"带出什么"，不写 commit 流水。
+> ② 数据刷新（条目增改、ref+pin 更新）无版本、不入本文件（审计在 git）；里程碑/修复事件可记"无版本"行。
+> ③ 版本号规则（x/y/z 边界、0.x 特区、1.0.0 门槛）以 **AGENTS.md §8** 为唯一事实源，本文件只记不定义。
 
-## 0.1.0（market-v0.1.0）— 首个语义 Release
-- 管线：catalog（entries.jsonl）→ 生成器（commit 固定 + pinnedCommit 锁 + 行号级错误定位）→ 官方校验器（整索引严格）→ GitHub Pages；
-- 测试：node:test 黄金用例（合法 / 缺 engines.dsh / name 不等 / tag 漂移，离线 10 例）；
-- 规矩：AGENTS.md 红线 1-8（许可/命名/索引正确性/URL/精确版本/出处引用制推送纪律/原创红线+BLOCKLIST 程序/注册定义）、
-  CONTRIBUTING 注册流程（paste-GitHub-URL + npm run pin）、claude.md 实体指针；
-- 砍掉（外部审查 Q4）：preset.patch.yml、Release zip 存档、marketVersion 自携带字段、sortKeys（P3）；
-- 发版两分法：数据刷新无版本；语义变更 = market-* tag + 本文件一行。
+## 无版本里程碑
+
+- 2026-10-24 · P1 基建完成：管线（catalog → 生成器 commit 固定 + pinnedCommit 锁 → 官方校验器 → Pages）+ 规矩（AGENTS 红线 1-8、CONTRIBUTING 注册流程、BLOCKLIST）+ CI 门禁（PR 检查 + required build）+ Pages 上线（index.json 200）+ 审查 P0 全套。
+  注：market-v0.1.0 按 AGENTS §8 留给 T3 首条目进场（第一个有用户可见成果的版本）。
+
+## 修复行（无 tag，契约不变）
+
+- 2026-10-24 · CI：Pages action 升到当前 v5 对（v1 钉死弃用组件被 GitHub 判死）；PR 检查触发 + per-ref 并发组（防 PR 检查误杀 main 部署）；release.yml YAML 解析修复。
