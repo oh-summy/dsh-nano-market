@@ -2,8 +2,7 @@
 
 [中文](README.zh-CN.md) | [English](README.md)
 
-**oh-summy 的 DSH 纳米市场** —— 个人 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-插件市场：一份策展 catalog、一份严格校验的[索引（format 1）](https://deepseek-harness.github.io/deepseek-harness/en/guide/plugin-market)文档、
+**oh-summy 个人 DeepSeek Harness 插件市场** —— 一份人工审核收录的插件清单（catalog）、一份严格校验的[索引（format 1）](https://deepseek-harness.github.io/deepseek-harness/en/guide/plugin-market)文档、
 GitHub Pages 托管、由 DSH 原生 **Discover** 标签消费。没有第二套 UI，没有第二套安装通道——
 浏览、搜索、安装全部发生在 DSH 内部。
 
@@ -27,7 +26,7 @@ GitHub Pages 托管、由 DSH 原生 **Discover** 标签消费。没有第二套
    ```
 
 3. **随意安装**任何来源的条目，全程走 DSH 原生确认流程。装不装、何时装，永远是你自己的决定；
-   本市场只做策展与分发，不替你判断。
+   本市场只负责收录审核与分发，不替你判断。
 
 ## 注册 / 上架一个插件（粘贴 GitHub URL = 注册）
 
@@ -77,5 +76,5 @@ DRY_RUN=1 npm run build     # 离线冒烟（占位 commit）
 
 ## 开发约定
 
-**AGENTS.md** 是唯一事实源（Claude 系 agent 经 claude.md 实体指针文件读取同一份；该文件永不承载自己的规范）。
+**AGENTS.md** 是唯一事实源。
 注册流程与贡献规范：**CONTRIBUTING.md**。市场自身变更记录：**CHANGELOG.md**。
