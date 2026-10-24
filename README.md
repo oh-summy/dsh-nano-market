@@ -15,15 +15,17 @@ second install path — browsing, searching, and installing all happen inside DS
 ## Quick start (3 lines)
 
 1. **What this is**: a curated DSH plugin market you can browse in DSH's native Discover tab.
-2. **One-time enable**: dsh plugin --profile web add @deepseek-ai/dsh-experimental-plugin-market-bundle
+2. **One-time enable**: `dsh plugin --profile web add @deepseek-ai/dsh-experimental-plugin-market-bundle`
    then add this index in Discover (10-second official flow) — or pre-configure your profile
    (no separate config files in this repo, by design):
-   代码块 yaml：
+   ```yaml
    entries:
      - id: plugin-market
        service: "@deepseek-ai/dsh-plugin-market"
        config:
          indexes: ["https://oh-summy.github.io/dsh-nano-market/index.json"]
+   ```
+
 3. **Install anything** from any source via the native confirmation flow. Whether to install a
    plugin is always your call; this market curates and distributes, it does not replace your judgment.
 
@@ -34,15 +36,17 @@ CI, and lands in main. Code without registration is never visible.
 
 1. License check — **no LICENSE file = no go** (redline 1, AGENTS.md).
 2. Find the directory whose package.json declares dsh.bundle; that manifest must declare engines.dsh.
-3. Add one JSON line to catalog/entries.jsonl (schema: catalog/schema.json) — initially WITHOUT
+3. Add one JSON line to `catalog/entries.jsonl` (schema: `catalog/schema.json`) — initially WITHOUT
    pinnedCommit, e.g.:
-   代码块 json：
+   ```json
    {"kind":"git","name":"@oh-summy/dsh-<short>","repo":"https://github.com/owner/repo","path":"plugin","ref":"v1.0.0",
     "distTags":{"latest":"0.1.0"},
     "meta":{"title":{"en":"…","zh":"…"},"description":{"en":"…","zh":"…"},"icon":"icons/…","author":"…",
             "homepage":"…","repository":{"url":"https://github.com/owner/repo","directory":"plugin"},
             "category":"infra","labels":["mine"],"keywords":["…"]}}
-4. Run npm run pin — the ref is resolved once and the 40-hex commit is written back into the line.
+   ```
+
+4. Run `npm run pin` — the ref is resolved once and the 40-hex commit is written back into the line.
    From then on every build verifies ref resolution == pinnedCommit; a moved tag fails the build
    until you deliberately update the pin (blocks silent content drift behind an unchanged tag name).
 5. PR → CI (tests + build + official validator) → merge = registered.
@@ -52,10 +56,11 @@ enforcement record for the originality redline).
 
 ## Building locally
 
-代码块 sh：
+```sh
 npm install && npm run ci   # tests + build + strict format-1 validation (official validator)
 npm test                    # offline golden tests for the generator core
 DRY_RUN=1 npm run build     # offline smoke test (placeholder commits)
+```
 
 ## Trust & provenance
 
