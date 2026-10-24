@@ -24,8 +24,8 @@ jobs:
       - run: npm run ci
       - name: Create semantic release
         run: |
-          gh release create "${{ github.ref_name }}" \\
-            --title "market ${{ github.ref_name }}" \\
+          gh release create "${{ github.ref_name }}" \
+            --title "market ${{ github.ref_name }}" \
             --notes "Semantic release: pipeline/redline/format change. Data refreshes are unversioned (AGENTS.md §8). Historical index reproducible: git checkout ${{ github.ref_name }} and run npm ci, npm run build, npm run validate."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
