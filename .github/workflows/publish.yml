@@ -7,8 +7,6 @@ on:
   pull_request: {}
 permissions:
   contents: read
-  pages: write
-  id-token: write
 concurrency:
   # per-ref group: a PR check run must not cancel an in-flight main deploy (cancel caused the 2026-10-23 Pages 404)
   group: "pages-${{ github.ref }}"
@@ -21,7 +19,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm install --no-audit --no-fund
+      - run: npm ci
       - run: npm test
       - run: node build/generate.mjs
       - run: node build/validate.mjs
@@ -34,6 +32,9 @@ jobs:
     needs: build
     # deploy only on real main pushes, never on PR runs
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
