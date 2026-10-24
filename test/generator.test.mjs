@@ -2,6 +2,11 @@
 // The "fail loudly, no silent skip" promise (AGENTS.md §1.3) must be proven, not asserted.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { splitRepo, normalizeRepoUrl, checkPin, gitPluginFromManifest, npmPluginFromPackument, withMeta } from "../build/lib.mjs";
 
 const validManifest = {
@@ -85,6 +90,51 @@ test("npmPluginFromPackument: eligibility filters + dist-tag intersection", () =
 
 test("npmPluginFromPackument: no eligible version fails loudly", () => {
   assert.throws(() => npmPluginFromPackument({ versions: {} }, { name: "@oh-summy/dsh-x" }), /no eligible versions/);
+});
+
+test("gitPluginFromManifest: distTags must point at the manifest version", () => {
+  const ok = gitPluginFromManifest(validManifest, { ...validEntry, distTags: { latest: "0.1.0" } }, COMMIT, 0);
+  assert.equal(ok["dist-tags"].latest, "0.1.0");
+  assert.throws(
+    () => gitPluginFromManifest(validManifest, { ...validEntry, distTags: { latest: "9.9.9" } }, COMMIT, 0),
+    /dist-tags must point at the listed version/
+  );
+});
+
+test("npmPluginFromPackument: author = dist-tags.latest when eligible, else newest publish time", () => {
+  const packument = {
+    time: { "0.1.0": "2026-09-01T00:00:00Z", "0.2.0": "2026-10-01T00:00:00Z" },
+    versions: {
+      "0.1.0": { ...validManifest, version: "0.1.0", author: { name: "early" } },
+      "0.2.0": { ...validManifest, version: "0.2.0", author: { name: "current" } }
+    },
+    "dist-tags": { latest: "0.2.0" }
+  };
+  assert.equal(npmPluginFromPackument(packument, { name: "@oh-summy/dsh-remote" }).author, "current");
+  const noTag = { ...packument, "dist-tags": {} };
+  assert.equal(npmPluginFromPackument(noTag, { name: "@oh-summy/dsh-remote" }).author, "current");
+  // packument object order must never be trusted: 0.1.0 published later despite lower semver
+  const outOfOrder = { ...packument, "dist-tags": {}, time: { "0.1.0": "2027-01-01T00:00:00Z", "0.2.0": "2026-10-01T00:00:00Z" } };
+  assert.equal(npmPluginFromPackument(outOfOrder, { name: "@oh-summy/dsh-remote" }).author, "early");
+});
+
+test("cli: duplicate catalog names fail loudly with both line numbers (no silent drop)", async () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const dir = mkdtempSync(join(tmpdir(), "dsh-cli-dup-"));
+  const catalog = join(dir, "entries.jsonl");
+  const line = JSON.stringify({ kind: "git", name: "@x/dup", repo: "https://github.com/x/dup", ref: "v1", pinnedCommit: "a".repeat(40) }) + "\n";
+  writeFileSync(catalog, line + line);
+  await new Promise((resolve, reject) => {
+    execFile(process.execPath, [join(root, "build", "generate.mjs")], { env: { ...process.env, DRY_RUN: "1", CATALOG_PATH: catalog } }, (err, stdout, stderr) => {
+      try {
+        assert.ok(err, "expected non-zero exit for duplicate plugin names");
+        assert.match(String(stderr), /duplicate plugin name/);
+        assert.match(String(stderr), /line 2/);
+        assert.match(String(stderr), /line 1/);
+        resolve();
+      } catch (e) { reject(e); }
+    });
+  });
 });
 
 test("withMeta: no meta -> no metadata group", () => {

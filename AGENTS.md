@@ -24,9 +24,9 @@
    无法引用触发指令的操作一律禁止。会话内许可不跨会话；每次 push/PR 在描述中写明触发指令出处。
    （判定标准 = 「能否引用出处」，不是「感觉被允许过」。）
 7. **原创红线（可执行版）**：认定标准（客观）——与在先作品代码实质相同或派生，且未满足其许可证要求或未署名。
-   程序（BLOCKLIST.md 为唯一载体）：发现 → BLOCKLIST.md 记录条目/证据链接/认定日期 → 被列方可开 issue 申诉，
-   维护者 14 天内回应 → 处分 = 相关条目从 catalog 下架并拒绝重新收录；「永久」不预设，**重犯才加 Permanent 标记**。
-   不预设道德宣告式处罚，只用「下架 + 记录 + 可申诉」三步可执行流程。
+   程序（载体 = issue + git，不单开文档）：发现 → 开 issue 标 originality-violation（证据链接 + 认定日期）→
+   被列方可在 issue 内申诉，维护者 14 天内回应 → 处分 = 相关条目 catalog 删行 + 拒重新收录；
+   「永久」不预设，重犯在 issue 打 Permanent 标。不预设道德宣告式处罚，只用「下架 + 记录 + 可申诉」。
 8. **注册定义**：插件「出现在 Discover」= **注册**（catalog/entries.jsonl 加一行，含 pinnedCommit）+ CI 校验通过 + 合入 main。
    **只提供代码（GitHub 仓库）而未注册 = 市场页面永远不可见**。注册流程见 CONTRIBUTING.md。
    **发版机制（版本纪律，§8 为唯一事实源，不再单开 versioning 文档）**：数据刷新（catalog 提交 + Pages 重部署）无版本号；
@@ -48,7 +48,7 @@ npm install            # 首次（devDeps: @deepseek-ai/dsh-plugin-market-index�
 npm run build          # node build/generate.mjs → dist/index.json（+ catalog/icons → dist/icons）
 npm run validate       # node build/validate.mjs dist/index.json（官方校验器严格校验，整索引拒绝=失败）
 npm run ci             # build + validate（PR 必须绿）
-npm test               # 生成器断言测试（node --test：合法/缺 engines.dsh/name 不等 三个黄金用例，离线）
+npm test               # 生成器断言测试（node --test：合法 / 缺 engines.dsh / name 不等 黄金用例 + pin 锁 / distTags / author / CLI 重名，全离线）
 npm run pin            # 新增条目后：解析 ref → 回填 pinnedCommit（首次登记），再提交
 DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 commit），仅验证管线
 构建失败的定位标准：第一条错误必须含 catalog 行号 + 仓库 + 缺什么，不打开生成器源码也能修（验收标准）。
@@ -82,13 +82,14 @@ DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 com
   **唯一事实来源永远是 AGENTS.md**，只改它。
   本仓库 remote 走 git@github-personal:oh-summy/dsh-nano-market（SSH 别名，与 remote-control 一致）。
 - DSH 本机 0.2.1-rc.2；web profile 在 ~/.dsh/profiles/web（patchReload live）。
-- 内置源：sources/builtin.json（默认 = 本市场；awesome-dsh-plugins 降级为 README 文档级可选源——
-  策展身份优先；DSH 侧索引源在 Discover 手工添加（官方支持的 10 秒操作），README 附 YAML 片段，不再维护第二份配置格式。
+- 内置源：默认 = 本市场（https://oh-summy.github.io/dsh-nano-market/index.json）；DSH 侧索引源在 Discover 手工添加
+  （官方支持的 10 秒操作），README 附 YAML 片段——仓库不维护任何配置文件副本；
+  awesome-dsh-plugins 只是 README 文档级可选源（策展身份优先）。
 
 ## 7. 变更节奏（对应 P1 执行方案）
 
 T0 骨架 ✅ → T1 本管线（feat/p1，已合并）→ **外部审查 P0 修订**（feat/conventions：红线 6/7 可执行化、claude.md 实体指针、
-CONTRIBUTING pin 流程、BLOCKLIST；feat/review-fixes：生成器 fixtures/测试、tag pinnedCommit 锁、砍 preset/zip/marketVersion、
+CONTRIBUTING pin 流程；feat/review-fixes：生成器 fixtures/测试、tag pinnedCommit 锁、砍 preset/zip/marketVersion、
 发版机制两分法）→ T2 宿主工具注册 spike → T3 remote-control 打包（@oh-summy/dsh-remote，首个条目含 pinnedCommit）
 → T5 DSH 端到端（Discover 手工加源 + 安装冒烟）→ 合并 = P1 基建完成（无版本里程碑；**market-v0.1.0 留给 T3 首条目进场**）。
 P2 见 /Users/rocky/project/dsh-nano-market-roadmap.md。

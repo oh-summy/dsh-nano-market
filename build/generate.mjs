@@ -65,17 +65,21 @@ async function buildEntry(entry, lineNo) {
 const raw = readFileSync(CATALOG, "utf8");
 const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
 const plugins = [];
+const nameLines = new Map(); // plugin name -> first catalog line; duplicates are catalog errors, never silent drops
 for (let i = 0; i < lines.length; i++) {
   let entry;
   try { entry = JSON.parse(lines[i]); } catch (e) { throw new Error("entries.jsonl line " + (i + 1) + " is not valid JSON: " + e.message); }
   let pl;
   try { pl = await buildEntry(entry, i + 1); } catch (e) { throw new Error(where(entry, i + 1) + ": " + e.message); }
-  if (pl) plugins.push(pl);
+  if (!pl) continue;
+  const firstLine = nameLines.get(pl.name);
+  if (firstLine !== undefined) throw new Error(where(entry, i + 1) + ': duplicate plugin name "' + pl.name + '" (already listed at line ' + firstLine + ") - one name, one catalog line");
+  nameLines.set(pl.name, i + 1);
+  plugins.push(pl);
 }
-const seen = new Set();
 const doc = Object.assign({}, MARKET, {
   generatedAt: Math.floor(Date.now() / 1000),
-  plugins: plugins.filter((x) => !seen.has(x.name) && seen.add(x.name))
+  plugins: plugins
   // market version = git tag only (AGENTS.md §8); the index carries no version claim of its own.
 });
 mkdirSync(join(OUT, "icons"), { recursive: true });

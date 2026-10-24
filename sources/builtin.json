@@ -1,9 +1,0 @@
-{
-  "$comment": "Default index sources for the DSH market config. Default = this market only (curation identity). Other public registries are documented options in the README, added by the user in Discover (10-second official flow) — the market does not blanket-trust uncurated sources.",
-  "indexes": [
-    "https://oh-summy.github.io/dsh-nano-market/index.json"
-  ],
-  "optional": [
-    { "name": "awesome-dsh-plugins", "url": "https://dsh.works/awesome-dsh-plugins/market/index.json", "note": "MIT community registry, 20k+ entries, auto-maintained" }
-  ]
-}

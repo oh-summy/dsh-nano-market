@@ -73,7 +73,15 @@ export function gitPluginFromManifest(manifest, entry, commit, ts) {
   const source = { type: "git", url: normalizeRepoUrl(entry.repo), commit: commit };
   if (p) source.path = p;
   const plugin = { name: manifest.name, versions: [{ version: manifest.version, publishTimestamp: ts, source: source, engines: { dsh: enginesDsh } }] };
-  if (entry.distTags) plugin["dist-tags"] = entry.distTags;
+  if (entry.distTags) {
+    // a git entry lists exactly one version; every dist-tag must point at it (no dangling tags)
+    for (const tag of Object.keys(entry.distTags)) {
+      if (entry.distTags[tag] !== manifest.version) {
+        throw new Error('distTags.' + tag + ' = "' + entry.distTags[tag] + '" but manifest version is "' + manifest.version + '" - dist-tags must point at the listed version');
+      }
+    }
+    plugin["dist-tags"] = entry.distTags;
+  }
   return withMeta(plugin, entry);
 }
 
@@ -89,12 +97,18 @@ export function npmPluginFromPackument(d, entry) {
     versions.push({ version: v, publishTimestamp: Math.floor(new Date(t).getTime() / 1000), source: { type: "npm", ...(entry.registry ? { registry: entry.registry } : {}) }, engines: { dsh: enginesDsh } });
   }
   if (!versions.length) throw new Error(entry.name + ": no eligible versions (needs dsh.bundle + engines.dsh, not deprecated)");
-  const lastV = versions[versions.length - 1].version;
+  const eligible = new Set(versions.map((x) => x.version));
   const plugin = { name: entry.name, versions: versions };
-  const top = d.versions[lastV];
+  // author display = the version users actually get: dist-tags.latest when eligible, else newest publish time
+  // (packument object order is NOT guaranteed to be semver/newest-first, so never index it blindly).
+  let top = d["dist-tags"] && eligible.has(d["dist-tags"].latest) ? d.versions[d["dist-tags"].latest] : null;
+  if (!top) {
+    let newest = versions[0];
+    for (const v of versions) if (v.publishTimestamp > newest.publishTimestamp) newest = v;
+    top = d.versions[newest.version];
+  }
   if (top && top.author && top.author.name) plugin.author = top.author.name;
   if (d["dist-tags"]) {
-    const eligible = new Set(versions.map((x) => x.version));
     const tags = Object.fromEntries(Object.entries(d["dist-tags"]).filter(([, tv]) => eligible.has(tv)));
     if (Object.keys(tags).length) plugin["dist-tags"] = tags;
   }
