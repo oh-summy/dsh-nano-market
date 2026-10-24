@@ -82,6 +82,8 @@ DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 com
   **唯一事实来源永远是 AGENTS.md**，只改它。
   本仓库 remote 走 git@github-personal:oh-summy/dsh-nano-market（SSH 别名，与 remote-control 一致）。
 - DSH 本机 0.2.1-rc.2；web profile 在 ~/.dsh/profiles/web（patchReload live）。
+- 本地工具链：Node 24（.nvmrc 与 CI 双钉，本地安装保持同一大版本；升级 = 有意的 PR，安全补丁优先跟进）。
+  其他语言（Go/Python/Rust…）的工具链属于各插件仓库自身的契约（.nvmrc / rust-toolchain / go.mod 同理），本仓库不声明。
 - 内置源：默认 = 本市场（https://oh-summy.github.io/dsh-nano-market/index.json）；DSH 侧索引源在 Discover 手工添加
   （官方支持的 10 秒操作），README 附 YAML 片段——仓库不维护任何配置文件副本；
   awesome-dsh-plugins 只是 README 文档级可选源（策展身份优先）。

@@ -61,6 +61,8 @@ npm test                    # offline golden tests for the generator core
 DRY_RUN=1 npm run build     # offline smoke test (placeholder commits)
 ```
 
+Toolchain: Node 24 (see `.nvmrc`; CI pins the same major).
+
 ## Trust & provenance
 
 - The index is a **market claim**: titles/authors/sources are asserted by this market, not verified
