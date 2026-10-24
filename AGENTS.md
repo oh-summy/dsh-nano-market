@@ -82,8 +82,9 @@ DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 com
   **唯一事实来源永远是 AGENTS.md**，只改它。
   本仓库 remote 走 git@github-personal:oh-summy/dsh-nano-market（SSH 别名，与 remote-control 一致）。
 - DSH 本机 0.2.1-rc.2；web profile 在 ~/.dsh/profiles/web（patchReload live）。
-- 内置源：sources/builtin.json（默认 = 本市场；awesome-dsh-plugins 降级为 README 文档级可选源——
-  策展身份优先；DSH 侧索引源在 Discover 手工添加（官方支持的 10 秒操作），README 附 YAML 片段，不再维护第二份配置格式。
+- 内置源：默认 = 本市场（https://oh-summy.github.io/dsh-nano-market/index.json）；DSH 侧索引源在 Discover 手工添加
+  （官方支持的 10 秒操作），README 附 YAML 片段——仓库不维护任何配置文件副本；
+  awesome-dsh-plugins 只是 README 文档级可选源（策展身份优先）。
 
 ## 7. 变更节奏（对应 P1 执行方案）
 
