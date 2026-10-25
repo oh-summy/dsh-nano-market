@@ -1,5 +1,8 @@
 # dsh-nano-market
 
+> **Layout**: this repo is a monorepo of the market AND its plugins — market infra (catalog/build/Pages) at the root, plugins under `plugins/<name>/` (e.g. `plugins/dsh-remote/`). All new releases happen here.
+
+
 [English](README.md) | [中文](README.zh-CN.md)
 
 **oh-summy's personal DeepSeek Harness plugin market** — a hand-reviewed plugin catalog, one strictly-validated [index format 1](https://deepseek-harness.github.io/deepseek-harness/en/guide/plugin-market)
