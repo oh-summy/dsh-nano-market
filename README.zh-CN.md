@@ -68,7 +68,7 @@ DRY_RUN=1 npm run build     # 离线冒烟（占位 commit）
 - 索引是**市场声明**：标题、作者、来源由本市场断言，DSH 不做验证。每次安装确认框都展示精确来源
   （npm 包 + 注册表，或 git 仓库 + commit + 目录）；安装到的 manifest 才是最终事实。
 - git 条目按 commit 固定（40 位，pinnedCommit 防 tag 漂移）。审计可复现：任一历史索引 =
-  checkout 那个 commit + `npm run build`。市场版本（market-* tag）只标记**用户可见里程碑**——
+  checkout 那个 commit + `npm run build`。市场版本（v* tag）只标记**用户可见里程碑**——
   数据刷新（catalog 提交）不带版本（AGENTS.md §8、CHANGELOG.md）。
 - 默认索引源 = 仅本市场。[awesome-dsh-plugins](https://github.com/dshworks/awesome-dsh-plugins)
   （MIT 社区注册表）是文档级可选源：想要就在 Discover 里手动添加它的 URL
