@@ -33,7 +33,7 @@
 8. **注册定义**：插件「出现在 Discover」= **注册**（catalog/entries.jsonl 加一行，含 pinnedCommit）+ CI 校验通过 + 合入 main。
    **只提供代码（GitHub 仓库）而未注册 = 市场页面永远不可见**。注册流程见 CONTRIBUTING.md。
    **发版机制（版本纪律，§8 为唯一事实源，不再单开 versioning 文档）**：数据刷新（catalog 提交 + Pages 重部署）无版本号；
-   **有用户可见成果才打 market-* tag + Release**。市场版本 = git tag（索引内不携带版本号）。
+   **有用户可见成果才打 v* tag + Release**（v0.1.0 起，无前缀）。市场版本 = git tag（索引内不携带版本号）。
 
 ## 2. 分支与推送纪律（main 已启用分支保护）
 
@@ -42,7 +42,7 @@
 - **推送后必验（agent 义务，2026-10-23 起）**：每次 push / 开 PR 后，立即自查并向负责人报告：
   ① rebase 是否真完成（半途 rebase 遗留是事故来源——2026-10-23 PR #4 README 冲突即此因）；
   ② PR 可合并性（mergeable / 冲突）与 check 状态；③ 远端分支 tip 是否已更新。没验完不算推完，不等人来查。
-- 合入 main 触发 publish.yml → Pages 更新；打 market-* tag 触发 release.yml → Release 存档。
+- 合入 main 触发 publish.yml → Pages 更新；打 v* tag 触发 release.yml → Release 存档。
 - 小步 PR：一个 PR 一件事。
 
 ## 3. 构建与验证（本地命令）
@@ -96,10 +96,10 @@ DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 com
 T0 骨架 ✅ → T1 本管线（feat/p1，已合并）→ **外部审查 P0 修订**（feat/conventions：红线 6/7 可执行化、claude.md 实体指针、
 CONTRIBUTING pin 流程；feat/review-fixes：生成器 fixtures/测试、tag pinnedCommit 锁、砍 preset/zip/marketVersion、
 发版机制两分法）→ T2 宿主工具注册 spike → T3 remote-control 打包（@oh-summy/dsh-remote，首个条目含 pinnedCommit）
-→ T5 DSH 端到端（Discover 手工加源 + 安装冒烟）→ 合并 = P1 基建完成（无版本里程碑；**market-v0.1.0 留给 T3 首条目进场**）。
+→ T5 DSH 端到端（Discover 手工加源 + 安装冒烟）→ 合并 = P1 基建完成（无版本里程碑；**v0.1.0 留给 T3 首条目进场**）。
 P2 见 /Users/rocky/project/dsh-nano-market-roadmap.md。
 
-## 8. 版本纪律（market-* tag，唯一事实源在此；CONTRIBUTING/CHANGELOG 只引用不复制）
+## 8. 版本纪律（v* tag，无前缀；唯一事实源在此；CONTRIBUTING/CHANGELOG 只引用不复制）
 
 **打 tag 的触发条件 = 有用户可见成果**：首条目注册 / 新增条目达到里程碑 / taxonomy 大调整 / 管线契约变更。
 空目录基建完成、CI 修复级变更 = 只记 CHANGELOG 里程碑/修复行，不挂 tag。
@@ -114,4 +114,4 @@ P2 见 /Users/rocky/project/dsh-nano-market-roadmap.md。
 **边界注记（写明，不靠默契）**：
 1. 0.x 特区：semver 官方规则 0.x = 开发期，**breaking 可只升 y**；到达 1.0.0 后一切 breaking 必须升 x。
 2. **1.0.0 准入门槛（4 条全过）**：≥3 个真实可装条目且各走过一次更新 / P2 CLI 落地 / catalog schema 连续 4 周零 breaking / 负责人宣布契约冻结。
-3. 插件包版本（如 @oh-summy/dsh-remote 0.3.1）同表适用；市场 tag 只记市场自身，不替插件打版本号。
+3. 插件包版本（如 @oh-summy/dsh-remote 0.1.1）同表适用。市场与插件各用各自仓库的 v* tag——同格式、互不相干；市场 tag 只记市场自身。

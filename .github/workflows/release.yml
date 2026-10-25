@@ -1,9 +1,9 @@
 name: release
 on:
   push:
-    tags: ["market-*"]
+    tags: ["v*"]
 
-# User-visible milestones only (AGENTS.md §8): market-* tags mark first entry / taxonomy / contract changes.
+# User-visible milestones only (AGENTS.md §8): v* tags mark first entry / taxonomy / contract changes.
 # Data refreshes (catalog commits) deploy to Pages WITHOUT a tag — no version, by design.
 # Audit trail = git: every catalog line carries a 40-hex pin; any historical index is reproducible
 # by checking out that commit and running "npm ci && npm run build && npm run validate".
@@ -14,7 +14,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    # hard guard: only market-* tags ever run this job, no matter how the workflow was triggered
+    # hard guard: only v* tags ever run this job, no matter how the workflow was triggered
     if: startsWith(github.ref, 'refs/tags/market-')
     steps:
       - uses: actions/checkout@v4

@@ -43,7 +43,7 @@
 - 更新插件版本 = 上游打新 tag → 条目改 ref → npm run pin 回填新 pinnedCommit → PR。旧版本保留在索引里，
   Discover 显示 update-available（DSH 无原地升级：安装新版本 = 卸载旧 bundle 再装，原生确认门保障）。
 - 下架 = 删行 + PR（市场方行为；被下架方联系负责人）。若涉及原创红线处分，先走 AGENTS.md 红线 7 的 issue 程序。
-- 市场自身版本纪律见 **AGENTS.md §8**（数据刷新无版本；有用户可见成果才打 market-* tag + Release；x/y/z 边界与 1.0.0 门槛同表）。
+- 市场自身版本纪律见 **AGENTS.md §8**（数据刷新无版本；有用户可见成果才打 v* tag + Release；x/y/z 边界与 1.0.0 门槛同表）。
 
 ## 3. 推送纪律（红线 6，出处引用制）
 

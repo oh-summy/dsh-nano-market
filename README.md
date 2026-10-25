@@ -69,7 +69,7 @@ Toolchain: Node 24 (see `.nvmrc`; CI pins the same major).
   by DSH. Every install confirmation shows the exact source (npm package + registry, or git repo +
   commit + directory); the installed manifest is the final fact.
 - Git entries are commit-pinned (40-hex, tag-checked against pinnedCommit). Auditing is reproducible:
-  any historical index = checkout that commit + npm run build. Market releases (market-* tags) mark
+  any historical index = checkout that commit + npm run build. Market releases (v* tags) mark
   **user-visible milestones** only — data refreshes (catalog commits) are unversioned (AGENTS.md §8,
   CHANGELOG.md).
 - Default index source = this market only. [awesome-dsh-plugins](https://github.com/dshworks/awesome-dsh-plugins)
