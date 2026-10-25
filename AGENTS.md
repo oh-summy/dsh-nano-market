@@ -114,4 +114,5 @@ P2 见 /Users/rocky/project/dsh-nano-market-roadmap.md。
 **边界注记（写明，不靠默契）**：
 1. 0.x 特区：semver 官方规则 0.x = 开发期，**breaking 可只升 y**；到达 1.0.0 后一切 breaking 必须升 x。
 2. **1.0.0 准入门槛（4 条全过）**：≥3 个真实可装条目且各走过一次更新 / P2 CLI 落地 / catalog schema 连续 4 周零 breaking / 负责人宣布契约冻结。
-3. 插件包版本（plugins/<name>/package.json）各自独立演进，与本表无强制联动；市场 tag（v*）只记市场自身里程碑。in-repo 插件的 catalog 条目：repo = 本仓库、path = plugins/<name>、ref = 承载它的市场 tag。
+3. 插件包版本（plugins/<name>/package.json）各自独立演进，与本表无强制联动；市场 tag（v*）只记市场自身里程碑。
+   **in-repo 插件的发布与收录**：`node build/publish-plugin.mjs <name>` 把 plugins/<name>/ 镜像到分支 `pkg/<name>`（插件位于分支根）并打 `<name>@vX.Y.Z` tag；catalog 条目 repo = 本仓库、**无 path**、ref = 该 tag、pinnedCommit = tag 解析值。原因：pnpm 用户 spec 无法表达「仓库+子目录」，分支根 = 普通 git spec 即可安装（Discover 实测）。源码事实源永远是 main 的 plugins/<name>/，pkg 分支只是镜像产物。
