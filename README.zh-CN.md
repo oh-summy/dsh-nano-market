@@ -1,5 +1,8 @@
 # dsh-nano-market（中文）
 
+> **结构**：本仓库是插件市场 + 插件的 monorepo——市场基建（catalog/构建/Pages）在根目录，插件实体在 `plugins/<短名>/`（如 `plugins/dsh-remote/`）。新版本一律在本仓库发布。
+
+
 [中文](README.zh-CN.md) | [English](README.md)
 
 **oh-summy 个人 DeepSeek Harness 插件市场** —— 一份人工审核收录的插件清单（catalog）、一份严格校验的[索引（format 1）](https://deepseek-harness.github.io/deepseek-harness/en/guide/plugin-market)文档、

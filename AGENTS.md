@@ -70,12 +70,12 @@ DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 com
 - taxonomy v0（写死在 generate.mjs 的 MARKET.metadata）：
   categories：infra / workflow / skills / tools / ui；labels：mine / experimental / notifier / needs-env / reference。
 
-## 5. 插件 house 模板（每个插件仓库长这样，README 有示例段）
+## 5. 插件 house 模板（**插件住在本仓库 plugins/<短名>/**，market 即插件的容器——monorepo）
 
-- 独立 GitHub 仓库 + plugin/（或根目录）bundle：package.json
+- 每个插件一个目录 plugins/<短名>/（如 plugins/dsh-remote/），内含：package.json
   （@oh-summy/dsh-<短词>、license MIT、engines.node、engines.dsh 必填、
   keywords 必含 "dsh" 与 "dsh-plugin"、dsh.bundle.patch）+ cordis.patch.yml；
-- 仓库加 GitHub topic dsh-plugin（可发现性）；发 tag vX.Y.Z → 本市场 catalog 的 ref 指向它。
+- 插件版本 = 其 package.json 的 semver，各自独立演进；市场 tag（v*，本仓库）记市场里程碑。
 
 ## 6. 环境与账号
 
@@ -114,4 +114,4 @@ P2 见 /Users/rocky/project/dsh-nano-market-roadmap.md。
 **边界注记（写明，不靠默契）**：
 1. 0.x 特区：semver 官方规则 0.x = 开发期，**breaking 可只升 y**；到达 1.0.0 后一切 breaking 必须升 x。
 2. **1.0.0 准入门槛（4 条全过）**：≥3 个真实可装条目且各走过一次更新 / P2 CLI 落地 / catalog schema 连续 4 周零 breaking / 负责人宣布契约冻结。
-3. 插件包版本（如 @oh-summy/dsh-remote 0.1.1）同表适用。市场与插件各用各自仓库的 v* tag——同格式、互不相干；市场 tag 只记市场自身。
+3. 插件包版本（plugins/<name>/package.json）各自独立演进，与本表无强制联动；市场 tag（v*）只记市场自身里程碑。in-repo 插件的 catalog 条目：repo = 本仓库、path = plugins/<name>、ref = 承载它的市场 tag。
