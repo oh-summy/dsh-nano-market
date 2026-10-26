@@ -22,8 +22,8 @@
 
 带注释的条目模板（对照 catalog/schema.json；meta 双语必填 en，zh 强烈建议）：
 
-  {"kind":"git","name":"@oh-summy/dsh-remote",          // 必须等于安装源 manifest 的 name（构建器比对）
-   "repo":"https://github.com/oh-summy/dsh-remote-control",  // 规范 https GitHub URL
+  {"kind":"git","name":"@oh-summy/dsh-<短词>",          // 必须等于安装源 manifest 的 name（构建器比对）
+   "repo":"https://github.com/owner/repo",  // 规范 https GitHub URL
    "path":"plugin",            // dsh.bundle 所在目录（缺省 = 仓库根）
    "ref":"v0.4.0",             // 人类可读别名：tag 优先（构建时解析）
    "pinnedCommit":"<40-hex>",  // npm run pin 回填；构建器校验 ref 解析必须等于它（tag 漂移即 fail）
@@ -32,8 +32,8 @@
            "description":{"en":"…","zh":"…"},
            "icon":"icons/remote-control.svg",   // 相对引用（随 index 同目录发布）或 data:（≤32KiB）
            "author":"oh-summy",
-           "homepage":"https://github.com/oh-summy/dsh-remote-control",
-           "repository":{"url":"https://github.com/oh-summy/dsh-remote-control","directory":"plugin"},
+           "homepage":"https://github.com/owner/repo",
+           "repository":{"url":"https://github.com/owner/repo","directory":"plugin"},
            "category":"infra",     // 从 generate.mjs taxonomy 选（P1 单值即可）
            "labels":["mine","notifier"],
            "keywords":["remote","tunnel"]}}
@@ -51,8 +51,8 @@
   写明出处与日期）；会话内许可不跨会话；PR 描述里写明触发指令出处。
 - 一个 PR 一件事；feature 分支合并完成后才可申请删除该远端分支。
 
-## 4. 插件开发 house 模板（按仓库标准方式注册）
+## 4. 插件开发 house 模板（in-repo：plugins/<短名>/）
 
-见 AGENTS.md §5：独立仓库 + plugin/ bundle（@oh-summy/dsh-<短词>、engines.dsh 必填、
-keywords 含 "dsh" 与 "dsh-plugin"、dsh.bundle.patch）+ cordis.patch.yml + GitHub topic dsh-plugin。
-不按此模板的插件 = 构建器拒收（name / engines.dsh / dsh.bundle 任一缺失即 fail，不静默跳过）。
+见 AGENTS.md §5：插件实体住在本仓库 `plugins/<短名>/`（monorepo——市场即插件容器，本仓库即插件发布源）。目录内含：package.json（@oh-summy/dsh-<短词>、license MIT、engines.node、engines.dsh 必填、keywords 必含 "dsh" 与 "dsh-plugin"、dsh.bundle.patch）+ cordis.patch.yml。插件版本 = 其 package.json semver，各自独立演进；市场 tag（v*）只记市场里程碑（AGENTS §8）。不按此模板的插件 = 构建器拒收（name / engines.dsh / dsh.bundle 任一缺失即 fail，不静默跳过）。
+
+in-repo 插件发布与收录（`node build/publish-plugin.mjs <短名>`）：把 plugins/<短名>/ 镜像到 `pkg/<短名>` 分支（插件位于分支根）并打 `<短名>@vX.Y.Z` tag——pnpm 用户 spec 无法表达「仓库+子目录」，分支根 = 普通 git spec 即可安装（Discover 实测）；catalog 条目 repo = 本仓库、无 path、ref = 该 tag、pinnedCommit = tag 解析值。源码事实源永远是 main 的 plugins/<短名>/，pkg 分支只是镜像产物。
