@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,23 +17,23 @@ const validManifest = {
 };
 const validEntry = {
   kind: "git", name: "@oh-summy/dsh-remote",
-  repo: "https://github.com/oh-summy/dsh-remote-control",
-  path: "plugin", ref: "v0.4.0", pinnedCommit: "b".repeat(40),
+  repo: "https://github.com/oh-summy/dsh-example",
+  path: "plugin", ref: "v1.0.0", pinnedCommit: "b".repeat(40),
   meta: { title: { en: "Remote Control", zh: "远程接入" }, category: "infra", labels: ["mine"], keywords: ["remote"] }
 };
 const COMMIT = "c".repeat(40);
 
 test("splitRepo: canonical github urls", () => {
-  assert.deepEqual(splitRepo("https://github.com/oh-summy/dsh-remote-control"), { owner: "oh-summy", repoName: "dsh-remote-control" });
-  assert.deepEqual(splitRepo("https://github.com/oh-summy/dsh-remote-control.git"), { owner: "oh-summy", repoName: "dsh-remote-control" });
-  assert.deepEqual(splitRepo("https://github.com/oh-summy/dsh-remote-control.git/"), { owner: "oh-summy", repoName: "dsh-remote-control" });
-  assert.equal(splitRepo("git@github.com:oh-summy/dsh-remote-control.git"), null);
+  assert.deepEqual(splitRepo("https://github.com/oh-summy/dsh-example"), { owner: "oh-summy", repoName: "dsh-example" });
+  assert.deepEqual(splitRepo("https://github.com/oh-summy/dsh-example.git"), { owner: "oh-summy", repoName: "dsh-example" });
+  assert.deepEqual(splitRepo("https://github.com/oh-summy/dsh-example.git/"), { owner: "oh-summy", repoName: "dsh-example" });
+  assert.equal(splitRepo("git@github.com:oh-summy/dsh-example.git"), null);
   assert.equal(splitRepo("https://github.com/oh-summy"), null);
   assert.equal(splitRepo("https://gitlab.com/oh-summy/x"), null);
 });
 
 test("normalizeRepoUrl: canonical form", () => {
-  assert.equal(normalizeRepoUrl("https://github.com/oh-summy/dsh-remote-control.git/"), "https://github.com/oh-summy/dsh-remote-control");
+  assert.equal(normalizeRepoUrl("https://github.com/oh-summy/dsh-example.git/"), "https://github.com/oh-summy/dsh-example");
   assert.equal(normalizeRepoUrl("not a url"), null);
 });
 
@@ -50,7 +50,7 @@ test("gitPluginFromManifest: valid manifest -> format-1 plugin", () => {
   assert.equal(v.version, "0.1.0");
   assert.equal(v.publishTimestamp, 1792000000);
   assert.equal(v.source.type, "git");
-  assert.equal(v.source.url, "https://github.com/oh-summy/dsh-remote-control");
+  assert.equal(v.source.url, "https://github.com/oh-summy/dsh-example");
   assert.equal(v.source.commit, COMMIT);
   assert.equal(v.source.path, "plugin");
   assert.equal(v.engines.dsh, ">=0.2.1-rc.2");
@@ -141,4 +141,81 @@ test("withMeta: no meta -> no metadata group", () => {
   const pl = withMeta({ name: "x", versions: [] }, {});
   assert.equal(pl.metadata, undefined);
   assert.equal(pl.title, undefined);
+});
+
+test("cli: invalid JSON reports the ORIGINAL line number (blank lines do not shift it)", async () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const dir = mkdtempSync(join(tmpdir(), "dsh-cli-json-"));
+  const catalog = join(dir, "entries.jsonl");
+  const good = JSON.stringify({ kind: "git", name: "@x/a", repo: "https://github.com/x/a", ref: "v1", pinnedCommit: "a".repeat(40) }) + "\n";
+  writeFileSync(catalog, good + "\n" + "NOT JSON\n");
+  await new Promise((resolve, reject) => {
+    execFile(process.execPath, [join(root, "build", "generate.mjs")], { env: { ...process.env, DRY_RUN: "1", CATALOG_PATH: catalog } }, (err, stdout, stderr) => {
+      try {
+        assert.ok(err, "expected non-zero exit for invalid JSON");
+        assert.match(String(stderr), /line 3 is not valid JSON/);
+        resolve();
+      } catch (e) { reject(e); }
+    });
+  });
+});
+
+test("cli: unknown kind fails with the catalog line number", async () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const dir = mkdtempSync(join(tmpdir(), "dsh-cli-kind-"));
+  const catalog = join(dir, "entries.jsonl");
+  writeFileSync(catalog, '{"kind":"weird","name":"@x/b"}\n');
+  await new Promise((resolve, reject) => {
+    execFile(process.execPath, [join(root, "build", "generate.mjs")], { env: { ...process.env, DRY_RUN: "1", CATALOG_PATH: catalog } }, (err, stdout, stderr) => {
+      try {
+        assert.ok(err, "expected non-zero exit for unknown kind");
+        assert.match(String(stderr), /line 1/);
+        assert.match(String(stderr), /unknown kind/);
+        resolve();
+      } catch (e) { reject(e); }
+    });
+  });
+});
+
+test("cli: DRY_RUN happy path - version is always 0.0.0-dry (distTags.latest does not leak)", async () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const dir = mkdtempSync(join(tmpdir(), "dsh-cli-dry-"));
+  const catalog = join(dir, "entries.jsonl");
+  const out = join(dir, "out");
+  writeFileSync(catalog, JSON.stringify({ kind: "git", name: "@x/a", repo: "https://github.com/x/a", ref: "v1", pinnedCommit: "a".repeat(40), distTags: { latest: "9.9.9" } }) + "\n");
+  await new Promise((resolve, reject) => {
+    execFile(process.execPath, [join(root, "build", "generate.mjs")], { env: { ...process.env, DRY_RUN: "1", CATALOG_PATH: catalog, OUT_PATH: out } }, (err, stdout, stderr) => {
+      try {
+        assert.equal(err, null, "dry-run should succeed: " + String(stderr));
+        const doc = JSON.parse(readFileSync(join(out, "index.json"), "utf8"));
+        assert.equal(doc.plugins[0].versions[0].version, "0.0.0-dry");
+        resolve();
+      } catch (e) { reject(e); }
+    });
+  });
+});
+
+test("validate.mjs: unparseable file exits 1 with a friendly INVALID index message", async () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const dir = mkdtempSync(join(tmpdir(), "dsh-val-"));
+  const bad = join(dir, "bad.json");
+  writeFileSync(bad, "nope");
+  await new Promise((resolve, reject) => {
+    execFile(process.execPath, [join(root, "build", "validate.mjs"), bad], (err, stdout, stderr) => {
+      try {
+        assert.ok(err, "expected non-zero exit");
+        assert.match(String(stderr), /INVALID index/);
+        resolve();
+      } catch (e) { reject(e); }
+    });
+  });
+});
+
+test("withMeta: category-only meta -> metadata with empty keywords/labels", () => {
+  const pl = withMeta({ name: "x", versions: [] }, { name: "x", meta: { category: "tools" } });
+  assert.deepEqual(pl.metadata, { category: "tools", keywords: [], labels: [] });
+});
+
+test("withMeta: unknown meta field fails loudly (no silent drop)", () => {
+  assert.throws(() => withMeta({ name: "x", versions: [] }, { name: "x", meta: { titel: "typo" } }), /unknown meta field/);
 });

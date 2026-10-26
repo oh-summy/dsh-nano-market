@@ -115,9 +115,15 @@ export function npmPluginFromPackument(d, entry) {
   return withMeta(plugin, entry);
 }
 
+const META_KEYS = ["title", "description", "icon", "author", "homepage", "repository", "category", "labels", "keywords"];
+const META_DISPLAY_KEYS = ["title", "description", "icon", "author", "homepage", "repository"];
+
 export function withMeta(p, entry) {
   const m = entry.meta || {};
-  for (const k of ["title", "description", "icon", "author", "homepage", "repository"]) if (m[k]) p[k] = m[k];
+  for (const k of Object.keys(m)) {
+    if (META_KEYS.indexOf(k) === -1) throw new Error('catalog entry "' + entry.name + '" has unknown meta field "' + k + '" - allowed: ' + META_KEYS.join(", ") + " (schema.json 与 generate.mjs 必须同 PR 变更)");
+  }
+  for (const k of META_DISPLAY_KEYS) if (m[k]) p[k] = m[k];
   if (m.category || m.labels || m.keywords) {
     p.metadata = {
       ...(m.category ? { category: m.category } : {}),

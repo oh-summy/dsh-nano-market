@@ -25,6 +25,12 @@ jobs:
       - run: node build/validate.mjs
       - name: Fail build on dry-run-only output
         run: test ! -f dist/index.json || ! grep -q '0.0.0-dry' dist/index.json || { echo 'index contains unresolved dry-run entries'; exit 1; }
+      # 插件构建同步守卫：市场安装的是 pkg 镜像分支里的 lib/（构建产物提交在库），
+      # src 改了忘跑构建 = 装到过期 lib/，破坏 commit 固定可复现承诺。
+      # PR 检查（informational）；main 推送时 build 失败会拦住 Pages 部署（deploy needs build）。
+      - run: npm --prefix plugins/dsh-remote ci
+      - run: npm --prefix plugins/dsh-remote run build
+      - run: git diff --exit-code -- plugins/dsh-remote/lib
       - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
