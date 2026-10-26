@@ -1,203 +1,67 @@
-# dsh-remote-control
+# @oh-summy/dsh-remote
 
-[English](README.md) | [中文](README.zh-CN.md)
+Secure remote access to **DeepSeek Harness (DSH)** from anywhere — **Cloudflare quick tunnel → password gate → DSH web profile**, with **Feishu (Lark) notifications** pushed to your phone whenever the entry URL or service state changes.
 
-Secure remote access to **DeepSeek Harness (DSH)** deployed on your own Mac or Linux server, from anywhere —
-**Cloudflare Tunnel → password gate → DSH**, with **Feishu (Lark) notifications** pushed to your
-phone whenever the entry URL or service state changes.
+This is a native DSH plugin living in this monorepo (`plugins/dsh-remote/`): it runs inside the DSH host, manages `cloudflared` + `caddy` itself, and registers the login page as its own listener. The legacy standalone script gateway (`dsh-web` CLI, launchd autostart, `rc.env`) lives in the old repo ([oh-summy/dsh-remote-control](https://github.com/oh-summy/dsh-remote-control)) and is superseded by this plugin — enable one or the other, not both (the plugin fails loud if port 4080 is taken by the script gateway: stop it first).
+
+## Install
+
+From DSH's Discover tab (this market), or directly:
+
+```sh
+dsh plugin --profile web add @oh-summy/dsh-remote
+```
+
+## Enable
+
+The bundle ships disabled (`cordis.patch.yml`: `enabled: false`). Flip it to `true` and restart the host — the plugin starts the chain and opens its management page inside DSH (Settings → Built-in plugins → 远程访问), showing the entry URL, the password gate, and the notification configuration.
+
+## How it works
 
 ```
 Browser ──HTTPS──▶ Cloudflare edge (Quick Tunnel: https://<random>.trycloudflare.com)
                         │  outbound-only connection, no inbound ports opened
                         ▼
-                 cloudflared ──▶ Caddy (password gate, cookie session)
+                 cloudflared ──▶ password gate (signed session cookie)
                         │  http://127.0.0.1:3080
                         ▼
                  DSH web profile (loopback only, zero modification)
 ```
 
-## Why
-
 - **No inbound ports** — the machine only makes outbound connections through the tunnel.
-- **Password gate in front of DSH** — login page + signed session cookie (7 days), per-IP
-  lockout after 5 failed attempts. DSH itself stays untouched.
-- **Feishu notifications are a necessity, not a nice-to-have** — Quick Tunnel assigns a *new random
-  URL on every start*; without a push channel you lose the entry. Every `start` / URL change /
-  failure / recovery is pushed as a card message, plus a separate copy-friendly password message.
-- **Survives DSH upgrades** — the chain only talks HTTP to `127.0.0.1:3080`; no DSH internal APIs
-  are used.
+- **Password gate in front of DSH** — login page + signed session cookie (7 days), per-IP lockout after 5 failed attempts. DSH itself stays untouched.
+- **Feishu notifications are a necessity, not a nice-to-have** — Quick Tunnel assigns a new random URL on every start; without a push channel you lose the entry. Every start / URL change / failure / recovery pushes a card message.
+- **Survives DSH upgrades** — the chain only talks HTTP to 127.0.0.1:3080; no DSH internal APIs.
 
-## Quick start
+## Notification setup
 
-Requirements: macOS (x86_64 / arm64) or Linux (x86_64 / arm64), `curl`, `python3`.
-Windows is not officially supported — PRs welcome with real test evidence.
+Credentials never land in configuration files — they go through DSH's credential seam (`~/.dsh/.credentials.yaml`), and the page shows masked values only.
 
-```bash
-git clone https://github.com/oh-summy/dsh-remote-control.git
-cd dsh-remote-control
-scripts/install.sh     # downloads official cloudflared/caddy binaries, generates password
-```
+- **Primary channel (bot DM):** your Feishu open id (`ou_...`). Requires [`lark-cli`](https://github.com/larksuite/cli) installed and configured; the app bot needs IM permission and must be able to DM you.
+- **Fallback channel:** group custom-bot webhook — works without lark-cli. If both are set, DM is used and webhook only on failure.
 
-### Install without git clone
+## Requirements
 
-Prefer a GitHub Release (no git):
-
-```bash
-# one-click install (latest release)
-curl -fsSL https://raw.githubusercontent.com/oh-summy/dsh-remote-control/main/scripts/install-remote.sh | bash
-
-# or a specific version
-curl -fsSL https://raw.githubusercontent.com/oh-summy/dsh-remote-control/main/scripts/install-remote.sh | bash -s -- v0.3.0
-```
-
-The script downloads the official source tarball from GitHub Releases, verifies its SHA256
-(integrity check — guards against corrupted downloads; it is not an authenticity proof, since
-the checksum ships from the same release), and runs `install.sh` (which fetches cloudflared/caddy
-for your OS/arch). All releases: <https://github.com/oh-summy/dsh-remote-control/releases>.
-
-By default, `dsh-web start` auto-detects if DSH web is not running and starts it
-automatically. To disable this behavior, set `RC_AUTOSTART_DSH=false` in `~/.remote-control/rc.env`.
-(If auto-start fails, check `dsh-web logs dshweb` or start DSH web manually with `dsh web`.)
-
-DSH web (≥0.1.5) has its own signed-cookie authentication on top of the password
-gate. After you log in, remote-control automatically mints that cookie too — no
-extra step. If you ever see `dsh web authentication required`, the DSH credentials
-were unreadable at that moment (e.g. DSH just restarted): log in again once.
-
-Then edit `~/.remote-control/rc.env`:
-
-- **Primary notification channel (bot DM):** set `RC_FEISHU_OPEN_ID` (your open id, `ou_...`).
-  Requires [`lark-cli`](https://github.com/larksuite/cli) installed and configured with your
-  Feishu app (`lark-cli config init`); the app's bot needs IM permission and must be able to
-  DM you.
-- **Fallback channel:** set `RC_FEISHU_WEBHOOK` (group custom-bot webhook) — works without
-  lark-cli. If both are set, DM is used and webhook only on failure.
-
-Start everything:
-
-```bash
-dsh-web start
-```
-
-`start` prints the URL and password, returns to the shell, and pushes a card + password to your
-Feishu DM. Open the URL, enter the password once — the cookie lasts 7 days.
-
-### Self-healing & process guard
-
-- **Resident watchdog**: if `caddy`/`auth` die they are respawned in place (URL unchanged); if
-  `cloudflared` dies the tunnel is rebuilt automatically (Quick Tunnel gets a new URL, a new card
-  is pushed to Feishu). Retries back off 30s→600s; only after all attempts fail does it ask for
-  manual intervention and enter a cooldown (no alert storm) — `dsh-web start` clears it.
-- **Boot autostart + guarded watchdog**: `dsh-web autostart` uses launchd `KeepAlive` to guard the
-  watchdog itself — the whole chain comes up at boot, and a killed watchdog is respawned at once.
-  During a manual `dsh-web stop` the guard idles and never fights your commands.
-- **Upgrading**: machines with autostart installed from ≤ v0.2.x keep the old launchd job after
-  upgrading; run `dsh-web install` (or `dsh-web autostart`) once to switch it to the
-  resident-watchdog mode. `dsh-web autostart off` also stops the watchdog.
-
-## Commands
-
-| Command | Purpose |
-|---|---|
-| `dsh-web start` | Start the chain, print URL + password (Feishu notified) |
-| `dsh-web stop` | Stop everything |
-| `dsh-web restart` | Restart (URL changes; new card is pushed) |
-| `dsh-web status` | Component status + gate/upstream health |
-| `dsh-web logs [caddy\|cloudflared\|auth\|watchdog\|selfheal\|notify\|all]` | Tail logs |
-| `dsh-web password` | Print the access password |
-| `dsh-web url` | Print the current entry URL |
-| `dsh-web install` | Install / repair (binaries, config, credentials, CLI link) |
-| `dsh-web tunnel-setup` | Guide to create Named Tunnel (fixed domain) |
-| `dsh-web rotate-password` | Rotate access password (generate new + restart) |
-| `dsh-web autostart [off]` | Install/remove launchd autostart (macOS) |
-
-## Configuration — `~/.remote-control/rc.env`
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `RC_UPSTREAM` | `127.0.0.1:3080` | Upstream service to protect (any local HTTP service, not just DSH) |
-| `RC_LISTEN` | `127.0.0.1:4080` | Caddy listen address (loopback only) |
-| `RC_FEISHU_OPEN_ID` | — | Feishu open id for bot DM (primary channel) |
-| `RC_FEISHU_WEBHOOK` | — | Group custom-bot webhook (fallback channel) |
-| `RC_NOTIFY_PASSWORD` | `full` | `full` = password pushed as its own message; `mask` = last 4 chars only; any other value = no password message |
-| `RC_NOTIFY_NOTE` | — | Custom text at the top of the notification card (above the URL); re-read on every notify, no restart needed |
-| `RC_TUNNEL_NAME` | — | Named Tunnel name (optional, for fixed domain) |
-| `RC_TUNNEL_HOSTNAME` | — | Named Tunnel hostname (optional, e.g. `dsh.example.com`) |
-| `RC_TUNNEL_PROTOCOL` | `http2` | Tunnel transport protocol. Keep `http2` if a proxy TUN (e.g. Clash Verge) runs on this machine — QUIC/UDP flaps with TUN routing and shows up as intermittent 502/530; switch to `quic` only on clean networks |
-
-Runtime data (password, token, logs) lives in `~/.remote-control/` with `600` permissions and
-never enters git.
-
-## Platform support
-
-| Platform | Status |
-|---|---|
-| macOS x86_64 / arm64 | ✅ developed & verified here |
-| Linux x86_64 / arm64 (Ubuntu/Debian first) | ✅ same installer, systemd units planned (M3) |
-| Windows | ❌ not officially supported; PRs welcome with real test evidence |
+- macOS (x86_64 / arm64) or Linux (x86_64 / arm64); `cloudflared` + `caddy` binaries are downloaded automatically on first start.
+- DSH web profile ≥ 0.2.1-rc.2. Windows is not officially supported — PRs welcome with real test evidence.
 
 ## Security notes
 
-- DSH keeps binding to `127.0.0.1` only; the only public surface is the Cloudflare edge behind
-  the password gate.
-- Password: 128-bit random, stored locally with `600` permissions; failed logins lock the
-  source IP for 5 minutes (HTTP 429).
-- Session cookie is `HttpOnly` + `SameSite=Lax`, valid 7 days. To rotate: regenerate the
-  password (`scripts/gen-password.sh`) and/or edit `~/.remote-control/session.secret`, then
-  `dsh-web restart`.
-- Never commit `rc.env`, `password`, `session.secret` or rendered `Caddyfile` — `.gitignore`
-  already covers them; CI plus review keep it that way.
+- DSH keeps binding to `127.0.0.1` only; the only public surface is the Cloudflare edge behind the password gate.
+- Password: 128-bit random, stored locally with `600` permissions; failed logins lock the source IP for 5 minutes (HTTP 429).
+- Session cookie is `HttpOnly` + `SameSite=Lax`, valid 7 days.
+- Runtime data (password, token, logs) lives in `~/.remote-control/` with `600` permissions and never enters git.
 
-## Named Tunnel (fixed domain)
+## Development
 
-By default, Quick Tunnel assigns a random URL on every start. For a fixed domain:
-
-```bash
-# 1. Login to Cloudflare
-cloudflared tunnel login
-
-# 2. Create tunnel
-cloudflared tunnel create my-dsh-tunnel
-
-# 3. Route DNS
-cloudflared tunnel route dns my-dsh-tunnel dsh.example.com
-
-# 4. Edit ~/.remote-control/rc.env
-RC_TUNNEL_NAME="my-dsh-tunnel"
-RC_TUNNEL_HOSTNAME="dsh.example.com"
-
-# 5. Restart
-dsh-web restart
+```sh
+npm install && npm run build   # tsc --noEmit + tsdown (lib/) + client bundle (lib/client.js)
+npm run typecheck              # tsc --noEmit only
 ```
 
-Or run `dsh-web tunnel-setup` for a guided setup.
-
-## Architecture
-
-For system architecture, design decisions, and component interaction, see [docs/architecture.md](docs/architecture.md).
-
-## DSH plugin — `@oh-summy/dsh-remote`
-
-This repo also ships the same capability as a native DSH plugin (`plugin/`): enable it from DSH's own UI —
-Settings → Built-in plugins → 远程访问 — and get a Cloudflare quick-tunnel link + password gate without touching a terminal.
-Design and hard-won implementation facts: [docs/dsh-plugin-design.md](docs/dsh-plugin-design.md).
-
-- Install (into a DSH profile): `dsh plugin --profile web add @oh-summy/dsh-remote` (published to the market at tag `v0.1.0`).
-- The plugin supersedes the script gateway's watchdog/auth layers: it runs inside the DSH host, manages `cloudflared` + `caddy`
-  itself, and registers the login page as its own listener. Enable one or the other, not both (the plugin fails loud if
-  port 4080 is taken by the script gateway: `dsh-web stop` first).
-- Notification credentials never land in configuration files — they go through DSH's credential seam
-  (`~/.dsh/.credentials.yaml`), and the page shows masked values only.
-
-## Roadmap
-
-For milestone progress and what's next, see [docs/roadmap.md](docs/roadmap.md).
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) · [中文版](CONTRIBUTING.zh-CN.md). In short: CI must pass (`shellcheck` + syntax checks),
-scripts stay bash-3.2/POSIX compatible, platform-specific changes come with real test evidence.
+Layout: `src/index.ts` (host plugin), `client-src/client.js` (management page source), `cordis.patch.yml` (bundle patch). Built artifacts in `lib/` are committed so the `pkg/dsh-remote` mirror branch (what the market installs) needs no build step.
 
 ## License
 
-[MIT](LICENSE) © 2026 Summy Wu (oh-summy)
+MIT — see [LICENSE](../LICENSE) at the repo root.
+
