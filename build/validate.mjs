@@ -5,7 +5,13 @@ import { readFileSync } from "node:fs";
 import { parseMarketIndex } from "@deepseek-ai/dsh-plugin-market-index";
 const file = process.argv[2] || "dist/index.json";
 const url = process.env.INDEX_URL || "https://oh-summy.github.io/dsh-nano-market/index.json";
-const doc = JSON.parse(readFileSync(file, "utf8"));
+let doc;
+try {
+  doc = JSON.parse(readFileSync(file, "utf8"));
+} catch (e) {
+  console.error("INVALID index: cannot parse " + file + ": " + e.message + " - fix the file");
+  process.exit(1);
+}
 try {
   const idx = parseMarketIndex(doc, url);
   console.log("OK: valid format-1 index — " + idx.plugins.length + " plugin(s), title=" + JSON.stringify(idx.title.en));

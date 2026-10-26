@@ -12,7 +12,7 @@
 ## 无版本里程碑
 
 - 2026-10-24 · P1 基建完成：管线（catalog → 生成器 commit 固定 + pinnedCommit 锁 → 官方校验器 → Pages）+ 规矩（AGENTS 红线 1-8、CONTRIBUTING 注册流程、BLOCKLIST）+ CI 门禁（PR 检查 + required build）+ Pages 上线（index.json 200）+ 审查 P0 全套。
-  注：v0.1.0 按 AGENTS §8 留给 T3 首条目进场（第一个有用户可见成果的版本）。
+  注：v0.1.0 按 AGENTS §8 留给 T3 首条目进场（第一个有用户可见成果的版本）——实际 tag 落在 monorepo 提交 9cde71f，首条目注册 e9c4e26 随后合入。
 
 ## 修复行（无 tag，契约不变）
 
@@ -20,3 +20,4 @@
 - 2026-10-24 · CI：Pages action 升到当前 v5 对（v1 钉死弃用组件被 GitHub 判死）；PR 检查触发 + per-ref 并发组（防 PR 检查误杀 main 部署）；release.yml YAML 解析修复。
 - 2026-10-26 · 迭代修复批：release.yml tag 守卫漏迁（触发已改 v*、守卫仍查 refs/tags/market-：v0.1.0 推送时 job 被 skipped、Release 从未创建；修正为 refs/tags/v，--title 去掉残留 "market " 前缀，v* tag 恢复可触发发版）；CHANGELOG 补 v0.1.0 条目（规则①）；CONTRIBUTING §4 对齐 AGENTS §5（in-repo monorepo 模板）；plugins/dsh-remote/README.md 按 monorepo 现状重写（旧独立仓库 README 未同步：失效相对链接 7 处、失效外部引用若干、旧 clone 指令、v0.1.0 过时表述）。本轮不发版（AGENTS §8：CI/文档修复级变更只记 CHANGELOG，不挂 tag）。
 - 2026-10-26 · 复审修复批（AI 审查 5 条发现）：CHANGELOG v0.1.0 条目修正（tag 指向 9cde71f 时 catalog 为空，首条目注册在 e9c4e26——删除「随之合入」表述）；插件 README 删除「二进制自动下载」错误声明（插件只探测不下载）+ engines.dsh 补全为 >=0.2.1-rc.2 || >=0.2.2-0；CONTRIBUTING §1 示例 ref v0.4.0→v1.0.0；失效链接计数精确化（相对链接 7 处）。
+- 2026-10-26 · 工程化批（AI 工程化审查：1 major + 2 minor + nits）：publish.yml 增加插件构建同步守卫（插件 npm ci + build 后 git diff --exit-code -- plugins/dsh-remote/lib：PR 检查可见、main 推送时过期 lib/ 拦截部署）；generate.mjs 报错行号改用原始行号（空行不再错位，兑现 AGENTS §3 行号承诺）；DRY_RUN 版本恒为 0.0.0-dry（distTags.latest 不再绕过 publish.yml 的 dry 守卫）；validate.mjs 非法 JSON 报友好 INVALID index（不再裸栈）；withMeta 未知 meta 字段 fail-loud（不再静默丢弃）；测试补充 CLI 坏 JSON 原始行号 / unknown kind / DRY_RUN happy path / validate 失败分支 / withMeta 两分支，fixture 旧仓库名与 v0.4.0 中性化；release.yml --notes 措辞对齐 v* 里程碑语义。

@@ -9,7 +9,7 @@ import { MARKET, splitRepo, normalizeRepoUrl, checkPin, gitPluginFromManifest, n
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DRY = process.env.DRY_RUN === "1";
 const CATALOG = process.env.CATALOG_PATH || join(root, "catalog/entries.jsonl");
-const OUT = join(root, "dist");
+const OUT = process.env.OUT_PATH || join(root, "dist");
 const UA = { "User-Agent": "dsh-nano-market-build", "Accept": "application/vnd.github+json" };
 
 function ghJson(url) {
@@ -43,7 +43,7 @@ async function buildEntry(entry, lineNo) {
       if (!entry.pinnedCommit) console.warn("dry-run: " + where(entry, lineNo) + " has no pinnedCommit - placeholder commit (run npm run pin)");
       const source = { type: "git", url: normalizeRepoUrl(entry.repo), commit: commit };
       if (p) source.path = p;
-      return { name: entry.name, versions: [{ version: (entry.distTags && entry.distTags.latest) || "0.0.0-dry", publishTimestamp: 0, source: source, engines: { dsh: "*" } }] };
+      return { name: entry.name, versions: [{ version: "0.0.0-dry", publishTimestamp: 0, source: source, engines: { dsh: "*" } }] };
     }
     const c = await ghJson("https://api.github.com/repos/" + rr.owner + "/" + rr.repoName + "/commits/" + encodeURIComponent(ref));
     const commit = c.sha;
@@ -63,12 +63,14 @@ async function buildEntry(entry, lineNo) {
 }
 
 const raw = readFileSync(CATALOG, "utf8");
-const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+const lines = raw.split("\n");
 const plugins = [];
 const nameLines = new Map(); // plugin name -> first catalog line; duplicates are catalog errors, never silent drops
 for (let i = 0; i < lines.length; i++) {
+  const l = lines[i].trim();
+  if (!l) continue;
   let entry;
-  try { entry = JSON.parse(lines[i]); } catch (e) { throw new Error("entries.jsonl line " + (i + 1) + " is not valid JSON: " + e.message); }
+  try { entry = JSON.parse(l); } catch (e) { throw new Error("entries.jsonl line " + (i + 1) + " is not valid JSON: " + e.message); }
   let pl;
   try { pl = await buildEntry(entry, i + 1); } catch (e) { throw new Error(where(entry, i + 1) + ": " + e.message); }
   if (!pl) continue;
