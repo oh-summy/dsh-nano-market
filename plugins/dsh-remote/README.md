@@ -42,8 +42,8 @@ Credentials never land in configuration files — they go through DSH's credenti
 
 ## Requirements
 
-- macOS (x86_64 / arm64) or Linux (x86_64 / arm64); `cloudflared` + `caddy` binaries are downloaded automatically on first start.
-- DSH web profile ≥ 0.2.1-rc.2. Windows is not officially supported — PRs welcome with real test evidence.
+- macOS (x86_64 / arm64) or Linux (x86_64 / arm64); `cloudflared` + `caddy` must be installed beforehand — the plugin probes `~/.remote-control/bin/` then `PATH` at startup, and missing binaries are flagged by the management page's environment check.
+- DSH web profile (engines.dsh: `>=0.2.1-rc.2 || >=0.2.2-0`). Windows is not officially supported — PRs welcome with real test evidence.
 
 ## Security notes
 

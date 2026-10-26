@@ -25,7 +25,7 @@
   {"kind":"git","name":"@oh-summy/dsh-<短词>",          // 必须等于安装源 manifest 的 name（构建器比对）
    "repo":"https://github.com/owner/repo",  // 规范 https GitHub URL
    "path":"plugin",            // dsh.bundle 所在目录（缺省 = 仓库根）
-   "ref":"v0.4.0",             // 人类可读别名：tag 优先（构建时解析）
+   "ref":"v1.0.0",             // 人类可读别名：tag 优先（构建时解析）
    "pinnedCommit":"<40-hex>",  // npm run pin 回填；构建器校验 ref 解析必须等于它（tag 漂移即 fail）
    "distTags":{"latest":"0.1.0"},        // 市场提供的 tag→精确版本映射（可选）
    "meta":{"title":{"en":"Remote Control","zh":"远程接入"},
