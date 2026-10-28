@@ -266,12 +266,12 @@ async function updateRunCard(slot: RunSlot, thinkingPolicy: ResolvedConfig["thin
     lines.push("---", "**思考过程**");
     lines.push(slot.thinkingText.split("\n").map((line) => "> " + line).join("\n"));
   }
-  const note = slot.failedWith ? "运行失败" : slot.state === "done" ? "已完成" : "正在生成…";
+  const timestamp = new Date().toISOString();
   await slot.streamController.update(richCard({
     title: "DSH 回复",
     color: "blue",
     lines,
-    note: "DeepSeek Harness · connect-lark · " + note,
+    note: "connect-lark · by @oh-summy · " + timestamp,
     buttons: [{ text: "dsh-nano-market", url: "https://github.com/oh-summy/dsh-nano-market" }],
   }));
 }

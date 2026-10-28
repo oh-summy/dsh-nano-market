@@ -240,7 +240,7 @@ async function sendNotify(ctx, event, url) {
 		"**访问密码**",
 		tier
 	];
-	const card = cardFor(title, color, lines, url, "dsh-remote By oh-summy · " + (/* @__PURE__ */ new Date()).toLocaleString("zh-CN"));
+	const card = cardFor(title, color, lines, url, "dsh-remote · by @oh-summy · " + (/* @__PURE__ */ new Date()).toLocaleString("zh-CN"));
 	try {
 		if (channel === "group") {
 			const hook = await getSecret(WEBHOOK_REF);
