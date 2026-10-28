@@ -21,6 +21,8 @@
         provider: ''
         model: ''
         reasoningEffort: ''
+        # Empty inherits DSH; also supports read-only, workspace-write, danger-full-access, auto.
+        permissionPreset: ''
         # Empty lists allow everyone; each list restricts only its own chat kind.
         senderAllowlist: []
         groupAllowlist: []

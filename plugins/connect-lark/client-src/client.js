@@ -80,6 +80,7 @@ const FIELDS = [
   { path: "provider", kind: "text" },
   { path: "model", kind: "text" },
   { path: "reasoningEffort", kind: "text" },
+  { path: "permissionPreset", kind: "text" },
 ];
 
 function definition(field) {
@@ -384,6 +385,41 @@ function ModelPicker({ state, value, edit, t, disabled }) {
   ] });
 }
 
+const PERMISSION_OPTIONS = [
+  { value: "", label: "跟随 DSH 默认", description: "使用 DSH 当前的权限配置，不单独覆盖。" },
+  { value: "read-only", label: "仅可查看", description: "只读取和分析，不修改文件或执行写操作。" },
+  { value: "workspace-write", label: "工作区内修改", description: "允许修改当前工作区，敏感操作仍需要确认。" },
+  { value: "danger-full-access", label: "完全权限", description: "直接执行更多操作，请只在你信任的任务中使用。" },
+  { value: "auto", label: "自动审查", description: "每次工具调用前由模型审查，可能消耗额外 token。" },
+];
+
+function PermissionPicker({ value, onEdit, disabled }) {
+  const [open, setOpen] = React.useState(false);
+  const current = PERMISSION_OPTIONS.find((option) => option.value === value.text) || PERMISSION_OPTIONS[0];
+  return jsxs("div", { className: "cl-picker", children: [
+    jsx("span", { className: "cl-label", children: "权限模式" }),
+    jsxs("button", { type: "button", className: "cl-picker-trigger", disabled, onClick: () => setOpen(!open), children: [
+      jsxs("span", { className: "cl-picker-text", children: [
+        jsx("span", { className: "cl-picker-title", children: current.label }),
+        jsx("span", { className: "cl-picker-sub", children: current.description }),
+      ] }),
+      jsx("span", { className: "cl-chevron", children: open ? "▲" : "▼" }),
+    ] }),
+    jsx("p", { className: "cl-hint", children: "控制机器人可以读取、修改或执行哪些操作。" }),
+    open ? jsxs(React.Fragment, { children: [
+      jsx("div", { className: "cl-menu-shield", onClick: () => setOpen(false) }),
+      jsx("div", { className: "cl-menu", role: "listbox", children: PERMISSION_OPTIONS.map((option) => jsx("button", {
+        type: "button", className: "cl-option", role: "option", "aria-selected": option.value === current.value,
+        onClick: () => { onEdit(option.value); setOpen(false); },
+        children: jsxs("span", { className: "cl-option-text", children: [
+          jsx("span", { className: "cl-option-name", children: option.label }),
+          jsx("span", { className: "cl-option-desc", children: option.description }),
+        ] }),
+      }, option.value || "default")) }),
+    ] }) : null,
+  ] });
+}
+
 function WorkspaceDialog({ listDirectory, createDirectory, onPick, onClose, t }) {
   const [listing, setListing] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
@@ -555,6 +591,7 @@ function LarkConfigCard(props) {
           jsx(WorkspacePicker, { state, value: value("defaultPath"), onEdit: edit("defaultPath"), onBrowse: props.listDirectory, onCreateDirectory: props.createDirectory, t, disabled }),
           state.catalog.status === "error" ? jsxs("div", { className: "cl-catalog-error", children: [t("catalogError"), jsx("button", { className: "cl-retry", type: "button", onClick: props.refreshCatalog, children: t("retry") })] }) : null,
           jsx(ModelPicker, { state, value, edit, t, disabled }),
+          jsx("div", { style: { marginTop: 18 }, children: jsx(PermissionPicker, { value: value("permissionPreset"), onEdit: edit("permissionPreset"), disabled }) }),
         ] }, "workspace"),
       ],
     }),

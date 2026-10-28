@@ -8,7 +8,7 @@ import vm from "node:vm";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(here, "..");
 const expectedFields = [
-  "appId", "appSecretPreview", "domain", "defaultPath", "provider", "model", "reasoningEffort",
+  "appId", "appSecretPreview", "domain", "defaultPath", "provider", "model", "reasoningEffort", "permissionPreset",
 ];
 
 function loadClient() {

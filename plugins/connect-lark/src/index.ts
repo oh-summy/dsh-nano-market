@@ -43,6 +43,7 @@ export interface Config {
   groupAllowlist?: string[];
   thinkingPolicy?: "cot-visible" | "cot-discard" | "stream-only";
   reasoningEffort?: string;
+  permissionPreset?: string;
 }
 
 type Vol<T> = T | { get(): T };
@@ -68,6 +69,7 @@ export type ResolvedConfig = {
   groupAllowlist: readonly string[];
   thinkingPolicy: "cot-visible" | "cot-discard" | "stream-only";
   reasoningEffort: string;
+  permissionPreset: string;
 };
 
 export function plainConfig(input: Config | ParsedConfig): ResolvedConfig {
@@ -78,7 +80,7 @@ export function plainConfig(input: Config | ParsedConfig): ResolvedConfig {
   return out as ResolvedConfig;
 }
 
-export const inject = ["agents", "llm", "attachments", "credentials"];
+export const inject = ["agents", "llm", "attachments", "credentials", "sessionController", "permissionPresets"];
 
 export const Config = z.object({
   enabled: z.boolean().default(false).volatile().comment("启用飞书连接（关闭即断连）"),
@@ -97,6 +99,7 @@ export const Config = z.object({
   groupAllowlist: z.array(z.string()).default([]).volatile().comment("群聊限制；留空允许所有群聊"),
   thinkingPolicy: z.union(["cot-visible", "cot-discard", "stream-only"]).default("stream-only").volatile().comment("CoT 政策：当前仅实现 stream-only"),
   reasoningEffort: z.string().default("").volatile().comment("思考强度；留空跟随 DSH 当前模型默认配置"),
+  permissionPreset: z.string().default("").volatile().comment("权限模式；留空跟随 DSH 默认，支持 read-only/workspace-write/danger-full-access/auto"),
 });
 
 type AnyCtx = any;
@@ -180,6 +183,49 @@ class DeltaQueue {
   }
 }
 
+/** Resolve model and effort from explicit overrides or the DSH new-session default. */
+export function resolveAgentModelOptions(
+  plain: Pick<ResolvedConfig, "provider" | "model" | "reasoningEffort">,
+  catalog: any,
+): { provider: string; model: string; reasoningEffort?: string } {
+  const hasOverride = Boolean(plain.provider && plain.model);
+  const provider = hasOverride ? plain.provider : catalog.default.provider;
+  const model = hasOverride ? plain.model : catalog.default.model;
+  let reasoningEffort = plain.reasoningEffort;
+  if (!reasoningEffort) {
+    if (hasOverride) {
+      const group = (catalog.groups ?? []).find((item: any) => item.id === provider);
+      const selected = group?.models?.find((item: any) => item.id === model);
+      reasoningEffort = selected?.reasoning?.defaultEffort ?? "";
+    } else {
+      reasoningEffort = catalog.default.reasoningEffort ?? "";
+    }
+  }
+  return { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) };
+}
+
+/** Create a per-chat agent, reusing live agents and resuming persisted sessions. */
+export async function createOrResumeAgent(ctx: AnyCtx, sessionId: string, meta: { cwd?: string }, agentOptions: unknown, permissionPreset = ""): Promise<{ agent: any; handle: any }> {
+  const applyPreset = (agent: any) => {
+    if (permissionPreset) ctx.permissionPresets.set(agent.session, permissionPreset);
+  };
+  const live = ctx.agents.get(sessionId);
+  if (live) {
+    applyPreset(live);
+    return { agent: live, handle: null };
+  }
+  try {
+    const handle = await ctx.agents.create({ sessionId, meta, agentOptions });
+    applyPreset(handle.agent);
+    return { agent: handle.agent, handle };
+  } catch (error) {
+    if (!/already exists|already registered/i.test((error as Error).message)) throw error;
+    const handle = await ctx.agents.resume({ resumeSessionId: sessionId, agentOptions });
+    applyPreset(handle.agent);
+    return { agent: handle.agent, handle };
+  }
+}
+
 // ---- apply() ----
 
 export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
@@ -236,17 +282,16 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           }
           if (plain.agentOwnership === "owned-per-chat") {
             const sessionId = "connect-lark:" + chatId;
-            const agentOptions = {
-              ...(plain.provider ? { provider: plain.provider } : {}),
-              ...(plain.model ? { model: plain.model } : {}),
-              ...(plain.reasoningEffort ? { reasoningEffort: plain.reasoningEffort } : {}),
-            };
-            const handle = await ctx.agents.create({
+            const catalog = await ctx.sessionController.modelCatalog();
+            const agentOptions = resolveAgentModelOptions(plain, catalog);
+            const { agent, handle } = await createOrResumeAgent(
+              ctx,
               sessionId,
-              meta: { cwd: plain.defaultPath || undefined },
-              ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}),
-            });
-            return { agent: handle.agent, sessionId, handle };
+              { cwd: plain.defaultPath || undefined },
+              agentOptions,
+              plain.permissionPreset,
+            );
+            return { agent, sessionId, handle };
           }
           // attach-gui
           if (!plain.attachSessionId) {
@@ -292,8 +337,9 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           (agent as { followup: (m: unknown) => void }).followup(message);
         },
         onComplete: (slot) => {
-          if (slot.accumulatedText) {
-            Promise.resolve(chan.send(slot.chatId, { markdown: slot.accumulatedText }))
+          const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
+          if (reply) {
+            Promise.resolve(chan.send(slot.chatId, { markdown: reply }))
               .catch((e) => ctx.logger?.warn?.("[connect-lark] send failed: " + (e as Error).message));
           }
         },

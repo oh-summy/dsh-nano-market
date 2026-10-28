@@ -31,6 +31,7 @@
 | `domain` | `feishu` | 国内飞书或海外 Lark |
 | `provider` / `model` | `""` | 留空跟随 DSH 当前模型 |
 | `reasoningEffort` | `""` | 留空跟随所选模型的默认思考强度 |
+| `permissionPreset` | `""` | 留空跟随 DSH；可选仅可查看、工作区内修改、完全权限、自动审查 |
 | `agentOwnership` | `owned-per-chat` | 默认每个聊天独立 Agent；`attach-gui` 仅高级场景使用 |
 | `requireMention` | `true` | 群聊需要 @ 机器人 |
 | `senderAllowlist` | `[]` | 可选私聊用户限制；留空允许所有私聊用户 |

@@ -357,7 +357,9 @@ const inject = [
 	"agents",
 	"llm",
 	"attachments",
-	"credentials"
+	"credentials",
+	"sessionController",
+	"permissionPresets"
 ];
 const Config = z.object({
 	enabled: z.boolean().default(false).volatile().comment("启用飞书连接（关闭即断连）"),
@@ -379,7 +381,8 @@ const Config = z.object({
 		"cot-discard",
 		"stream-only"
 	]).default("stream-only").volatile().comment("CoT 政策：当前仅实现 stream-only"),
-	reasoningEffort: z.string().default("").volatile().comment("思考强度；留空跟随 DSH 当前模型默认配置")
+	reasoningEffort: z.string().default("").volatile().comment("思考强度；留空跟随 DSH 当前模型默认配置"),
+	permissionPreset: z.string().default("").volatile().comment("权限模式；留空跟随 DSH 默认，支持 read-only/workspace-write/danger-full-access/auto")
 });
 async function resolveAppSecret(ctx, parsed) {
 	const { appSecretRef } = plainConfig(parsed);
@@ -398,6 +401,59 @@ function buildUserMessage(content, source) {
 function passesWhitelist(plain, chatId, senderId, chatType = "p2p") {
 	if (chatType === "group") return plain.groupAllowlist.length === 0 || plain.groupAllowlist.includes(chatId);
 	return plain.senderAllowlist.length === 0 || plain.senderAllowlist.includes(senderId);
+}
+/** Resolve model and effort from explicit overrides or the DSH new-session default. */
+function resolveAgentModelOptions(plain, catalog) {
+	const hasOverride = Boolean(plain.provider && plain.model);
+	const provider = hasOverride ? plain.provider : catalog.default.provider;
+	const model = hasOverride ? plain.model : catalog.default.model;
+	let reasoningEffort = plain.reasoningEffort;
+	if (!reasoningEffort) {
+		if (hasOverride) reasoningEffort = ((catalog.groups ?? []).find((item) => item.id === provider)?.models?.find((item) => item.id === model))?.reasoning?.defaultEffort ?? "";
+		else reasoningEffort = catalog.default.reasoningEffort ?? "";
+	}
+	return {
+		provider,
+		model,
+		...reasoningEffort ? { reasoningEffort } : {}
+	};
+}
+/** Create a per-chat agent, reusing live agents and resuming persisted sessions. */
+async function createOrResumeAgent(ctx, sessionId, meta, agentOptions, permissionPreset = "") {
+	const applyPreset = (agent) => {
+		if (permissionPreset) ctx.permissionPresets.set(agent.session, permissionPreset);
+	};
+	const live = ctx.agents.get(sessionId);
+	if (live) {
+		applyPreset(live);
+		return {
+			agent: live,
+			handle: null
+		};
+	}
+	try {
+		const handle = await ctx.agents.create({
+			sessionId,
+			meta,
+			agentOptions
+		});
+		applyPreset(handle.agent);
+		return {
+			agent: handle.agent,
+			handle
+		};
+	} catch (error) {
+		if (!/already exists|already registered/i.test(error.message)) throw error;
+		const handle = await ctx.agents.resume({
+			resumeSessionId: sessionId,
+			agentOptions
+		});
+		applyPreset(handle.agent);
+		return {
+			agent: handle.agent,
+			handle
+		};
+	}
 }
 function apply(ctx, config = {}) {
 	let plain = plainConfig(config);
@@ -448,18 +504,11 @@ function apply(ctx, config = {}) {
 					};
 					if (plain.agentOwnership === "owned-per-chat") {
 						const sessionId = "connect-lark:" + chatId;
-						const agentOptions = {
-							...plain.provider ? { provider: plain.provider } : {},
-							...plain.model ? { model: plain.model } : {},
-							...plain.reasoningEffort ? { reasoningEffort: plain.reasoningEffort } : {}
-						};
-						const handle = await ctx.agents.create({
-							sessionId,
-							meta: { cwd: plain.defaultPath || void 0 },
-							...Object.keys(agentOptions).length > 0 ? { agentOptions } : {}
-						});
+						const catalog = await ctx.sessionController.modelCatalog();
+						const agentOptions = resolveAgentModelOptions(plain, catalog);
+						const { agent, handle } = await createOrResumeAgent(ctx, sessionId, { cwd: plain.defaultPath || void 0 }, agentOptions, plain.permissionPreset);
 						return {
-							agent: handle.agent,
+							agent,
 							sessionId,
 							handle
 						};
@@ -507,7 +556,8 @@ function apply(ctx, config = {}) {
 					agent.followup(message);
 				},
 				onComplete: (slot) => {
-					if (slot.accumulatedText) Promise.resolve(chan.send(slot.chatId, { markdown: slot.accumulatedText })).catch((e) => ctx.logger?.warn?.("[connect-lark] send failed: " + e.message));
+					const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
+					if (reply) Promise.resolve(chan.send(slot.chatId, { markdown: reply })).catch((e) => ctx.logger?.warn?.("[connect-lark] send failed: " + e.message));
 				}
 			});
 			unsubMessage = chan.on("message", async (msg) => {
@@ -615,4 +665,4 @@ const CONTRACT_NOTES = {
 	whitelistFailClosed: "empty senderAllowlist + empty groupAllowlist = deny all messages",
 	streaming: "channel.stream(to, { markdown: async (c) => { c.append(delta) } }) — SDK-owned CardKit"
 };
-export { CONTRACT_NOTES, Config, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildImageContent, buildUserMessage, downloadInboundImage, inject, passesWhitelist, plainConfig, resolveAppSecret, richCard, streamMarkdown, streamRichCard };
+export { CONTRACT_NOTES, Config, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildImageContent, buildUserMessage, createOrResumeAgent, downloadInboundImage, inject, passesWhitelist, plainConfig, resolveAgentModelOptions, resolveAppSecret, richCard, streamMarkdown, streamRichCard };

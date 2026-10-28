@@ -20,7 +20,7 @@ channel 仍是 0.x，精确 pin 版本（不用 `^`）、锁依赖、显式设�
 
 默认 `owned-per-chat`：每个飞书聊天拥有独立 Agent 和 Session，工作区来自 `defaultPath`，无需用户填写 Session ID。`attach-gui` 仅作为高级兼容模式保留。
 
-`provider`、`model`、`reasoningEffort` 全部可选；留空时不传 `agentOptions`，由 DSH 当前模型和思考强度继承。需要覆盖时才传入对应字段。
+`provider`、`model`、`reasoningEffort` 全部可选；留空时使用 DSH 新会话的默认模型和思考强度。`permissionPreset` 留空时沿用 DSH 当前权限，选择后通过 `permissionPresets.set()` 同时作用于新建和已有聊天 Session。
 
 普通用户只需 App ID 与 App Secret 凭据引用，其他配置均可使用默认值。
 

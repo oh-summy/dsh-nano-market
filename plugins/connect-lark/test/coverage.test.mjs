@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { passesWhitelist, downloadInboundImage, MAX_IMAGE_BYTES, RunManager } from "../lib/index.mjs";
+import { passesWhitelist, downloadInboundImage, MAX_IMAGE_BYTES, RunManager, resolveAgentModelOptions, createOrResumeAgent } from "../lib/index.mjs";
 
 // ---- passesWhitelist ----
 
@@ -74,4 +74,73 @@ test("RunManager: disposeAll works with no active runs", async () => {
   });
   await mgr.disposeAll();
   assert.equal(mgr.list().length, 0);
+});
+
+test("resolveAgentModelOptions: empty route inherits DSH default model and effort", () => {
+  const catalog = {
+    default: { provider: "kimi", model: "k3.1-pro", reasoningEffort: "high" },
+    groups: [],
+  };
+  assert.deepEqual(resolveAgentModelOptions({ provider: "", model: "", reasoningEffort: "" }, catalog), {
+    provider: "kimi", model: "k3.1-pro", reasoningEffort: "high",
+  });
+});
+
+test("resolveAgentModelOptions: selected model inherits its own default effort", () => {
+  const catalog = {
+    default: { provider: "kimi", model: "k3.1-pro", reasoningEffort: "high" },
+    groups: [{ id: "kimi", models: [{ id: "other", reasoning: { defaultEffort: "low", efforts: [] } }] }],
+  };
+  assert.deepEqual(resolveAgentModelOptions({ provider: "kimi", model: "other", reasoningEffort: "" }, catalog), {
+    provider: "kimi", model: "other", reasoningEffort: "low",
+  });
+});
+
+test("resolveAgentModelOptions: explicit effort wins", () => {
+  const catalog = { default: { provider: "kimi", model: "k3.1-pro", reasoningEffort: "high" }, groups: [] };
+  assert.deepEqual(resolveAgentModelOptions({ provider: "", model: "", reasoningEffort: "max" }, catalog), {
+    provider: "kimi", model: "k3.1-pro", reasoningEffort: "max",
+  });
+});
+
+
+test("createOrResumeAgent: reuses a live agent without creating", async () => {
+  const live = { id: "live" };
+  const ctx = { agents: { get: () => live, create: async () => { throw new Error("must not create"); } } };
+  const result = await createOrResumeAgent(ctx, "session-live", { cwd: "/tmp" }, {});
+  assert.equal(result.agent, live);
+  assert.equal(result.handle, null);
+});
+
+test("createOrResumeAgent: resumes a persisted session on duplicate create", async () => {
+  const resumed = { agent: { id: "resumed" }, dispose: async () => {} };
+  const ctx = { agents: {
+    get: () => undefined,
+    create: async () => { throw new Error("session already exists"); },
+    resume: async () => resumed,
+  } };
+  const result = await createOrResumeAgent(ctx, "session-existing", { cwd: "/tmp" }, {});
+  assert.equal(result.agent, resumed.agent);
+  assert.equal(result.handle, resumed);
+});
+
+test("createOrResumeAgent: rethrows unrelated create failures", async () => {
+  const ctx = { agents: {
+    get: () => undefined,
+    create: async () => { throw new Error("provider unavailable"); },
+    resume: async () => { throw new Error("must not resume"); },
+  } };
+  await assert.rejects(() => createOrResumeAgent(ctx, "session-new", {}, {}), /provider unavailable/);
+});
+
+
+test("createOrResumeAgent: applies a selected permission preset to the live agent", async () => {
+  const live = { id: "live", session: { id: "session-live" } };
+  const calls = [];
+  const ctx = {
+    agents: { get: () => live },
+    permissionPresets: { set: (session, name) => calls.push([session.id, name]) },
+  };
+  await createOrResumeAgent(ctx, "session-live", {}, {}, "workspace-write");
+  assert.deepEqual(calls, [["session-live", "workspace-write"]]);
 });
