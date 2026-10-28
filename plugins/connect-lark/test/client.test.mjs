@@ -8,7 +8,7 @@ import vm from "node:vm";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(here, "..");
 const expectedFields = [
-  "appId", "appSecretRef", "domain", "defaultPath", "provider", "model", "reasoningEffort",
+  "appId", "appSecretPreview", "domain", "defaultPath", "provider", "model", "reasoningEffort",
 ];
 
 function loadClient() {
@@ -76,7 +76,11 @@ test("client registers the native bundle config slot and all fields", async () =
   const ctx = {
     remote: {
       session: { modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }) },
-      directoryPicker: { pick: async () => ({ ok: true, value: "/tmp/dsh-workspace" }) },
+      directoryPicker: {
+        list: async () => ({ ok: true, value: { path: "/tmp", home: "/Users/rocky", crumbs: [], entries: [], truncated: false } }),
+        createDirectory: async (path, name) => ({ ok: true, value: path + "/" + name }),
+      },
+      credentials: { set: async () => ({ ok: true }) },
     },
     workspaces: {
       list: { getSnapshot: () => ({ items: workspaceItems }), subscribe: () => () => {} },
@@ -87,7 +91,7 @@ test("client registers the native bundle config slot and all fields", async () =
       register: () => () => {},
     },
     configForms: {
-      get: (id) => { calls.get.push(id); return { id }; },
+      get: (id) => { calls.get.push(id); return { id, getSnapshot: () => ({ value: { appSecretRef: "CONNECT_LARK_APP_SECRET" } }) }; },
       whileServed: (ids, register) => {
         calls.served.push(ids);
         return register(new Set(ids));
@@ -112,11 +116,13 @@ test("client registers the native bundle config slot and all fields", async () =
   const byPath = Object.fromEntries(definitions.map((item) => [item.path, item]));
   assert.ok(byPath.domain, "domain switch field missing");
   const actions = slot.options.inject();
-  assert.equal(typeof actions.addWorkspace, "function");
-  await actions.addWorkspace();
-  assert.deepEqual(edits, [["defaultPath", "/tmp/dsh-workspace"]]);
+  assert.equal(typeof actions.listDirectory, "function");
+  const listing = await actions.listDirectory();
+  assert.equal(listing.path, "/tmp");
+  await actions.saveSecret("rmU5Dsecret");
+  assert.ok(edits.some(([path, value]) => path === "appSecretPreview" && value === "rmU5D"));
   delete globalThis.__dshWorkspaceButtons;
   const source = readFileSync(join(pkgDir, "lib/client.js"), "utf8");
   assert.match(source, /https:\/\/open\.feishu\.cn\/app/);
-  assert.doesNotMatch(source, /connect-lark-requireMention|connect-lark-senderAllowlist/);
+  assert.doesNotMatch(source, /connect-lark-requireMention|connect-lark-senderAllowlist|cl-trigger-note/);
 });

@@ -19,11 +19,11 @@ const { Config, plainConfig, resolveAppSecret, buildUserMessage, inject, CONTRAC
 const Schema = (await import("@deepseek-ai/schemastery")).default;
 const parseLikeHost = (input) => new Schema(Config.toJSON())(input);
 
-const FIELD_COUNT = 15;
+const FIELD_COUNT = 16;
 const FIELDS = [
   "enabled", "appId", "appSecretRef", "defaultPath", "openId", "domain",
   "requireMention", "agentOwnership", "attachSessionId", "provider", "model",
-  "senderAllowlist", "groupAllowlist", "thinkingPolicy", "reasoningEffort",
+  "senderAllowlist", "groupAllowlist", "thinkingPolicy", "reasoningEffort", "appSecretPreview",
 ];
 
 test("dsh-settings gate: Config exposes toJSON", () => {

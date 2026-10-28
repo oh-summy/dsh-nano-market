@@ -81,7 +81,7 @@ const GUIDE_JSON = JSON.stringify({
 
 const FIELDS = [
   { path: "appId", kind: "text" },
-  { path: "appSecretRef", kind: "text" },
+  { path: "appSecretPreview", kind: "text" },
   { path: "domain", kind: "choice", choices: ["feishu", "lark"] },
   { path: "defaultPath", kind: "text" },
   { path: "provider", kind: "text" },
@@ -106,18 +106,21 @@ class LarkSettingsModel {
     this.ctx = ctx;
     this.workspaces = ctx.get("workspaces");
     this.catalog = { status: "loading", groups: [], failures: [], default: null };
-    this.form = new P.SettingsFormModel(ctx.configForms.get(ENTRY), FIELDS.map(definition));
+    this.secretDraft = "";
+    this.scope = ctx.configForms.get(ENTRY);
+    this.form = new P.SettingsFormModel(this.scope, FIELDS.map(definition));
     this.formState = this.form.bind(() => ({
       ...this.form.shell(),
       fields: Object.fromEntries(FIELDS.map((field) => [field.path, this.form.field(field.path)])),
     }));
     this.store = createSnapshotStore(this.projection());
     this.unsubscribe = this.formState.subscribe?.(() => this.publish());
-    this.unsubscribeWorkspaces = this.workspaces.list.subscribe?.(() => { this.checkWorkspaceAdded(); this.publish(); });
+    this.unsubscribeWorkspaces = this.workspaces.list.subscribe?.(() => this.publish());
     this.loadCatalog();
   }
   projection() {
-    return { ...this.formState.getSnapshot(), catalog: this.catalog, workspaces: this.workspaces.list.getSnapshot() };
+    const snapshot = this.formState.getSnapshot();
+    return { ...snapshot, dirty: snapshot.dirty || this.secretDraft.length > 0, secretDraft: this.secretDraft, catalog: this.catalog, workspaces: this.workspaces.list.getSnapshot() };
   }
   publish() { this.store.set(this.projection()); }
   async loadCatalog() {
@@ -132,34 +135,38 @@ class LarkSettingsModel {
     }
     this.publish();
   }
-  addWorkspace() {
-    // Reuse DSH's own Add workspace button so its native directory flow owns
-    // the dialog, cancellation, and workspace creation. After a new workspace
-    // appears in the shared list, adopt its path as this plugin's default.
-    this.workspaceBaseline = new Set((this.workspaces.list.getSnapshot().items || []).map((item) => item.workspaceId));
-    const buttons = [...document.querySelectorAll('button[aria-label="添加工作区"]')].filter((button) => !button.classList.contains("cl-workspace-add"));
-    const button = buttons[0];
-    if (!button) {
-      this.workspaceBaseline = null;
-      throw new Error("DSH workspace picker is unavailable");
-    }
-    button.click();
-    this.checkWorkspaceAdded();
+  async listDirectory(path) {
+    const response = await this.ctx.remote.directoryPicker.list(path);
+    if (!response.ok) throw new Error(response.error?.message || "directory listing failed");
+    return response.value;
   }
-  checkWorkspaceAdded() {
-    if (!this.workspaceBaseline) return;
-    const added = (this.workspaces.list.getSnapshot().items || []).find((item) => !this.workspaceBaseline.has(item.workspaceId));
-    if (!added) return;
-    this.workspaceBaseline = null;
-    this.form.actions().edit("defaultPath", added.path);
+  async createDirectory(path, name) {
+    const response = await this.ctx.remote.directoryPicker.createDirectory(path, name);
+    if (!response.ok) throw new Error(response.error?.message || "directory creation failed");
+    return response.value;
+  }
+  async saveSecret(value) {
+    const ref = this.scope.getSnapshot().value?.appSecretRef || "CONNECT_LARK_APP_SECRET";
+    const response = await this.ctx.remote.credentials.set(ref, value);
+    if (!response.ok) throw new Error(response.error?.message || "credential write failed");
+    this.form.actions().edit("appSecretPreview", value.slice(0, 5));
+    this.secretDraft = "";
     this.publish();
+  }
+  async save() {
+    if (this.secretDraft) await this.saveSecret(this.secretDraft);
+    return this.form.actions().save();
   }
   inject() {
     return {
       hooks: { larkSettings: this.store },
       ...this.form.actions(),
+      save: () => this.save(),
       refreshCatalog: () => this.loadCatalog(),
-      addWorkspace: () => this.addWorkspace(),
+      listDirectory: (path) => this.listDirectory(path),
+      createDirectory: (path, name) => this.createDirectory(path, name),
+      saveSecret: (value) => this.saveSecret(value),
+      editSecret: (text) => { this.secretDraft = text; this.publish(); },
     };
   }
   dispose() {
@@ -198,8 +205,19 @@ const styles = `
 .cl-segment{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#f2f3f5;border-radius:10px;padding:4px;margin-bottom:18px}
 .cl-segment button{border:1px solid transparent;border-radius:7px;background:transparent;color:#5f6672;padding:8px 12px;font:inherit;font-size:12px;cursor:pointer}
 .cl-segment button[aria-checked="true"]{background:#fff;color:var(--cl-blue);border-color:#cfdcff;box-shadow:0 1px 4px rgba(31,35,41,.06);font-weight:600}
-.cl-workspace-add{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;margin-top:10px;border:1px dashed #cbd5e4;border-radius:8px;background:#f8faff;color:#315dc4;padding:8px 10px;font:inherit;font-size:12px;font-weight:600;cursor:pointer}
+.cl-workspace-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;margin-bottom:18px}
+.cl-workspace-row .cl-field{margin-bottom:0}
+.cl-workspace-add{display:flex;align-items:center;justify-content:center;gap:6px;min-height:36px;margin:0;border:1px dashed #cbd5e4;border-radius:8px;background:#f8faff;color:#315dc4;padding:8px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
 .cl-workspace-add:hover{background:#eff4ff;border-color:#9fb8ee}
+.cl-browser-modal{width:min(680px,100%)}
+.cl-browser-path{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin:18px 0 12px}
+.cl-browser-list{height:340px;overflow:auto;border:1px solid #eceff3;border-radius:10px;padding:6px}
+.cl-browser-entry{display:block;width:100%;border:0;border-radius:7px;background:transparent;color:#374151;text-align:left;padding:8px 10px;font:inherit;font-size:12px;cursor:pointer}
+.cl-browser-entry:hover{background:#f2f5fa}
+.cl-browser-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px}
+.cl-browser-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.cl-browser-create{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin-top:14px}
+@media(max-width:560px){.cl-workspace-row{grid-template-columns:1fr}.cl-workspace-add{justify-self:start}.cl-browser-list{height:280px}.cl-browser-footer{align-items:flex-start;flex-direction:column}}
 .cl-picker{position:relative;min-width:0}
 .cl-picker-trigger{display:flex;align-items:center;gap:9px;text-align:left;cursor:pointer;min-height:54px}
 .cl-picker-text{min-width:0;flex:1}
@@ -219,8 +237,6 @@ const styles = `
 .cl-option-desc{display:block;color:var(--cl-muted);font-size:10px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cl-check{color:var(--cl-blue);font-size:12px;font-weight:700}
 .cl-empty{padding:18px;text-align:center;color:var(--cl-muted);font-size:12px}
-.cl-trigger-note{display:flex;align-items:flex-start;gap:12px;background:#f7f9fc;border-radius:10px;padding:13px 14px;color:#445066;font-size:12px;line-height:1.6}
-.cl-at{display:inline-flex;align-items:center;justify-content:center;width:25px;height:25px;border-radius:7px;background:#e7efff;color:var(--cl-blue);font-weight:700;flex-shrink:0}
 .cl-catalog-error{display:flex;align-items:center;gap:10px;color:#8a5a00;background:#fff8e8;border-radius:8px;padding:8px 10px;font-size:11px;margin-bottom:12px}
 .cl-retry{border:0;background:transparent;color:var(--cl-blue);font:inherit;font-weight:600;cursor:pointer;padding:2px}
 .cl-modal-backdrop{position:fixed;inset:0;z-index:1000;background:rgba(20,26,36,.38);display:flex;align-items:center;justify-content:center;padding:22px;backdrop-filter:blur(3px)}
@@ -255,6 +271,18 @@ function TextField({ id, label, hint, value, placeholder, disabled, onEdit, mask
   const text = mask && !focused && value.text.length > 5 ? value.text.slice(0, 5) + "*****" : value.text;
   return jsx(Field, { label, hint, children: jsx("input", {
     id, className: "cl-input", value: text, placeholder, disabled,
+    onFocus: () => setFocused(true), onBlur: () => setFocused(false),
+    onChange: (event) => onEdit(event.target.value),
+  }) });
+}
+
+function SecretField({ state, onEdit, t, disabled }) {
+  const [focused, setFocused] = React.useState(false);
+  const preview = state.fields.appSecretPreview.text;
+  const text = focused ? state.secretDraft : preview ? preview + "*****" : "";
+  return jsx(Field, { label: "App Secret", hint: "完整 Secret 只保存在 DSH 凭据缝；页面只显示前 5 位 + 掩码。", children: jsx("input", {
+    id: "connect-lark-appSecret", className: "cl-input", type: focused ? "password" : "text",
+    value: text, placeholder: "输入新的 App Secret 以更换", disabled,
     onFocus: () => setFocused(true), onBlur: () => setFocused(false),
     onChange: (event) => onEdit(event.target.value),
   }) });
@@ -361,27 +389,98 @@ function ModelPicker({ state, value, edit, t, disabled }) {
   ] });
 }
 
-function WorkspacePicker({ state, value, onEdit, onAdd, t, disabled }) {
-  const [failed, setFailed] = React.useState(false);
-  const items = state.workspaces?.items || [];
-  const add = () => {
-    setFailed(false);
-    try { onAdd(); } catch { setFailed(true); }
+function WorkspaceDialog({ listDirectory, createDirectory, onPick, onClose, t }) {
+  const [listing, setListing] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
+  const [pathInput, setPathInput] = React.useState("");
+  const [showHidden, setShowHidden] = React.useState(false);
+  const [creating, setCreating] = React.useState(false);
+  const [folderName, setFolderName] = React.useState("");
+  const load = async (path) => {
+    setLoading(true); setError("");
+    try {
+      const value = await listDirectory(path);
+      setListing(value);
+      setPathInput(value.path);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setLoading(false);
+    }
   };
+  React.useEffect(() => { load(); }, []);
+  const create = async () => {
+    if (!folderName.trim() || !listing) return;
+    setLoading(true);
+    try {
+      await createDirectory(listing.path, folderName.trim());
+      setFolderName(""); setCreating(false);
+      await load(listing.path);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      setLoading(false);
+    }
+  };
+  return jsx("div", { className: "cl-modal-backdrop", onClick: onClose, children: jsxs("div", {
+    className: "cl-modal cl-browser-modal", role: "dialog", "aria-modal": "true", "aria-label": "选择工作区目录", onClick: (event) => event.stopPropagation(),
+    children: [
+      jsxs("div", { className: "cl-modal-head", children: [
+        jsx("h3", { children: "选择工作区目录" }),
+        jsx("button", { className: "cl-close", type: "button", "aria-label": "关闭", onClick: onClose, children: "×" }),
+      ] }),
+      jsxs("div", { className: "cl-browser-path", children: [
+        jsx("input", { className: "cl-input", value: pathInput, "aria-label": "目录路径", onChange: (event) => setPathInput(event.target.value), onKeyDown: (event) => { if (event.key === "Enter") load(pathInput); } }),
+        listing?.home ? jsx("button", { type: "button", className: "cl-secondary", onClick: () => load(listing.home), children: "主目录" }) : null,
+      ] }),
+      error ? jsx("p", { className: "cl-hint", role: "alert", children: error }) : null,
+      jsx("div", { className: "cl-browser-list", children: loading ? jsx("div", { className: "cl-empty", children: "正在读取目录…" }) : (listing?.entries || []).filter((entry) => showHidden || !entry.hidden).map((entry) => jsx("button", {
+        type: "button", className: "cl-browser-entry", onClick: () => load(entry.path), children: jsxs("span", { children: ["▸ ", entry.name] }),
+      }, entry.path)) }),
+      listing?.truncated ? jsx("p", { className: "cl-hint", children: "文件夹过多，仅显示开头部分。" }) : null,
+      jsxs("div", { className: "cl-browser-footer", children: [
+        jsxs("div", { className: "cl-browser-tools", children: [
+          jsx("button", { type: "button", className: "cl-secondary", onClick: () => setCreating(!creating), children: "+ 新建文件夹" }),
+          jsx("button", { type: "button", className: "cl-guide-link", onClick: () => setShowHidden(!showHidden), children: showHidden ? "隐藏系统文件" : "显示隐藏文件" }),
+        ] }),
+        jsxs("div", { className: "cl-modal-actions", children: [
+          jsx("button", { type: "button", className: "cl-secondary", onClick: onClose, children: "取消" }),
+          jsx("button", { type: "button", className: "cl-primary", disabled: !listing, onClick: () => onPick(listing.path), children: "打开" }),
+        ] }),
+      ] }),
+      creating ? jsxs("div", { className: "cl-browser-create", children: [
+        jsx("input", { className: "cl-input", value: folderName, placeholder: "文件夹名称", onChange: (event) => setFolderName(event.target.value) }),
+        jsx("button", { type: "button", className: "cl-primary", onClick: create, children: "创建" }),
+      ] }) : null,
+    ],
+  }) });
+}
+
+function WorkspacePicker({ state, value, onEdit, onBrowse, onCreateDirectory, t, disabled }) {
+  const [open, setOpen] = React.useState(false);
+  const items = state.workspaces?.items || [];
   return jsxs("div", { children: [
-    jsx(Field, { label: t("defaultPath"), hint: t("defaultPathHint"), children: jsxs("select", {
-      id: "connect-lark-defaultPath", className: "cl-select", value: value.text, disabled,
-      onChange: (event) => onEdit(event.target.value),
-      children: [
-        jsx("option", { value: "", children: t("followDsh") }),
-        value.text && !items.some((item) => item.path === value.text) ? jsx("option", { value: value.text, children: value.text }) : null,
-        items.map((item) => jsx("option", { value: item.path, children: item.title + " · " + item.path }, item.workspaceId)),
-      ],
-    }) }),
-    jsx("button", { type: "button", className: "cl-workspace-add", disabled, onClick: add, children: "+ " + t("addWorkspace") }),
-    failed ? jsx("p", { className: "cl-hint", role: "status", children: t("workspaceFailed") }) : null,
+    jsxs("div", { className: "cl-workspace-row", children: [
+      jsx(Field, { label: t("defaultPath"), hint: t("defaultPathHint"), children: jsxs("select", {
+        id: "connect-lark-defaultPath", className: "cl-select", value: value.text, disabled,
+        onChange: (event) => onEdit(event.target.value),
+        children: [
+          jsx("option", { value: "", children: t("followDsh") }),
+          value.text && !items.some((item) => item.path === value.text) ? jsx("option", { value: value.text, children: value.text }) : null,
+          items.map((item) => jsx("option", { value: item.path, children: item.title + " · " + item.path }, item.workspaceId)),
+        ],
+      }) }),
+      jsx("button", { type: "button", className: "cl-workspace-add", disabled, onClick: () => setOpen(true), children: "+ " + t("addWorkspace") }),
+    ] }),
+    open ? jsx(WorkspaceDialog, {
+      listDirectory: onBrowse,
+      createDirectory: onCreateDirectory,
+      onPick: (path) => { onEdit(path); setOpen(false); },
+      onClose: () => setOpen(false), t,
+    }) : null,
   ] });
 }
+
 
 function GuideDialog({ onClose, t }) {
   const [copied, setCopied] = React.useState(false);
@@ -450,18 +549,14 @@ function LarkConfigCard(props) {
           }, domain)) }),
           jsxs("div", { className: "cl-grid", children: [
             jsx(TextField, { id: "connect-lark-appId", label: t("appId"), hint: t("appIdHint"), value: value("appId"), placeholder: t("appIdPlaceholder"), disabled, onEdit: edit("appId"), mask: true }),
-            jsx(TextField, { id: "connect-lark-appSecretRef", label: t("appSecretRef"), hint: t("appSecretRefHint"), value: value("appSecretRef"), placeholder: t("secretPlaceholder"), disabled, onEdit: edit("appSecretRef") }),
+            jsx(SecretField, { state, onEdit: props.editSecret, t, disabled }),
           ] }),
         ] }, "connection"),
         jsx(Section, { number: "02", title: t("workspace"), hint: t("workspaceHint"), children: [
-          jsx(WorkspacePicker, { state, value: value("defaultPath"), onEdit: edit("defaultPath"), onAdd: props.addWorkspace, t, disabled }),
+          jsx(WorkspacePicker, { state, value: value("defaultPath"), onEdit: edit("defaultPath"), onBrowse: props.listDirectory, onCreateDirectory: props.createDirectory, t, disabled }),
           state.catalog.status === "error" ? jsxs("div", { className: "cl-catalog-error", children: [t("catalogError"), jsx("button", { className: "cl-retry", type: "button", onClick: props.refreshCatalog, children: t("retry") })] }) : null,
           jsx(ModelPicker, { state, value, edit, t, disabled }),
         ] }, "workspace"),
-        jsx(Section, { number: "03", title: t("trigger"), hint: t("triggerHint"), children: jsxs("div", { className: "cl-trigger-note", children: [
-          jsx("span", { className: "cl-at", children: "@" }),
-          jsx("span", { children: t("fixedTrigger") }),
-        ] }) }, "trigger"),
       ],
     }),
     guideOpen ? jsx(GuideDialog, { onClose: () => setGuideOpen(false), t }) : null,

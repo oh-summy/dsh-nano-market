@@ -363,6 +363,7 @@ const Config = z.object({
 	enabled: z.boolean().default(false).volatile().comment("启用飞书连接（关闭即断连）"),
 	appId: z.string().default("").volatile().comment("飞书 App ID（v1 手填；扫码建应用见二期）"),
 	appSecretRef: z.string().role("credential-ref").default("CONNECT_LARK_APP_SECRET").volatile().comment("App Secret 的凭据缝引用名"),
+	appSecretPreview: z.string().default("").volatile().comment("App Secret 前 5 位预览；完整 Secret 只存凭据缝"),
 	defaultPath: z.string().default("").volatile().comment("默认工作区路径（留空=宿主 cwd）"),
 	openId: z.string().default("").volatile().comment("你的 open_id（私聊/测试消息）"),
 	domain: z.union(["feishu", "lark"]).default("feishu").volatile().comment("飞书或 Lark"),

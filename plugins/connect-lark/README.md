@@ -9,8 +9,8 @@
    dsh plugin --profile web add git+https://github.com/oh-summy/dsh-nano-market.git#main&path:/plugins/connect-lark
    ```
 2. **创建应用**：打开 [飞书开放平台](https://open.feishu.cn/app)，创建自建应用并启用机器人。配置页的「创建应用与权限」弹窗提供最小权限清单和复制按钮。
-3. **配置**：填写 App ID 和 App Secret 凭据引用。Secret 只保存在 DSH 凭据缝，应用配置保存在本机 DSH profile，均不进入 Git。
-4. **默认即可**：工作区可复用 DSH 的添加/选择工作区弹窗；模型和思考强度默认跟随 DSH 新会话。
+3. **配置**：填写 App ID 和 App Secret。完整 Secret 只保存在 DSH 凭据缝，应用配置保存在本机 DSH profile，均不进入 Git；页面仅显示前 5 位 + 掩码。
+4. **默认即可**：工作区可通过路径右侧的目录弹窗选择任意文件夹（不会加入 DSH 工作区列表）；模型和思考强度默认跟随 DSH 新会话。
 5. **启用**：插件本身的开关即连接。私聊权限由飞书应用决定，群里固定 @ 机器人触发。
 
 ## 功能
