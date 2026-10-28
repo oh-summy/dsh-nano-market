@@ -9,7 +9,8 @@
 1. **许可红线**：无 LICENSE 文件的项目（如 REALOIYO/dsh-plugin-market、cursor/community-plugins）——
    代码、数据、思想、结构**一律不采用**；唯一允许出现的方式是 README 给用户一行可选链接 + 风险自负提示。
    引用任何外部仓库前先核其 LICENSE；致敬清单写 README（A=代码依赖 / B=思想参考 / C=仅背景不算参考）。
-2. **命名红线**：绝不使用/冒充 @deepseek-ai/* 等保留名；本仓库一切包名走 @oh-summy scope。
+2. **命名红线**：绝不使用/冒充 @deepseek-ai/* 等保留名；本仓库一切包名走 @oh-summy scope；插件名不以 `dsh-` 开头（host 标签由 keywords 承载，见 §5）。
+   **过渡豁免（2026-10-27 订正）**：此约定 2026-10-27 才定，早于此的既有插件不受其约束——本仓库**已注册**的 `@oh-summy/dsh-remote`（catalog 行、tag `dsh-remote@v0.2.0`、`pkg/dsh-remote` 分支、README、CI 守卫）沿用原名。新增插件一律遵守本约定。改名 dsh-remote → remote-control 是**待办**（Issue #16 OPEN；main 分支保护已启用，改名涉及远端历史处理），不是既成事实。
 3. **索引正确性**（Format-1 生成器义务，build/generate.mjs 强制执行）：
    - 每个版本的 name/version 必须等于安装源 manifest 的值（git 源读该 commit 的 package.json，读不到 → 构建失败，不静默跳过）；
    - engines.dsh 原样拷贝 manifest 声明；缺失 → 报错（git 源）或省略该版本（npm 源）；
@@ -50,10 +51,14 @@
 npm install            # 首次（devDeps: @deepseek-ai/dsh-plugin-market-index，MIT，官方校验器）
 npm run build          # node build/generate.mjs → dist/index.json（+ catalog/icons → dist/icons）
 npm run validate       # node build/validate.mjs dist/index.json（官方校验器严格校验，整索引拒绝=失败）
-npm run ci             # build + validate（PR 必须绿）
-npm test               # 生成器断言测试（node --test：合法 / 缺 engines.dsh / name 不等 黄金用例 + pin 锁 / distTags / author / CLI 重名，全离线）
+npm run ci             # npm test && npm run build && npm run validate（PR 必须绿）
+npm test               # 市场生成器断言测试（node --test test/**/*.test.mjs：合法 / 缺 engines.dsh / name 不等 黄金用例 + pin 锁 / distTags / author / CLI 重名，全离线）
 npm run pin            # 新增条目后：解析 ref → 回填 pinnedCommit（首次登记），再提交
 DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 commit），仅验证管线
+插件测试 = 插件自己的 `npm test`（在 plugins/<名>/ 下跑），不进根 npm test——根测试只覆盖市场管线。
+CI 的插件守卫遍历所有 plugins/*/ 自动纳入（有 lockfile 才 `npm ci` → 有 build 脚本才构建 → 有 test 脚本才跑插件测试 → `git status --porcelain -- <plugin>/lib` 判脏/未跟踪）。
+**不要用 `git diff --exit-code`**——它漏掉未跟踪文件，忘提交 lib/ 会假绿。
+**lib/ 必须存在**——市场装的就是 lib/，构建后没产出 lib/ 视为失败。
 构建失败的定位标准：第一条错误必须含 catalog 行号 + 仓库 + 缺什么，不打开生成器源码也能修（验收标准）。
 
 ## 4. catalog 约定（catalog/entries.jsonl）
@@ -67,14 +72,16 @@ DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 com
   sortKeys（stars/downloads 统计）= P3 项，P1/P2 不生成（策展顺序 = catalog 行顺序；与 review-fixes 的 schema 同步，防双事实源）。
 - 加条目 = 加一行 + 一个 PR（CONTRIBUTING 有流程）；粘贴别人的 GitHub URL 上架前：
   先核该仓库许可（红线 1）、找 dsh.bundle 所在目录（path）、确认 manifest 有 engines.dsh（没有提示作者补）。
-- taxonomy v0（写死在 generate.mjs 的 MARKET.metadata）：
+- taxonomy v0（写死在 `build/lib.mjs` 的 `MARKET.metadata`；`generate.mjs` 只是 import 并消费）：
   categories：infra / workflow / skills / tools / ui；labels：mine / experimental / notifier / needs-env / reference。
 
 ## 5. 插件 house 模板（**插件住在本仓库 plugins/<短名>/**，market 即插件的容器——monorepo）
 
-- 每个插件一个目录 plugins/<短名>/（如 plugins/dsh-remote/），内含：package.json
-  （@oh-summy/dsh-<短词>、license MIT、engines.node、engines.dsh 必填、
+- 每个插件一个目录 plugins/<短名>/（如 plugins/connect-lark/），内含：package.json
+  （@oh-summy/<短词>、license MIT、engines.node、engines.dsh 必填、
   keywords 必含 "dsh" 与 "dsh-plugin"、dsh.bundle.patch）+ cordis.patch.yml；
+  **命名约定（2026-10-27 定）**：插件名**不以 `dsh-` 开头**（如同 connect-lark；dsh-remote 是 §1.2 的过渡豁免项）。host 标签/可发现性由 keywords（必含 `dsh`/`dsh-plugin`）承载，市场管线不强制包名含 dsh。
+   **可发现性事实（2026-10-27 订正，勿写错）**：DSH Discover 的搜索**确实依赖名字**——`dsh-plugin-market` 的 MiniSearch 字段为 name/title/keywords/description/author/taxonomy，权重 `name: 3, title: 3, keywords: 2`。所以去掉 `dsh-` 前缀**不妨碍被列出和检索**，但「搜索排序完全不受影响」「名字不参与搜索」都不成立。另外 `package.json` keywords 与市场 keywords 是**两条链路**：npm 搜索用包 manifest，本市场索引用的是 catalog 的 `meta.keywords`（`build/lib.mjs` 的 withMeta，不会自动从 git 源 package.json 复制）——**两者都要保留**。GitHub 仓库 About/Topics 属仓库展示设置，不是 Discover 可发现性的替代或必要条件。
 - 插件版本 = 其 package.json 的 semver，各自独立演进；市场 tag（v*，本仓库）记市场里程碑。
 
 ## 6. 环境与账号
@@ -83,8 +90,9 @@ DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 com
 - agent 入口：`claude.md` 是一个 3 行**实体指针文件**（不是软链——Windows core.symlinks=false 检出时软链会退化成
   内容为裸路径的文本，被 agent 误读；实体指针文件全平台一致）。指针只写「规范在 AGENTS.md，本文件不得承载规范内容」；
   **唯一事实来源永远是 AGENTS.md**，只改它。
-  本仓库 remote 走 git@github-personal:oh-summy/dsh-nano-market（SSH 别名，与 remote-control 一致）。
-- DSH 本机 0.2.1-rc.2；web profile 在 ~/.dsh/profiles/web（patchReload live）。
+  本仓库 remote 走 git@github-personal:oh-summy/dsh-nano-market（SSH 别名 `github-personal`，指向 oh-summy 的 GitHub 账号）。
+- DSH 本机 0.2.1-rc.4（2026-10-27 实测 checkout；此前文档写 rc.2 已过时）；web profile 在 ~/.dsh/profiles/web（patchReload live）。
+  服务名事实（插件注入用）：`ctx.agents`（AgentRegistry，`create`/`resume` → AgentHandle）、`ctx.sessions`（SessionStore）、`ctx.attachments`（AttachmentStore，`saveImages`）、`ctx.llm`（`resolveModelInfo` → inputModalities）、`ctx.credentials`。早期文档里写的 `ctx.agent`/`ctx.session` **不存在**（应为 `ctx.agents`/`ctx.sessions`）。
 - 本地工具链：Node 24（.nvmrc 与 CI 双钉，本地安装保持同一大版本；升级 = 有意的 PR，安全补丁优先跟进）。
   其他语言（Go/Python/Rust…）的工具链属于各插件仓库自身的契约（.nvmrc / rust-toolchain / go.mod 同理），本仓库不声明。
 - 内置源：默认 = 本市场（https://oh-summy.github.io/dsh-nano-market/index.json）；DSH 侧索引源在 Discover 手工添加
@@ -95,7 +103,7 @@ DRY_RUN=1 npm run build  # 离线冒烟：git 条目不真实解析（占位 com
 
 T0 骨架 ✅ → T1 本管线（feat/p1，已合并）→ **外部审查 P0 修订**（feat/conventions：红线 6/7 可执行化、claude.md 实体指针、
 CONTRIBUTING pin 流程；feat/review-fixes：生成器 fixtures/测试、tag pinnedCommit 锁、砍 preset/zip/marketVersion、
-发版机制两分法）→ T2 宿主工具注册 spike → T3 remote-control 打包（@oh-summy/dsh-remote，首个条目含 pinnedCommit）
+发版机制两分法）→ T2 宿主工具注册 spike → T3 dsh-remote 打包（@oh-summy/dsh-remote，首个条目含 pinnedCommit）
 → T5 DSH 端到端（Discover 手工加源 + 安装冒烟）→ 合并 = P1 基建完成（无版本里程碑；**v0.1.0 留给 T3 首条目进场**）。
 P2 见 /Users/rocky/project/dsh-nano-market-roadmap.md。
 
