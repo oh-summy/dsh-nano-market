@@ -2,7 +2,23 @@
 
 Secure remote access to **DeepSeek Harness (DSH)** from anywhere — **Cloudflare quick tunnel → password gate → DSH web profile**, with **Feishu (Lark) notifications** pushed to your phone whenever the entry URL or service state changes.
 
-This is a native DSH plugin living in this monorepo (`plugins/dsh-remote/`): it runs inside the DSH host, manages `cloudflared` + `caddy` itself, and registers the login page as its own listener. The legacy standalone script gateway (`dsh-web` CLI, launchd autostart, `rc.env`) lives in the old repo ([oh-summy/dsh-remote-control](https://github.com/oh-summy/dsh-remote-control)) and is superseded by this plugin — enable one or the other, not both (the plugin fails loud if port 4080 is taken by the script gateway: stop it first).
+## Quick Start
+
+1. **安装**：从市场 Discover 页或直接 `dsh plugin --profile web add @oh-summy/dsh-remote`
+2. **启用**：Plugins 页找到 dsh-remote，打开 `enabled` 开关，重启宿主
+3. **配置**：在管理页填入飞书通知凭据（可选，用于地址变更推送）
+4. **验证**：访问 Cloudflare 隧道地址，输入密码门进入 DSH
+
+> **注意**：旧版独立脚本网关在旧仓库 oh-summy/dsh-remote-control。两者不要同时启用——端口 4080 冲突时插件会明确报错。
+
+## 致谢与参考
+
+本插件是 oh-summy 原创实现，设计参考了以下项目：
+
+| 类型 | 项目 | 许可 | 参考内容 |
+|---|---|---|---|
+| A 代码依赖 | @deepseek-ai/dsh-credentials | MIT | DSH 凭据缝 |
+| A 代码依赖 | zod | MIT | 配置校验 |
 
 ## Install
 
