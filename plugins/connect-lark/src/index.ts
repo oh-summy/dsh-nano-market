@@ -208,8 +208,9 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         appId: plain.appId,
         appSecret,
         transport: "websocket",
-        domain: plain.domain,
-        policy: { requireMention: plain.requireMention },
+        domain: plain.domain === "lark" ? "https://open.larksuite.com" : "https://open.feishu.cn",
+        // Group messages always require an @mention; this is not user-configurable.
+        policy: { requireMention: true },
         safety: { chatQueue: { enabled: true } },
       });
       channel = chan;

@@ -1,5 +1,4 @@
 // Native settings page for @oh-summy/connect-lark.
-// A short, guided setup: Feishu app -> workspace/model -> trigger policy.
 const { jsx, jsxs } = require("react/jsx-runtime");
 const P = require("@deepseek-ai/dsh-client-ui-primitives");
 const { createSnapshotStore } = require("@deepseek-ai/dsh-client-store");
@@ -7,7 +6,7 @@ const { createSnapshotStore } = require("@deepseek-ai/dsh-client-store");
 const NS = "connect-lark.settings";
 const PACKAGE = "@oh-summy/connect-lark";
 const ENTRY = "connect-lark";
-const inject = ["slots", "locale", "remote", "remote.session", "configForms"];
+const inject = ["slots", "locale", "remote", "remote.session", "remote.directoryPicker", "workspaces", "configForms"];
 
 const zh = {
   heroTitle: "把飞书消息交给 DSH",
@@ -18,26 +17,26 @@ const zh = {
   workspace: "工作区与模型",
   workspaceHint: "默认沿用 DSH 当前的工作方式，需要时再覆盖。",
   trigger: "触发方式",
-  triggerHint: "默认允许所有私聊；群里只在 @ 机器人时响应。",
+  triggerHint: "私聊由飞书应用权限决定；群里 @ 机器人即可响应。",
   feishu: "飞书 · 国内",
   lark: "Lark · 海外",
   appId: "App ID",
-  appIdHint: "飞书开放平台里，自建应用的 App ID。",
+  appIdHint: "应用信息仅保存在本机 DSH 配置中，页面默认掩码显示。",
   appSecretRef: "App Secret 凭据引用",
-  appSecretRefHint: "填写 DSH 凭据缝中的引用名，不在此保存明文 Secret。",
+  appSecretRefHint: "Secret 保存在 DSH 凭据缝，不进入 Git，也不会在页面显示。",
   defaultPath: "默认工作区",
-  defaultPathHint: "填写本机目录的绝对路径；留空则使用 DSH 当前工作目录。",
+  defaultPathHint: "从 DSH 工作区中选择，或使用同样的目录选择器添加。",
+  addWorkspace: "添加工作区",
+  addingWorkspace: "正在选择目录…",
+  workspaceFailed: "未能添加工作区，请重试。",
   model: "模型",
-  modelHint: "默认跟随 DSH 当前模型，也可以为此插件单独选择。",
+  modelHint: "默认使用 DSH 新会话的模型；只有需要时才单独覆盖。",
   reasoningEffort: "思考强度",
-  reasoningEffortHint: "默认跟随所选模型；只有支持的模型才提供可选项。",
-  requireMention: "群里需要 @ 机器人",
-  requireMentionHint: "避免机器人响应群里的每一条普通消息。",
-  senderAllowlist: "仅允许指定用户私聊",
-  senderAllowlistHint: "可选。每行或逗号分隔一个 Open ID；留空表示不限制。",
-  privateLimit: "限制私聊用户（可选）",
+  reasoningEffortHint: "默认使用 DSH 新会话的思考强度。",
   followDsh: "跟随 DSH 当前配置",
   followModel: "跟随模型默认",
+  searchModels: "搜索模型或提供方…",
+  noModels: "没有匹配的模型",
   catalogLoading: "正在读取 DSH 可用模型…",
   catalogError: "模型列表暂时不可用，仍可跟随 DSH 当前配置。",
   retry: "重试",
@@ -46,14 +45,32 @@ const zh = {
   saveFailed: "配置未保存，请检查字段后重试。",
   readOnly: "当前部署的配置为只读。",
   unavailable: "connect-lark 未运行，暂时无法配置。",
-  overridden: "已覆盖",
-  reset: "恢复默认",
   appIdPlaceholder: "cli_xxxxxxxx",
   secretPlaceholder: "CONNECT_LARK_APP_SECRET",
-  pathPlaceholder: "/Users/you/project",
-  privatePlaceholder: "ou_xxxxx\nou_yyyyy",
+  guideButton: "创建应用与权限",
+  guideTitle: "创建飞书应用",
+  guideIntro: "在飞书开放平台完成下面几步，然后回到这里填写应用信息。",
+  guideStep1: "创建自建应用",
+  guideStep1Text: "打开飞书开放平台，创建企业自建应用，并在「凭证与基础信息」里找到 App ID 和 App Secret。",
+  guideStep2: "启用机器人能力",
+  guideStep2Text: "在「应用能力」中添加机器人。私聊是否可用由飞书应用自身的使用权限决定。",
+  guideStep3: "配置权限与事件",
+  guideStep3Text: "在「权限管理」开通下列权限；在「事件订阅」选择 WebSocket 长连接并添加消息接收事件。",
+  guideOpen: "打开飞书开放平台",
+  guideCopy: "复制配置清单",
+  guideCopied: "已复制",
+  guideClose: "关闭",
+  guideNote: "这是一份最小配置清单，不是密钥；可以复制给应用管理员核对。",
+  fixedTrigger: "群里 @ 机器人即可触发，无需额外设置。",
 };
 const en = { ...zh };
+
+const GUIDE_JSON = JSON.stringify({
+  capability: "机器人",
+  permissions: ["im:message", "im:message:send_as_bot", "im:resource"],
+  event: "im.message.receive_v1",
+  connection: "WebSocket 长连接",
+}, null, 2);
 
 const FIELDS = [
   { path: "appId", kind: "text" },
@@ -63,33 +80,24 @@ const FIELDS = [
   { path: "provider", kind: "text" },
   { path: "model", kind: "text" },
   { path: "reasoningEffort", kind: "text" },
-  { path: "requireMention", kind: "boolean" },
-  { path: "senderAllowlist", kind: "list" },
 ];
-
-function parseList(text) {
-  return [...new Set(text.split(/[\n,]/).map((item) => item.trim()).filter(Boolean))];
-}
 
 function definition(field) {
   const base = P.settingsTextField(field.path);
-  const result = {
+  return {
     ...base,
     parse(text) {
-      if (field.kind === "boolean") return { kind: "set", value: text === "true" };
-      if (field.kind === "list") return { kind: "set", value: parseList(text) };
       if (field.kind === "choice") return field.choices.includes(text) ? { kind: "set", value: text } : undefined;
       const value = text.trim();
       return value === "" ? { kind: "clear" } : { kind: "set", value };
     },
   };
-  if (field.kind === "boolean") result.format = (value) => value === true ? "true" : "false";
-  if (field.kind === "list") result.format = (value) => Array.isArray(value) ? value.join("\n") : "";
-  return result;
 }
 
 class LarkSettingsModel {
   constructor(ctx) {
+    this.ctx = ctx;
+    this.workspaces = ctx.get("workspaces");
     this.catalog = { status: "loading", groups: [], failures: [], default: null };
     this.form = new P.SettingsFormModel(ctx.configForms.get(ENTRY), FIELDS.map(definition));
     this.formState = this.form.bind(() => ({
@@ -98,19 +106,18 @@ class LarkSettingsModel {
     }));
     this.store = createSnapshotStore(this.projection());
     this.unsubscribe = this.formState.subscribe?.(() => this.publish());
-    this.loadCatalog(ctx);
+    this.unsubscribeWorkspaces = this.workspaces.list.subscribe?.(() => { this.checkWorkspaceAdded(); this.publish(); });
+    this.loadCatalog();
   }
   projection() {
-    return { ...this.formState.getSnapshot(), catalog: this.catalog };
+    return { ...this.formState.getSnapshot(), catalog: this.catalog, workspaces: this.workspaces.list.getSnapshot() };
   }
-  publish() {
-    this.store.set(this.projection());
-  }
-  async loadCatalog(ctx) {
+  publish() { this.store.set(this.projection()); }
+  async loadCatalog() {
     this.catalog = { ...this.catalog, status: "loading" };
     this.publish();
     try {
-      const response = await ctx.remote.session.modelCatalog();
+      const response = await this.ctx.remote.session.modelCatalog();
       if (!response.ok) throw new Error(response.error?.message || "model catalog failed");
       this.catalog = { status: "ready", groups: response.value.groups, failures: response.value.failures || [], default: response.value.default || null };
     } catch (error) {
@@ -118,22 +125,46 @@ class LarkSettingsModel {
     }
     this.publish();
   }
+  addWorkspace() {
+    // Reuse DSH's own Add workspace button so its native directory flow owns
+    // the dialog, cancellation, and workspace creation. After a new workspace
+    // appears in the shared list, adopt its path as this plugin's default.
+    this.workspaceBaseline = new Set((this.workspaces.list.getSnapshot().items || []).map((item) => item.workspaceId));
+    const buttons = [...document.querySelectorAll('button[aria-label="添加工作区"]')].filter((button) => !button.classList.contains("cl-workspace-add"));
+    const button = buttons[0];
+    if (!button) {
+      this.workspaceBaseline = null;
+      throw new Error("DSH workspace picker is unavailable");
+    }
+    button.click();
+    this.checkWorkspaceAdded();
+  }
+  checkWorkspaceAdded() {
+    if (!this.workspaceBaseline) return;
+    const added = (this.workspaces.list.getSnapshot().items || []).find((item) => !this.workspaceBaseline.has(item.workspaceId));
+    if (!added) return;
+    this.workspaceBaseline = null;
+    this.form.actions().edit("defaultPath", added.path);
+    this.publish();
+  }
   inject() {
     return {
       hooks: { larkSettings: this.store },
       ...this.form.actions(),
-      refreshCatalog: () => this.loadCatalog(this.ctx),
+      refreshCatalog: () => this.loadCatalog(),
+      addWorkspace: () => this.addWorkspace(),
     };
   }
   dispose() {
     this.unsubscribe?.();
+    this.unsubscribeWorkspaces?.();
     this.form.dispose();
   }
 }
 
 const styles = `
 .cl-wrap{--cl-blue:#3370ff;--cl-ink:#1f2329;--cl-muted:#646a73;--cl-border:#e5e7eb;color:var(--cl-ink);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Segoe UI",sans-serif;max-width:780px;padding:2px 0 8px}
-.cl-hero{position:relative;overflow:hidden;border:1px solid #dfe8fb;border-radius:16px;padding:22px 24px;background:linear-gradient(135deg,#f4f7ff 0%,#fff 72%);margin-bottom:18px}
+.cl-hero{border:1px solid #dfe8fb;border-radius:16px;padding:22px 24px;background:linear-gradient(135deg,#f4f7ff 0%,#fff 72%);margin-bottom:18px}
 .cl-hero-top{display:flex;align-items:center;justify-content:space-between;gap:16px}
 .cl-hero h4{margin:0;font-size:20px;line-height:1.35;letter-spacing:-.02em;font-weight:680}
 .cl-hero p{margin:8px 0 0;color:var(--cl-muted);font-size:13px;line-height:1.65;max-width:560px}
@@ -147,51 +178,89 @@ const styles = `
 .cl-number{display:inline-flex;align-items:center;justify-content:center;min-width:27px;height:22px;border-radius:6px;background:#edf3ff;color:var(--cl-blue);font-size:11px;font-weight:700;letter-spacing:.04em}
 .cl-section h5{margin:1px 0 0;font-size:14px;font-weight:650}
 .cl-section p{margin:5px 0 0;color:var(--cl-muted);font-size:12px;line-height:1.55}
+.cl-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.cl-guide-link{border:0;background:transparent;color:var(--cl-blue);font:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:2px 0;white-space:nowrap}
 .cl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
 .cl-field{min-width:0;margin-bottom:16px}
 .cl-field:last-child{margin-bottom:0}
 .cl-label{display:block;font-size:12px;font-weight:600;margin-bottom:7px;color:#30343b}
-.cl-input,.cl-select,.cl-textarea{box-sizing:border-box;width:100%;border:1px solid #d8dde5;border-radius:8px;background:#fff;color:var(--cl-ink);padding:9px 11px;font:inherit;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s}
-.cl-input:focus,.cl-select:focus,.cl-textarea:focus,.cl-segment button:focus-visible,.cl-toggle input:focus-visible{outline:none;border-color:var(--cl-blue);box-shadow:0 0 0 3px rgba(51,112,255,.12)}
-.cl-input:disabled,.cl-select:disabled,.cl-textarea:disabled{background:#f5f6f7;color:#8f959e}
+.cl-input,.cl-select,.cl-picker-trigger{box-sizing:border-box;width:100%;border:1px solid #d8dde5;border-radius:8px;background:#fff;color:var(--cl-ink);padding:9px 11px;font:inherit;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s}
+.cl-input:focus,.cl-select:focus,.cl-picker-trigger:focus-visible,.cl-segment button:focus-visible{outline:none;border-color:var(--cl-blue);box-shadow:0 0 0 3px rgba(51,112,255,.12)}
+.cl-input:disabled,.cl-select:disabled,.cl-picker-trigger:disabled{background:#f5f6f7;color:#8f959e}
 .cl-hint{margin:6px 0 0;color:var(--cl-muted);font-size:11px;line-height:1.55}
 .cl-segment{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#f2f3f5;border-radius:10px;padding:4px;margin-bottom:18px}
 .cl-segment button{border:1px solid transparent;border-radius:7px;background:transparent;color:#5f6672;padding:8px 12px;font:inherit;font-size:12px;cursor:pointer}
 .cl-segment button[aria-checked="true"]{background:#fff;color:var(--cl-blue);border-color:#cfdcff;box-shadow:0 1px 4px rgba(31,35,41,.06);font-weight:600}
-.cl-toggle{display:flex;align-items:flex-start;gap:11px;padding:2px 0}
-.cl-toggle input{width:17px;height:17px;margin:2px 0 0;accent-color:var(--cl-blue);flex-shrink:0}
-.cl-toggle label{font-size:13px;font-weight:550;cursor:pointer}
-.cl-details{border-top:1px solid #eef0f2;margin-top:16px;padding-top:14px}
-.cl-details summary{cursor:pointer;color:#3d4652;font-size:12px;font-weight:600;outline:none}
-.cl-details summary:focus-visible{outline:2px solid var(--cl-blue);outline-offset:4px;border-radius:3px}
-.cl-details-body{padding-top:14px}
-.cl-textarea{min-height:82px;resize:vertical;line-height:1.5}
+.cl-workspace-add{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;margin-top:10px;border:1px dashed #cbd5e4;border-radius:8px;background:#f8faff;color:#315dc4;padding:8px 10px;font:inherit;font-size:12px;font-weight:600;cursor:pointer}
+.cl-workspace-add:hover{background:#eff4ff;border-color:#9fb8ee}
+.cl-picker{position:relative;min-width:0}
+.cl-picker-trigger{display:flex;align-items:center;gap:9px;text-align:left;cursor:pointer;min-height:54px}
+.cl-picker-text{min-width:0;flex:1}
+.cl-picker-title{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;font-size:13px}
+.cl-picker-sub{display:block;color:var(--cl-muted);font-size:10px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cl-chevron{color:#7a8492;font-size:11px;flex-shrink:0}
+.cl-menu-shield{position:fixed;inset:0;z-index:60;background:transparent}
+.cl-menu{position:absolute;z-index:61;left:0;right:0;top:calc(100% + 7px);background:#fff;border:1px solid #e1e5eb;border-radius:12px;box-shadow:0 12px 36px rgba(31,35,41,.14);padding:8px;max-height:330px;overflow:auto}
+.cl-search{box-sizing:border-box;width:100%;border:1px solid #e0e4ea;border-radius:7px;padding:8px 9px;font:inherit;font-size:12px;outline:none;margin-bottom:7px}
+.cl-search:focus{border-color:var(--cl-blue)}
+.cl-group-label{padding:8px 8px 5px;color:#8a94a6;font-size:10px;font-weight:650;text-transform:uppercase;letter-spacing:.05em}
+.cl-option{display:flex;align-items:center;gap:9px;width:100%;border:0;border-radius:7px;background:transparent;text-align:left;padding:9px 8px;color:var(--cl-ink);font:inherit;cursor:pointer}
+.cl-option:hover{background:#f3f6fb}
+.cl-option[aria-selected="true"]{background:#edf3ff;color:#2456b8}
+.cl-option-text{flex:1;min-width:0}
+.cl-option-name{display:block;font-size:12px;font-weight:550}
+.cl-option-desc{display:block;color:var(--cl-muted);font-size:10px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cl-check{color:var(--cl-blue);font-size:12px;font-weight:700}
+.cl-empty{padding:18px;text-align:center;color:var(--cl-muted);font-size:12px}
+.cl-trigger-note{display:flex;align-items:flex-start;gap:12px;background:#f7f9fc;border-radius:10px;padding:13px 14px;color:#445066;font-size:12px;line-height:1.6}
+.cl-at{display:inline-flex;align-items:center;justify-content:center;width:25px;height:25px;border-radius:7px;background:#e7efff;color:var(--cl-blue);font-weight:700;flex-shrink:0}
 .cl-catalog-error{display:flex;align-items:center;gap:10px;color:#8a5a00;background:#fff8e8;border-radius:8px;padding:8px 10px;font-size:11px;margin-bottom:12px}
 .cl-retry{border:0;background:transparent;color:var(--cl-blue);font:inherit;font-weight:600;cursor:pointer;padding:2px}
-@media(max-width:560px){.cl-hero{padding:18px}.cl-hero-top{align-items:flex-start;flex-direction:column}.cl-card{padding:17px}.cl-path{font-size:11px}.cl-status{white-space:normal}}
-@media(prefers-reduced-motion:reduce){.cl-input,.cl-select,.cl-textarea{transition:none}}
+.cl-modal-backdrop{position:fixed;inset:0;z-index:1000;background:rgba(20,26,36,.38);display:flex;align-items:center;justify-content:center;padding:22px;backdrop-filter:blur(3px)}
+.cl-modal{width:min(600px,100%);max-height:min(760px,90vh);overflow:auto;background:#fff;border-radius:18px;box-shadow:0 24px 80px rgba(20,26,36,.25);padding:26px}
+.cl-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.cl-modal h3{margin:0;font-size:20px;letter-spacing:-.02em}
+.cl-modal-intro{margin:8px 0 20px;color:var(--cl-muted);font-size:12px;line-height:1.65}
+.cl-close{border:0;background:#f2f3f5;color:#59616d;border-radius:8px;width:30px;height:30px;font:inherit;cursor:pointer;flex-shrink:0}
+.cl-step{display:flex;gap:13px;margin:18px 0}
+.cl-step-number{display:inline-flex;align-items:center;justify-content:center;width:25px;height:25px;border-radius:50%;background:#edf3ff;color:var(--cl-blue);font-size:11px;font-weight:700;flex-shrink:0}
+.cl-step h4{margin:1px 0 5px;font-size:13px}
+.cl-step p{margin:0;color:var(--cl-muted);font-size:12px;line-height:1.65}
+.cl-code{position:relative;background:#161b26;color:#dce6f5;border-radius:12px;padding:16px;font:11px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow:auto}
+.cl-modal-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:20px;flex-wrap:wrap}
+.cl-primary,.cl-secondary{display:inline-flex;align-items:center;justify-content:center;border-radius:8px;padding:9px 13px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none}
+.cl-primary{border:1px solid var(--cl-blue);background:var(--cl-blue);color:#fff}
+.cl-secondary{border:1px solid #d8dde5;background:#fff;color:#374151}
+.cl-modal-note{color:var(--cl-muted);font-size:10px;margin-top:12px;line-height:1.5}
+@media(max-width:560px){.cl-hero{padding:18px}.cl-hero-top{align-items:flex-start;flex-direction:column}.cl-card{padding:17px}.cl-status{white-space:normal}.cl-modal{padding:20px}.cl-section-head{flex-direction:column}.cl-guide-link{align-self:flex-start}}
+@media(prefers-reduced-motion:reduce){.cl-input,.cl-select,.cl-picker-trigger{transition:none}.cl-modal-backdrop{backdrop-filter:none}}
 `;
 
 function Field({ label, hint, children }) {
   return jsxs("div", { className: "cl-field", children: [
-    jsx("span", { className: "cl-label", children: label }),
-    children,
+    jsx("span", { className: "cl-label", children: label }), children,
     hint ? jsx("p", { className: "cl-hint", children: hint }) : null,
   ] });
 }
 
-function TextField({ id, label, hint, value, placeholder, disabled, onEdit }) {
+function TextField({ id, label, hint, value, placeholder, disabled, onEdit, mask = false }) {
+  const [focused, setFocused] = React.useState(false);
+  const text = mask && !focused && value.text.length > 5 ? value.text.slice(0, 5) + "*****" : value.text;
   return jsx(Field, { label, hint, children: jsx("input", {
-    id, className: "cl-input", value: value.text, placeholder, disabled,
+    id, className: "cl-input", value: text, placeholder, disabled,
+    onFocus: () => setFocused(true), onBlur: () => setFocused(false),
     onChange: (event) => onEdit(event.target.value),
   }) });
 }
 
-function Section({ number, title, hint, children }) {
+function Section({ number, title, hint, action, children }) {
   return jsxs("section", { className: "cl-card", children: [
-    jsxs("div", { className: "cl-section", children: [
-      jsx("span", { className: "cl-number", children: number }),
-      jsxs("div", { children: [jsx("h5", { children: title }), jsx("p", { children: hint })] }),
+    jsxs("div", { className: "cl-section-head", children: [
+      jsxs("div", { className: "cl-section", children: [
+        jsx("span", { className: "cl-number", children: number }),
+        jsxs("div", { children: [jsx("h5", { children: title }), jsx("p", { children: hint })] }),
+      ] }),
+      action || null,
     ] }),
     children,
   ] });
@@ -207,26 +276,154 @@ function modelName(catalog, provider, model) {
   return model;
 }
 
-function LarkConfigCard(props) {
-  const state = props.useLarkSettings((snapshot) => snapshot);
-  const t = props.t;
-  const disabled = !state.writable;
-  const value = (path) => state.fields[path];
-  const edit = (path) => (text) => props.edit(path, text);
+function ModelPicker({ state, value, edit, t, disabled }) {
+  const [open, setOpen] = React.useState(null);
+  const [query, setQuery] = React.useState("");
   const route = value("provider").text && value("model").text ? value("provider").text + "/" + value("model").text : "";
   const selectedGroup = (state.catalog.groups || []).find((group) => group.id === value("provider").text);
   const selectedModel = selectedGroup?.models.find((model) => model.id === value("model").text);
   const efforts = selectedModel?.reasoning?.efforts || [];
   const defaultRoute = state.catalog.default;
-  const defaultLabel = defaultRoute ? t("followDsh") + " · " + modelName(state.catalog, defaultRoute.provider, defaultRoute.model) : t("followDsh");
+  const defaultName = defaultRoute ? modelName(state.catalog, defaultRoute.provider, defaultRoute.model) : "";
+  const currentName = route ? modelName(state.catalog, value("provider").text, value("model").text) : t("followDsh");
+  const currentEffort = value("reasoningEffort").text || t("followModel");
+  const filteredGroups = (state.catalog.groups || []).map((group) => ({
+    ...group,
+    models: group.models.filter((model) => (group.name + " " + model.name).toLowerCase().includes(query.trim().toLowerCase())),
+  })).filter((group) => group.models.length > 0);
+  const close = () => setOpen(null);
+  return jsxs("div", { className: "cl-grid", children: [
+    jsxs("div", { className: "cl-picker", children: [
+      jsx("span", { className: "cl-label", children: t("model") }),
+      jsxs("button", { type: "button", className: "cl-picker-trigger", disabled: disabled || state.catalog.status === "loading", onClick: () => setOpen(open === "model" ? null : "model"), children: [
+        jsxs("span", { className: "cl-picker-text", children: [
+          jsx("span", { className: "cl-picker-title", children: currentName }),
+          jsx("span", { className: "cl-picker-sub", children: route ? value("provider").text : defaultName ? "DSH 默认 · " + defaultName : t("followDsh") }),
+        ] }),
+        jsx("span", { className: "cl-chevron", children: open === "model" ? "▲" : "▼" }),
+      ] }),
+      jsx("p", { className: "cl-hint", children: t("modelHint") }),
+      open === "model" ? jsxs(React.Fragment, { children: [
+        jsx("div", { className: "cl-menu-shield", onClick: close }),
+        jsxs("div", { className: "cl-menu", role: "listbox", children: [
+          jsx("input", { className: "cl-search", value: query, placeholder: t("searchModels"), autoFocus: true, onChange: (event) => setQuery(event.target.value) }),
+          query.trim() === "" ? jsx("button", { className: "cl-option", role: "option", "aria-selected": !route, onClick: () => { edit("provider")(""); edit("model")(""); edit("reasoningEffort")(""); close(); }, children: jsxs("span", { className: "cl-option-text", children: [
+            jsx("span", { className: "cl-option-name", children: t("followDsh") }),
+            defaultName ? jsx("span", { className: "cl-option-desc", children: "DSH 默认 · " + defaultName }) : null,
+          ] }) }) : null,
+          filteredGroups.map((group) => jsxs("div", { children: [
+            jsx("div", { className: "cl-group-label", children: group.name }),
+            group.models.map((model) => jsx("button", {
+              className: "cl-option", role: "option", "aria-selected": route === group.id + "/" + model.id,
+              onClick: () => { edit("provider")(group.id); edit("model")(model.id); edit("reasoningEffort")(""); close(); },
+              children: jsxs("span", { className: "cl-option-text", children: [
+                jsx("span", { className: "cl-option-name", children: model.name }),
+                model.description ? jsx("span", { className: "cl-option-desc", children: model.description }) : null,
+              ] }),
+            }, group.id + "/" + model.id)),
+          ] }, group.id)),
+          filteredGroups.length === 0 ? jsx("div", { className: "cl-empty", children: t("noModels") }) : null,
+        ] }),
+      ] }) : null,
+    ] }),
+    jsxs("div", { className: "cl-picker", children: [
+      jsx("span", { className: "cl-label", children: t("reasoningEffort") }),
+      jsxs("button", { type: "button", className: "cl-picker-trigger", disabled: disabled || !selectedModel?.reasoning, onClick: () => setOpen(open === "effort" ? null : "effort"), children: [
+        jsxs("span", { className: "cl-picker-text", children: [
+          jsx("span", { className: "cl-picker-title", children: currentEffort }),
+          jsx("span", { className: "cl-picker-sub", children: selectedModel ? selectedModel.name : t("followDsh") }),
+        ] }),
+        jsx("span", { className: "cl-chevron", children: open === "effort" ? "▲" : "▼" }),
+      ] }),
+      jsx("p", { className: "cl-hint", children: t("reasoningEffortHint") }),
+      open === "effort" ? jsxs(React.Fragment, { children: [
+        jsx("div", { className: "cl-menu-shield", onClick: close }),
+        jsxs("div", { className: "cl-menu", role: "listbox", children: [
+          jsx("button", { className: "cl-option", role: "option", "aria-selected": !value("reasoningEffort").text, onClick: () => { edit("reasoningEffort")(""); close(); }, children: jsx("span", { className: "cl-option-name", children: t("followModel") }) }),
+          efforts.map((effort) => jsx("button", {
+            className: "cl-option", role: "option", "aria-selected": value("reasoningEffort").text === effort.id,
+            onClick: () => { edit("reasoningEffort")(effort.id); close(); },
+            children: jsxs("span", { className: "cl-option-text", children: [
+              jsx("span", { className: "cl-option-name", children: effort.name }),
+              effort.description ? jsx("span", { className: "cl-option-desc", children: effort.description }) : null,
+            ] }),
+          }, effort.id)),
+        ] }),
+      ] }) : null,
+    ] }),
+  ] });
+}
+
+function WorkspacePicker({ state, value, onEdit, onAdd, t, disabled }) {
+  const [failed, setFailed] = React.useState(false);
+  const items = state.workspaces?.items || [];
+  const add = () => {
+    setFailed(false);
+    try { onAdd(); } catch { setFailed(true); }
+  };
+  return jsxs("div", { children: [
+    jsx(Field, { label: t("defaultPath"), hint: t("defaultPathHint"), children: jsxs("select", {
+      id: "connect-lark-defaultPath", className: "cl-select", value: value.text, disabled,
+      onChange: (event) => onEdit(event.target.value),
+      children: [
+        jsx("option", { value: "", children: t("followDsh") }),
+        value.text && !items.some((item) => item.path === value.text) ? jsx("option", { value: value.text, children: value.text }) : null,
+        items.map((item) => jsx("option", { value: item.path, children: item.title + " · " + item.path }, item.workspaceId)),
+      ],
+    }) }),
+    jsx("button", { type: "button", className: "cl-workspace-add", disabled, onClick: add, children: "+ " + t("addWorkspace") }),
+    failed ? jsx("p", { className: "cl-hint", role: "status", children: t("workspaceFailed") }) : null,
+  ] });
+}
+
+function GuideDialog({ onClose, t }) {
+  const [copied, setCopied] = React.useState(false);
+  React.useEffect(() => {
+    const listener = (event) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", listener);
+    return () => document.removeEventListener("keydown", listener);
+  }, [onClose]);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(GUIDE_JSON); setCopied(true); } catch { setCopied(false); }
+  };
+  return jsx("div", { className: "cl-modal-backdrop", onClick: onClose, children: jsxs("div", {
+    className: "cl-modal", role: "dialog", "aria-modal": "true", "aria-label": t("guideTitle"), onClick: (event) => event.stopPropagation(),
+    children: [
+      jsxs("div", { className: "cl-modal-head", children: [
+        jsx("h3", { children: t("guideTitle") }),
+        jsx("button", { className: "cl-close", type: "button", "aria-label": t("guideClose"), onClick: onClose, children: "×" }),
+      ] }),
+      jsx("p", { className: "cl-modal-intro", children: t("guideIntro") }),
+      [
+        [t("guideStep1"), t("guideStep1Text")],
+        [t("guideStep2"), t("guideStep2Text")],
+        [t("guideStep3"), t("guideStep3Text")],
+      ].map(([title, text], index) => jsxs("div", { className: "cl-step", children: [
+        jsx("span", { className: "cl-step-number", children: String(index + 1).padStart(2, "0") }),
+        jsxs("div", { children: [jsx("h4", { children: title }), jsx("p", { children: text })] }),
+      ] }, title)),
+      jsx("pre", { className: "cl-code", children: GUIDE_JSON }),
+      jsxs("div", { className: "cl-modal-actions", children: [
+        jsx("a", { className: "cl-primary", href: "https://open.feishu.cn/app", target: "_blank", rel: "noreferrer", children: t("guideOpen") + " ↗" }),
+        jsx("button", { className: "cl-secondary", type: "button", onClick: copy, children: copied ? t("guideCopied") + " ✓" : t("guideCopy") }),
+      ] }),
+      jsx("p", { className: "cl-modal-note", children: t("guideNote") }),
+    ],
+  }) });
+}
+
+function LarkConfigCard(props) {
+  const state = props.useLarkSettings((snapshot) => snapshot);
+  const [guideOpen, setGuideOpen] = React.useState(false);
+  const t = props.t;
+  const disabled = !state.writable;
+  const value = (path) => state.fields[path];
+  const edit = (path) => (text) => props.edit(path, text);
   return jsxs("div", { className: "cl-wrap", children: [
     jsx("style", { children: styles }),
     jsxs("div", { className: "cl-hero", children: [
       jsxs("div", { className: "cl-hero-top", children: [
-        jsxs("div", { children: [
-          jsx("h4", { children: t("heroTitle") }),
-          jsx("p", { children: t("heroDescription") }),
-        ] }),
+        jsxs("div", { children: [jsx("h4", { children: t("heroTitle") }), jsx("p", { children: t("heroDescription") })] }),
         jsx("span", { className: "cl-status", children: t("heroStatus") }),
       ] }),
       jsxs("div", { className: "cl-path", "aria-hidden": "true", children: [
@@ -237,73 +434,30 @@ function LarkConfigCard(props) {
     ] }),
     jsx(P.SettingsForm, {
       labels: { unavailable: t("unavailable"), readOnly: t("readOnly"), saveFailed: t("saveFailed"), save: t("save"), saving: t("saving") },
-      state,
-      onSave: props.save,
-      onDiscard: props.discard,
+      state, onSave: props.save, onDiscard: props.discard,
       children: [
-        jsx(Section, { number: "01", title: t("connection"), hint: t("connectionHint"), children: [
+        jsx(Section, { number: "01", title: t("connection"), hint: t("connectionHint"), action: jsx("button", { type: "button", className: "cl-guide-link", onClick: () => setGuideOpen(true), children: t("guideButton") + " ↗" }), children: [
           jsx("div", { className: "cl-segment", role: "radiogroup", "aria-label": t("domain"), children: ["feishu", "lark"].map((domain) => jsx("button", {
             type: "button", role: "radio", "aria-checked": value("domain").text === domain,
             disabled, onClick: () => edit("domain")(domain), children: t(domain),
           }, domain)) }),
           jsxs("div", { className: "cl-grid", children: [
-            jsx(TextField, { id: "connect-lark-appId", label: t("appId"), hint: t("appIdHint"), value: value("appId"), placeholder: t("appIdPlaceholder"), disabled, onEdit: edit("appId") }),
+            jsx(TextField, { id: "connect-lark-appId", label: t("appId"), hint: t("appIdHint"), value: value("appId"), placeholder: t("appIdPlaceholder"), disabled, onEdit: edit("appId"), mask: true }),
             jsx(TextField, { id: "connect-lark-appSecretRef", label: t("appSecretRef"), hint: t("appSecretRefHint"), value: value("appSecretRef"), placeholder: t("secretPlaceholder"), disabled, onEdit: edit("appSecretRef") }),
           ] }),
         ] }, "connection"),
         jsx(Section, { number: "02", title: t("workspace"), hint: t("workspaceHint"), children: [
-          jsx(TextField, { id: "connect-lark-defaultPath", label: t("defaultPath"), hint: t("defaultPathHint"), value: value("defaultPath"), placeholder: t("pathPlaceholder"), disabled, onEdit: edit("defaultPath") }),
+          jsx(WorkspacePicker, { state, value: value("defaultPath"), onEdit: edit("defaultPath"), onAdd: props.addWorkspace, t, disabled }),
           state.catalog.status === "error" ? jsxs("div", { className: "cl-catalog-error", children: [t("catalogError"), jsx("button", { className: "cl-retry", type: "button", onClick: props.refreshCatalog, children: t("retry") })] }) : null,
-          jsxs("div", { className: "cl-grid", children: [
-            jsx(Field, { label: t("model"), hint: t("modelHint"), children: jsxs("select", {
-              id: "connect-lark-model", className: "cl-select", value: route, disabled: disabled || state.catalog.status === "loading",
-              onChange: (event) => {
-                const next = event.target.value;
-                if (!next) {
-                  edit("provider")("");
-                  edit("model")("");
-                } else {
-                  const [provider, model] = next.split("/");
-                  edit("provider")(provider);
-                  edit("model")(model);
-                }
-                edit("reasoningEffort")("");
-              },
-              children: [
-                jsx("option", { value: "", children: state.catalog.status === "loading" ? t("catalogLoading") : defaultLabel }),
-                route && !(state.catalog.groups || []).some((group) => group.id + "/" + value("model").text === route) ? jsx("option", { value: route, children: route }) : null,
-                (state.catalog.groups || []).map((group) => jsx("optgroup", { label: group.name, children: group.models.map((model) => jsx("option", { value: group.id + "/" + model.id, children: model.name }, group.id + "/" + model.id)) }, group.id)),
-              ],
-            }) }),
-            jsx(Field, { label: t("reasoningEffort"), hint: t("reasoningEffortHint"), children: jsxs("select", {
-              id: "connect-lark-reasoningEffort", className: "cl-select", value: value("reasoningEffort").text,
-              disabled: disabled || !selectedModel?.reasoning,
-              onChange: (event) => edit("reasoningEffort")(event.target.value),
-              children: [
-                jsx("option", { value: "", children: t("followModel") }),
-                efforts.map((effort) => jsx("option", { value: effort.id, children: effort.name }, effort.id)),
-              ],
-            }) }),
-          ] }),
+          jsx(ModelPicker, { state, value, edit, t, disabled }),
         ] }, "workspace"),
-        jsx(Section, { number: "03", title: t("trigger"), hint: t("triggerHint"), children: [
-          jsxs("div", { className: "cl-toggle", children: [
-            jsx("input", { id: "connect-lark-requireMention", type: "checkbox", checked: value("requireMention").text === "true", disabled, onChange: (event) => edit("requireMention")(event.target.checked ? "true" : "false") }),
-            jsxs("div", { children: [
-              jsx("label", { htmlFor: "connect-lark-requireMention", children: t("requireMention") }),
-              jsx("p", { className: "cl-hint", children: t("requireMentionHint") }),
-            ] }),
-          ] }),
-          jsxs("details", { className: "cl-details", children: [
-            jsx("summary", { children: t("privateLimit") }),
-            jsx("div", { className: "cl-details-body", children: jsx(Field, { label: t("senderAllowlist"), hint: t("senderAllowlistHint"), children: jsx("textarea", {
-              id: "connect-lark-senderAllowlist", className: "cl-textarea", value: value("senderAllowlist").text,
-              placeholder: t("privatePlaceholder"), disabled, onChange: (event) => edit("senderAllowlist")(event.target.value),
-            }) }) }),
-          ] }),
-        ] }, "trigger"),
+        jsx(Section, { number: "03", title: t("trigger"), hint: t("triggerHint"), children: jsxs("div", { className: "cl-trigger-note", children: [
+          jsx("span", { className: "cl-at", children: "@" }),
+          jsx("span", { children: t("fixedTrigger") }),
+        ] }) }, "trigger"),
       ],
     }),
+    guideOpen ? jsx(GuideDialog, { onClose: () => setGuideOpen(false), t }) : null,
   ] });
 }
 
@@ -311,14 +465,11 @@ function apply(ctx) {
   const t = ctx.locale.bind(NS);
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), "connect-lark: dictionaries");
   const model = new LarkSettingsModel(ctx);
-  model.ctx = ctx;
   ctx.effect(() => () => model.dispose(), "connect-lark: form subscription");
   ctx.effect(() => ctx.configForms.whileServed([ENTRY], () => ctx.slots.inject(
     "plugins.bundle.config",
     () => ctx.slots.register({
-      name: "plugins.bundle.config",
-      key: PACKAGE,
-      locale: NS,
+      name: "plugins.bundle.config", key: PACKAGE, locale: NS,
       inject: () => model.inject(),
     }, LarkConfigCard),
   )), "connect-lark: settings page");

@@ -41,7 +41,7 @@ channel 仍是 0.x，精确 pin 版本（不用 `^`）、锁依赖、显式设�
 
 ### 6. 默认放行，按聊天类型可选限制
 
-飞书应用自身的使用权限是默认边界。`senderAllowlist` 为空允许所有私聊用户，非空时仅限制私聊；`groupAllowlist` 为空允许所有群聊，非空时仅限制群聊。两类列表互不影响，群聊默认仍需要 @ 机器人。
+飞书应用自身的使用权限是默认边界。`senderAllowlist` 和 `groupAllowlist` 仅作为高级兼容字段，主界面不暴露。群聊固定要求 @ 机器人，不提供关闭入口。
 
 ### 7. 资源管理
 
@@ -53,7 +53,7 @@ channel 仍是 0.x，精确 pin 版本（不用 `^`）、锁依赖、显式设�
 
 第三方插件仅导出 `Config` 不会自动在详情页出现表单。浏览器端还必须注册 `plugins.bundle.config`，key 为 `@oh-summy/connect-lark`，并通过 `configForms.get("connect-lark")` 读取和保存 volatile 配置。
 
-配置页使用 DSH 原生 `SettingsFormModel` / `SettingsForm`，视觉与交互按「连接飞书 → 工作区与模型 → 触发方式」三步组织。国内飞书与海外 Lark 使用分段切换，模型从 DSH `modelCatalog()` 读取，思考强度随模型提供。App Secret 只填写凭据引用名，不保存明文。
+配置页使用 DSH 原生 `SettingsFormModel` / `SettingsForm`，视觉与交互按「连接飞书 → 工作区与模型 → 触发方式」三步组织。国内飞书与海外 Lark 使用分段切换。工作区复用 DSH 自己的「添加工作区」按钮与目录弹窗；模型从 `modelCatalog()` 读取并使用 DSH 风格搜索弹窗，思考强度随模型提供。应用创建和权限说明放在独立弹窗，不占用主页面。App Secret 只保存在 DSH 凭据缝，App ID 保存在非 Git 跟踪的 DSH profile，页面默认只显示前 5 位 + 掩码。
 
 插件自身的 Cordis 开关是唯一连接开关，旧 `enabled` 配置不再作为第二个开关。保存触发 `loader/volatile-update` 后，插件按代际序列清理旧连接和 RunManager、重新读取 volatile 配置，再按新配置启动。
 

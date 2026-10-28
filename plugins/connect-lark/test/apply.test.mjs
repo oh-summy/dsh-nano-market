@@ -18,10 +18,11 @@ registerHooks({
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
 test("apply connects and disconnects on volatile enabled updates", async () => {
-  const calls = { create: 0, connect: 0, disconnect: 0 };
+  const calls = { create: 0, connect: 0, disconnect: 0, domains: [] };
   globalThis.__connectLarkTestChannel = {
-    create() {
+    create(options) {
       calls.create++;
+      calls.domains.push(options.domain);
       return {
         async connect() { calls.connect++; },
         async disconnect() { calls.disconnect++; },
@@ -62,13 +63,16 @@ test("apply connects and disconnects on volatile enabled updates", async () => {
   await settle();
   assert.equal(calls.create, 1, "the enabled plugin bundle owns the connection lifecycle");
   assert.equal(calls.connect, 1, "legacy config.enabled is not a second switch");
+  assert.equal(calls.domains[0], "https://open.feishu.cn");
 
   config.appId = "cli_test_changed";
+  config.domain = "lark";
   listeners.get("loader/volatile-update")();
   await settle();
   assert.equal(calls.disconnect, 1, "saving a change reconnects the old channel");
   assert.equal(calls.create, 2);
   assert.equal(calls.connect, 2);
+  assert.equal(calls.domains[1], "https://open.larksuite.com");
   await disposer?.();
   delete globalThis.__connectLarkTestChannel;
 });

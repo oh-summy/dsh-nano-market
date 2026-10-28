@@ -8,8 +8,7 @@ import vm from "node:vm";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(here, "..");
 const expectedFields = [
-  "appId", "appSecretRef", "domain", "defaultPath", "provider", "model",
-  "reasoningEffort", "requireMention", "senderAllowlist",
+  "appId", "appSecretRef", "domain", "defaultPath", "provider", "model", "reasoningEffort",
 ];
 
 function loadClient() {
@@ -21,6 +20,7 @@ function loadClient() {
     },
   };
   const fields = [];
+  const edits = [];
   const capturedDefinitions = [];
   class SettingsFormModel {
     constructor(scope, definitions) {
@@ -32,7 +32,7 @@ function loadClient() {
     bind(project) { return { getSnapshot: project }; }
     field(path) { return { path, text: "" }; }
     shell() { return { writable: true }; }
-    actions() { return { save() {}, discard() {}, edit() {}, resetField() {} }; }
+    actions() { return { save() {}, discard() {}, edit(path, text) { edits.push([path, text]); }, resetField() {} }; }
     dispose() {}
   }
   const primitives = {
@@ -43,6 +43,7 @@ function loadClient() {
   };
   const sandbox = {
     window,
+    document: { querySelectorAll: () => globalThis.__dshWorkspaceButtons || [] },
     console,
     require(name) {
       if (name === "react") return { createElement: () => null, useId: () => "test" };
@@ -55,7 +56,7 @@ function loadClient() {
   vm.runInNewContext(source, sandbox);
   assert.ok(registration, "client module registration missing");
   const exports = registration.factory(sandbox.require);
-  return { exports, fields, definitions: capturedDefinitions };
+  return { exports, fields, definitions: capturedDefinitions, edits };
 }
 
 test("package exposes a web client configuration page", () => {
@@ -65,13 +66,22 @@ test("package exposes a web client configuration page", () => {
   assert.match(pkg.scripts.build, /build-client.mjs/);
 });
 
-test("client registers the native bundle config slot and all fields", () => {
-  const { exports, fields, definitions } = loadClient();
-  assert.deepEqual(Array.from(exports.inject), ["slots", "locale", "remote", "remote.session", "configForms"]);
+test("client registers the native bundle config slot and all fields", async () => {
+  const { exports, fields, definitions, edits } = loadClient();
+  assert.deepEqual(Array.from(exports.inject), ["slots", "locale", "remote", "remote.session", "remote.directoryPicker", "workspaces", "configForms"]);
 
   const calls = { get: [], served: [], slots: [] };
+  let workspaceItems = [];
+  globalThis.__dshWorkspaceButtons = [{ classList: { contains: () => false }, click() { workspaceItems = [{ workspaceId: "ws-new", path: "/tmp/dsh-workspace", title: "test" }]; } }];
   const ctx = {
-    remote: { session: { modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }) } },
+    remote: {
+      session: { modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }) },
+      directoryPicker: { pick: async () => ({ ok: true, value: "/tmp/dsh-workspace" }) },
+    },
+    workspaces: {
+      list: { getSnapshot: () => ({ items: workspaceItems }), subscribe: () => () => {} },
+      create: async ({ path }) => ({ workspaceId: "ws-test", path }),
+    },
     locale: {
       bind: () => (key) => key,
       register: () => () => {},
@@ -88,6 +98,7 @@ test("client registers the native bundle config slot and all fields", () => {
       register: (options, component) => ({ options, component }),
     },
     effect: (fn) => fn(),
+    get(name) { return name === "workspaces" ? this.workspaces : undefined; },
   };
   exports.apply(ctx);
   assert.deepEqual(Array.from(fields).sort(), [...expectedFields].sort());
@@ -99,8 +110,13 @@ test("client registers the native bundle config slot and all fields", () => {
   assert.equal(slot.options.key, "@oh-summy/connect-lark");
   assert.equal(slot.options.name, "plugins.bundle.config");
   const byPath = Object.fromEntries(definitions.map((item) => [item.path, item]));
-  assert.equal(byPath.requireMention.format(true), "true");
-  assert.equal(byPath.requireMention.format(false), "false");
-  assert.equal(byPath.senderAllowlist.format(["ou_a", "ou_b"]), "ou_a\nou_b");
-  assert.deepEqual(Array.from(byPath.senderAllowlist.parse("ou_a, ou_b\nou_a").value), ["ou_a", "ou_b"]);
+  assert.ok(byPath.domain, "domain switch field missing");
+  const actions = slot.options.inject();
+  assert.equal(typeof actions.addWorkspace, "function");
+  await actions.addWorkspace();
+  assert.deepEqual(edits, [["defaultPath", "/tmp/dsh-workspace"]]);
+  delete globalThis.__dshWorkspaceButtons;
+  const source = readFileSync(join(pkgDir, "lib/client.js"), "utf8");
+  assert.match(source, /https:\/\/open\.feishu\.cn\/app/);
+  assert.doesNotMatch(source, /connect-lark-requireMention|connect-lark-senderAllowlist/);
 });

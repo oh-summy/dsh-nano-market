@@ -419,8 +419,8 @@ function apply(ctx, config = {}) {
 				appId: plain.appId,
 				appSecret,
 				transport: "websocket",
-				domain: plain.domain,
-				policy: { requireMention: plain.requireMention },
+				domain: plain.domain === "lark" ? "https://open.larksuite.com" : "https://open.feishu.cn",
+				policy: { requireMention: true },
 				safety: { chatQueue: { enabled: true } }
 			});
 			channel = chan;

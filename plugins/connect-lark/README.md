@@ -8,10 +8,10 @@
    ```sh
    dsh plugin --profile web add git+https://github.com/oh-summy/dsh-nano-market.git#main&path:/plugins/connect-lark
    ```
-2. **配置**：在 Plugins 页找到 connect-lark，填写 App ID 和 App Secret 凭据引用。国内飞书与海外 Lark 可直接切换。
-3. **默认即可**：工作区、模型和思考强度默认跟随 DSH；每个聊天使用独立 Agent。私聊默认允许所有用户，群聊默认需要 @ 机器人。
-4. **启用**：打开插件本身的开关即连接；关闭插件即断开，没有第二个启用开关。
-5. **验证**：在飞书里给机器人发一条消息，应该收到回复。
+2. **创建应用**：打开 [飞书开放平台](https://open.feishu.cn/app)，创建自建应用并启用机器人。配置页的「创建应用与权限」弹窗提供最小权限清单和复制按钮。
+3. **配置**：填写 App ID 和 App Secret 凭据引用。Secret 只保存在 DSH 凭据缝，应用配置保存在本机 DSH profile，均不进入 Git。
+4. **默认即可**：工作区可复用 DSH 的添加/选择工作区弹窗；模型和思考强度默认跟随 DSH 新会话。
+5. **启用**：插件本身的开关即连接。私聊权限由飞书应用决定，群里固定 @ 机器人触发。
 
 ## 功能
 
