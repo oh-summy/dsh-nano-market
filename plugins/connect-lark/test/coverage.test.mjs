@@ -160,3 +160,35 @@ test("createOrResumeAgent: retries active write handle and reuses the live agent
   assert.equal(gets, 3);
   assert.equal(creates, 2);
 });
+
+
+test("createOrResumeAgent: prefers sessionController's live agent", async () => {
+  const live = { id: "live", session: {} };
+  const ctx = {
+    sessionController: { resolveAgent: async () => ({ agent: live }) },
+    agents: { get: () => { throw new Error("must not call get"); }, create: async () => { throw new Error("must not create"); } },
+  };
+  const result = await createOrResumeAgent(ctx, "session-live", {}, {});
+  assert.equal(result.agent, live);
+  assert.equal(result.sessionId, "session-live");
+});
+
+test("createOrResumeAgent: creates a fresh session when writer stays held", async () => {
+  const created = { agent: { id: "fresh" }, dispose: async () => {} };
+  const ctx = {
+    sessionController: { resolveAgent: async () => ({ error: { code: "session/writer-held" } }) },
+    agents: {
+      get: () => undefined,
+      create: async (options) => {
+        if (options.sessionId === "session-live") throw new Error("active write handle");
+        return created;
+      },
+      resume: async () => { throw new Error("active write handle"); },
+    },
+  };
+  const result = await createOrResumeAgent(ctx, "session-live", {}, {});
+  assert.equal(result.agent, created.agent);
+  assert.equal(result.handle, created);
+  assert.notEqual(result.sessionId, "session-live");
+  assert.ok(result.sessionId.startsWith("session-live:"));
+});

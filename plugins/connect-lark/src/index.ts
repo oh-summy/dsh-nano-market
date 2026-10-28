@@ -205,30 +205,52 @@ export function resolveAgentModelOptions(
 }
 
 /** Create a per-chat agent, reusing live agents and resuming persisted sessions. */
-export async function createOrResumeAgent(ctx: AnyCtx, sessionId: string, meta: { cwd?: string }, agentOptions: unknown, permissionPreset = ""): Promise<{ agent: any; handle: any }> {
+export async function createOrResumeAgent(ctx: AnyCtx, sessionId: string, meta: { cwd?: string }, agentOptions: unknown, permissionPreset = ""): Promise<{ agent: any; sessionId: string; handle: any }> {
   const applyPreset = (agent: any) => {
     if (permissionPreset) ctx.permissionPresets.set(agent.session, permissionPreset);
   };
+  // Prefer the host's ordinary-session resolver: it can adopt an already live
+  // Agent instead of creating a second writer for the same Session.
+  if (ctx.sessionController?.resolveAgent) {
+    try {
+      const resolved = await ctx.sessionController.resolveAgent(sessionId);
+      if (resolved?.agent) {
+        applyPreset(resolved.agent);
+        return { agent: resolved.agent, sessionId, handle: null };
+      }
+    } catch (error) {
+      if (!/writer-held|active write handle/i.test((error as Error).message)) throw error;
+    }
+  }
   for (let attempt = 0; attempt < 4; attempt++) {
     const live = ctx.agents.get(sessionId);
     if (live) {
       applyPreset(live);
-      return { agent: live, handle: null };
+      return { agent: live, sessionId, handle: null };
     }
     try {
       const handle = await ctx.agents.create({ sessionId, meta, agentOptions });
       applyPreset(handle.agent);
-      return { agent: handle.agent, handle };
+      return { agent: handle.agent, sessionId, handle };
     } catch (error) {
       if (!/already exists|already registered|active write handle/i.test((error as Error).message)) throw error;
       if (attempt < 3) {
-        // The previous AgentHandle may still be releasing its write handle.
         await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
         continue;
       }
-      const handle = await ctx.agents.resume({ resumeSessionId: sessionId, agentOptions });
-      applyPreset(handle.agent);
-      return { agent: handle.agent, handle };
+      try {
+        const handle = await ctx.agents.resume({ resumeSessionId: sessionId, agentOptions });
+        applyPreset(handle.agent);
+        return { agent: handle.agent, sessionId, handle };
+      } catch (resumeError) {
+        if (!/active write handle|writer-held/i.test((resumeError as Error).message)) throw resumeError;
+        // A stale or externally held writer must not permanently disable the
+        // bot. Start a fresh per-chat session instead of failing the turn.
+        const fallbackSessionId = sessionId + ":" + Date.now();
+        const handle = await ctx.agents.create({ sessionId: fallbackSessionId, meta, agentOptions });
+        applyPreset(handle.agent);
+        return { agent: handle.agent, sessionId: fallbackSessionId, handle };
+      }
     }
   }
   throw new Error("unreachable");
@@ -325,15 +347,15 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             const sessionId = "connect-lark:" + chatId;
             const catalog = await ctx.sessionController.modelCatalog();
             const agentOptions = resolveAgentModelOptions(plain, catalog);
-            const { agent, handle } = await createOrResumeAgent(
+            const { agent, sessionId: resolvedSessionId, handle } = await createOrResumeAgent(
               ctx,
               sessionId,
               { cwd: plain.defaultPath || undefined },
               agentOptions,
               plain.permissionPreset,
             );
-            await present(sessionId);
-            return { agent, sessionId, handle };
+            await present(resolvedSessionId);
+            return { agent, sessionId: resolvedSessionId, handle };
           }
           // attach-gui
           if (!plain.attachSessionId) {

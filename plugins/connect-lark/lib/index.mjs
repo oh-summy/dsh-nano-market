@@ -450,12 +450,26 @@ async function createOrResumeAgent(ctx, sessionId, meta, agentOptions, permissio
 	const applyPreset = (agent) => {
 		if (permissionPreset) ctx.permissionPresets.set(agent.session, permissionPreset);
 	};
+	if (ctx.sessionController?.resolveAgent) try {
+		const resolved = await ctx.sessionController.resolveAgent(sessionId);
+		if (resolved?.agent) {
+			applyPreset(resolved.agent);
+			return {
+				agent: resolved.agent,
+				sessionId,
+				handle: null
+			};
+		}
+	} catch (error) {
+		if (!/writer-held|active write handle/i.test(error.message)) throw error;
+	}
 	for (let attempt = 0; attempt < 4; attempt++) {
 		const live = ctx.agents.get(sessionId);
 		if (live) {
 			applyPreset(live);
 			return {
 				agent: live,
+				sessionId,
 				handle: null
 			};
 		}
@@ -468,6 +482,7 @@ async function createOrResumeAgent(ctx, sessionId, meta, agentOptions, permissio
 			applyPreset(handle.agent);
 			return {
 				agent: handle.agent,
+				sessionId,
 				handle
 			};
 		} catch (error) {
@@ -476,15 +491,32 @@ async function createOrResumeAgent(ctx, sessionId, meta, agentOptions, permissio
 				await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
 				continue;
 			}
-			const handle = await ctx.agents.resume({
-				resumeSessionId: sessionId,
-				agentOptions
-			});
-			applyPreset(handle.agent);
-			return {
-				agent: handle.agent,
-				handle
-			};
+			try {
+				const handle = await ctx.agents.resume({
+					resumeSessionId: sessionId,
+					agentOptions
+				});
+				applyPreset(handle.agent);
+				return {
+					agent: handle.agent,
+					sessionId,
+					handle
+				};
+			} catch (resumeError) {
+				if (!/active write handle|writer-held/i.test(resumeError.message)) throw resumeError;
+				const fallbackSessionId = sessionId + ":" + Date.now();
+				const handle = await ctx.agents.create({
+					sessionId: fallbackSessionId,
+					meta,
+					agentOptions
+				});
+				applyPreset(handle.agent);
+				return {
+					agent: handle.agent,
+					sessionId: fallbackSessionId,
+					handle
+				};
+			}
 		}
 	}
 	throw new Error("unreachable");
@@ -580,11 +612,11 @@ function apply(ctx, config = {}) {
 						const sessionId = "connect-lark:" + chatId;
 						const catalog = await ctx.sessionController.modelCatalog();
 						const agentOptions = resolveAgentModelOptions(plain, catalog);
-						const { agent, handle } = await createOrResumeAgent(ctx, sessionId, { cwd: plain.defaultPath || void 0 }, agentOptions, plain.permissionPreset);
-						await present(sessionId);
+						const { agent, sessionId: resolvedSessionId, handle } = await createOrResumeAgent(ctx, sessionId, { cwd: plain.defaultPath || void 0 }, agentOptions, plain.permissionPreset);
+						await present(resolvedSessionId);
 						return {
 							agent,
-							sessionId,
+							sessionId: resolvedSessionId,
 							handle
 						};
 					}
