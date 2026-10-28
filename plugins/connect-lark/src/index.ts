@@ -272,7 +272,7 @@ async function updateRunCard(slot: RunSlot, thinkingPolicy: ResolvedConfig["thin
     color: "blue",
     lines,
     note: "DeepSeek Harness · connect-lark · " + note,
-    buttons: [{ text: "GitHub 仓库", url: "https://github.com/oh-summy/dsh-nano-market" }],
+    buttons: [{ text: "dsh-nano-market", url: "https://github.com/oh-summy/dsh-nano-market" }],
   }));
 }
 
@@ -411,7 +411,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
                 color: "blue",
                 lines: ["正在连接 DSH Agent…"],
                 note: "DeepSeek Harness · connect-lark",
-                buttons: [{ text: "GitHub 仓库", url: "https://github.com/oh-summy/dsh-nano-market" }],
+                buttons: [{ text: "dsh-nano-market", url: "https://github.com/oh-summy/dsh-nano-market" }],
               }),
               producer: async (controller) => {
                 slot.streamController = controller;

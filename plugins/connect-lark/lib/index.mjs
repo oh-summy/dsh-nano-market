@@ -538,7 +538,7 @@ async function updateRunCard(slot, thinkingPolicy) {
 		lines,
 		note: "DeepSeek Harness · connect-lark · " + note,
 		buttons: [{
-			text: "GitHub 仓库",
+			text: "dsh-nano-market",
 			url: "https://github.com/oh-summy/dsh-nano-market"
 		}]
 	}));
@@ -676,7 +676,7 @@ function apply(ctx, config = {}) {
 							lines: ["正在连接 DSH Agent…"],
 							note: "DeepSeek Harness · connect-lark",
 							buttons: [{
-								text: "GitHub 仓库",
+								text: "dsh-nano-market",
 								url: "https://github.com/oh-summy/dsh-nano-market"
 							}]
 						}),
