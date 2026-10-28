@@ -8,15 +8,10 @@
    ```sh
    dsh plugin --profile web add git+https://github.com/oh-summy/dsh-nano-market.git#main&path:/plugins/connect-lark
    ```
-2. **配置**：在 Plugins 页找到 connect-lark，填入：
-   - `appId`：飞书自建应用 App ID
-   - `appSecretRef`：App Secret 的凭据缝引用名（默认 `CONNECT_LARK_APP_SECRET`）
-   - `agentOwnership`：`attach-gui`（默认，复用宿主 agent）或 `owned-per-chat`（插件自建）
-   - `attachSessionId`：attach-gui 模式下的目标 session id
-   - `provider` / `model`：owned-per-chat 模式下必填
-   - `senderAllowlist` / `groupAllowlist`：**两者都必须配置**，任何一个为空 = 该维度拒绝全部（fail-closed）
-3. **启用**：打开 `enabled` 开关，重启宿主。
-4. **验证**：在飞书里给机器人发一条消息，应该收到回复。
+2. **配置**：在 Plugins 页找到 connect-lark，填写 App ID 和 App Secret 凭据引用。国内飞书与海外 Lark 可直接切换。
+3. **默认即可**：工作区、模型和思考强度默认跟随 DSH；每个聊天使用独立 Agent。私聊默认允许所有用户，群聊默认需要 @ 机器人。
+4. **启用**：打开插件本身的开关即连接；关闭插件即断开，没有第二个启用开关。
+5. **验证**：在飞书里给机器人发一条消息，应该收到回复。
 
 ## 功能
 
@@ -28,22 +23,20 @@
 
 ## 配置
 
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---|---|---|
-| `enabled` | boolean | `false` | 启用飞书连接 |
-| `appId` | string | `""` | 飞书 App ID |
-| `appSecretRef` | string | `CONNECT_LARK_APP_SECRET` | App Secret 凭据缝引用名 |
-| `defaultPath` | string | `""` | 默认工作区路径（留空=宿主 cwd） |
-| `openId` | string | `""` | 你的 open_id |
-| `domain` | `feishu` | `lark` | `feishu` | 飞书或 Lark |
-| `requireMention` | boolean | `true` | 群聊需 @ 机器人才触发 |
-| `agentOwnership` | `owned-per-chat` | `attach-gui` | `attach-gui` | agent 所有权 |
-| `attachSessionId` | string | `""` | attach-gui 目标 session id |
-| `provider` | string | `""` | owned-per-chat 时必填 |
-| `model` | string | `""` | owned-per-chat 时必填 |
-| `senderAllowlist` | string[] | `[]` | sender 白名单（空=拒绝全部） |
-| `groupAllowlist` | string[] | `[]` | 群 chat_id 白名单（空=拒绝全部） |
-| `thinkingPolicy` | `cot-visible` | `cot-discard` | `stream-only` | `stream-only` | CoT 政策（stream-only=不显示思考过程） |
+| 字段 | 默认值 | 说明 |
+|---|---|---|
+| `appId` | `""` | 飞书自建应用 App ID |
+| `appSecretRef` | `CONNECT_LARK_APP_SECRET` | App Secret 的 DSH 凭据缝引用名，不保存明文 Secret |
+| `defaultPath` | `""` | 默认工作区绝对路径；留空使用宿主 cwd |
+| `domain` | `feishu` | 国内飞书或海外 Lark |
+| `provider` / `model` | `""` | 留空跟随 DSH 当前模型 |
+| `reasoningEffort` | `""` | 留空跟随所选模型的默认思考强度 |
+| `agentOwnership` | `owned-per-chat` | 默认每个聊天独立 Agent；`attach-gui` 仅高级场景使用 |
+| `requireMention` | `true` | 群聊需要 @ 机器人 |
+| `senderAllowlist` | `[]` | 可选私聊用户限制；留空允许所有私聊用户 |
+| `groupAllowlist` | `[]` | 可选群聊限制；留空允许所有群聊 |
+
+插件本身的启用开关直接控制连接生命周期。旧 `enabled` 配置字段仅为兼容保留，不再作为第二个开关。
 
 ## 致谢与参考
 

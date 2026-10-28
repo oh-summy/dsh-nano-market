@@ -60,19 +60,15 @@ test("apply connects and disconnects on volatile enabled updates", async () => {
   const { apply } = await import("../lib/index.mjs");
   apply(ctx, config);
   await settle();
-  assert.equal(calls.create, 0, "disabled config must not connect");
-  assert.equal(calls.connect, 0);
+  assert.equal(calls.create, 1, "the enabled plugin bundle owns the connection lifecycle");
+  assert.equal(calls.connect, 1, "legacy config.enabled is not a second switch");
 
-  config.enabled = true;
+  config.appId = "cli_test_changed";
   listeners.get("loader/volatile-update")();
   await settle();
-  assert.equal(calls.create, 1, "saving enabled=true should create a channel");
-  assert.equal(calls.connect, 1, "saving enabled=true should connect");
-
-  config.enabled = false;
-  listeners.get("loader/volatile-update")();
-  await settle();
-  assert.equal(calls.disconnect, 1, "saving enabled=false should disconnect");
+  assert.equal(calls.disconnect, 1, "saving a change reconnects the old channel");
+  assert.equal(calls.create, 2);
+  assert.equal(calls.connect, 2);
   await disposer?.();
   delete globalThis.__connectLarkTestChannel;
 });

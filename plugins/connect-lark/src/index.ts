@@ -2,9 +2,9 @@
 //
 // Long connection + agent driving + streaming card replies + image handling.
 // Core decisions:
-//   - agent ownership: both modes supported (attach-gui default, owned-per-chat fallback)
+//   - agent ownership: owned-per-chat by default; attach-gui remains an advanced option
 //   - CoT policy: stream-only (no CoT display; cot-discard/cot-visible need the spike)
-//   - whitelists: empty = deny all (fail-closed)
+//   - access: allow everyone by default; optional per-chat-kind allowlists
 //   - hot updates: appId/provider/model require reconnect; others are hot
 //
 // Architecture (ARCHITECTURE §10):
@@ -41,6 +41,7 @@ export interface Config {
   senderAllowlist?: string[];
   groupAllowlist?: string[];
   thinkingPolicy?: "cot-visible" | "cot-discard" | "stream-only";
+  reasoningEffort?: string;
 }
 
 type Vol<T> = T | { get(): T };
@@ -64,6 +65,7 @@ export type ResolvedConfig = {
   senderAllowlist: readonly string[];
   groupAllowlist: readonly string[];
   thinkingPolicy: "cot-visible" | "cot-discard" | "stream-only";
+  reasoningEffort: string;
 };
 
 export function plainConfig(input: Config | ParsedConfig): ResolvedConfig {
@@ -84,13 +86,14 @@ export const Config = z.object({
   openId: z.string().default("").volatile().comment("你的 open_id（私聊/测试消息）"),
   domain: z.union(["feishu", "lark"]).default("feishu").volatile().comment("飞书或 Lark"),
   requireMention: z.boolean().default(true).volatile().comment("群聊需 @ 机器人才触发（channel policy 已托管，勿重复实现）"),
-  agentOwnership: z.union(["owned-per-chat", "attach-gui"]).default("attach-gui").volatile().comment("agent 所有权：attach-gui 复用宿主 agent；owned-per-chat 插件自建"),
+  agentOwnership: z.union(["owned-per-chat", "attach-gui"]).default("owned-per-chat").volatile().comment("agent 所有权：默认每个聊天独立 agent；attach-gui 仅高级场景使用"),
   attachSessionId: z.string().default("").volatile().comment("attach-gui 时的目标 session id（无全局 current agent 可读）"),
   provider: z.string().default("").volatile().comment("owned-per-chat 时必填；默认空串是占位"),
   model: z.string().default("").volatile().comment("owned-per-chat 时必填"),
-  senderAllowlist: z.array(z.string()).default([]).volatile().comment("sender 白名单（空=拒绝全部，fail-closed）"),
-  groupAllowlist: z.array(z.string()).default([]).volatile().comment("群 chat_id 白名单（空=拒绝全部，fail-closed）"),
-  thinkingPolicy: z.union(["cot-visible", "cot-discard", "stream-only"]).default("stream-only").volatile().comment("CoT 政策：stream-only=不显示思考过程；cot-* 需 spike"),
+  senderAllowlist: z.array(z.string()).default([]).volatile().comment("私聊用户限制；留空允许所有私聊用户"),
+  groupAllowlist: z.array(z.string()).default([]).volatile().comment("群聊限制；留空允许所有群聊"),
+  thinkingPolicy: z.union(["cot-visible", "cot-discard", "stream-only"]).default("stream-only").volatile().comment("CoT 政策：当前仅实现 stream-only"),
+  reasoningEffort: z.string().default("").volatile().comment("思考强度；留空跟随 DSH 当前模型默认配置"),
 });
 
 type AnyCtx = any;
@@ -125,14 +128,15 @@ export function buildUserMessage(
   return createUserMessage({ content, source: source ?? { kind: "user" } });
 }
 
-// ---- Whitelist check (fail-closed, ARCHITECTURE §3.3) ----
+// ---- Optional per-chat-kind access restrictions ----
 
-export function passesWhitelist(plain: ResolvedConfig, chatId: string, senderId: string): boolean {
-  // Fail-closed: if either allowlist is empty, that dimension is DENY.
-  // Both must be non-empty for ANY message to pass.
-  if (plain.senderAllowlist.length === 0) return false;
-  if (plain.groupAllowlist.length === 0) return false;
-  return plain.senderAllowlist.includes(senderId) && plain.groupAllowlist.includes(chatId);
+export function passesWhitelist(plain: ResolvedConfig, chatId: string, senderId: string, chatType: "p2p" | "group" = "p2p"): boolean {
+  // Feishu app permissions are the default boundary. Optional lists only
+  // narrow their own chat kind; an empty list never blocks the other kind.
+  if (chatType === "group") {
+    return plain.groupAllowlist.length === 0 || plain.groupAllowlist.includes(chatId);
+  }
+  return plain.senderAllowlist.length === 0 || plain.senderAllowlist.includes(senderId);
 }
 
 // ---- (DeltaQueue removed — streaming is handled via onDelta callback) ----
@@ -193,22 +197,13 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       const currentAlive = () => isAlive() && generation === current;
       // Volatile wrappers are mutated in place; re-read on every (re)start.
       plain = plainConfig(config);
-      // 1) Check enabled first — if disabled, don't even resolve secret.
-      if (!plain.enabled) {
-        ctx.logger?.info?.("[connect-lark] disabled (enabled=false) — not connecting");
-        return;
-      }
-      // 2) Resolve secret (fails closed if unset).
+      // The Cordis bundle switch owns the connection lifecycle. The legacy
+      // config.enabled field is intentionally not a second enable switch.
+      // 1) Resolve secret (fails closed if unset).
       const appSecret = await resolveAppSecret(ctx, config);
       if (!currentAlive()) return;
 
-      // 2) Whitelist pre-check: if both allowlists are empty, deny all (fail-closed).
-      const allowlistConfigured = plain.senderAllowlist.length > 0 || plain.groupAllowlist.length > 0;
-      if (!allowlistConfigured) {
-        ctx.logger?.warn?.("[connect-lark] senderAllowlist and groupAllowlist are both empty — all messages will be denied (fail-closed). Both must be configured to enable messaging.");
-      }
-
-      // 3) Create + connect channel.
+      // 2) Create + connect channel.
       const chan = createLarkChannel({
         appId: plain.appId,
         appSecret,
@@ -236,14 +231,16 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             return { agent: existing.agent, sessionId: existing.sessionId, handle: existing.handle };
           }
           if (plain.agentOwnership === "owned-per-chat") {
-            if (!plain.provider || !plain.model) {
-              throw new Error("[connect-lark] owned-per-chat requires provider and model");
-            }
             const sessionId = "connect-lark:" + chatId;
+            const agentOptions = {
+              ...(plain.provider ? { provider: plain.provider } : {}),
+              ...(plain.model ? { model: plain.model } : {}),
+              ...(plain.reasoningEffort ? { reasoningEffort: plain.reasoningEffort } : {}),
+            };
             const handle = await ctx.agents.create({
               sessionId,
               meta: { cwd: plain.defaultPath || undefined },
-              agentOptions: { provider: plain.provider, model: plain.model },
+              ...(Object.keys(agentOptions).length > 0 ? { agentOptions } : {}),
             });
             return { agent: handle.agent, sessionId, handle };
           }
@@ -301,7 +298,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       // 5) Subscribe to messages.
       unsubMessage = chan.on("message", async (msg: any) => {
         if (!currentAlive()) return;
-        if (!passesWhitelist(plain, msg.chatId, msg.senderId)) return;
+        if (!passesWhitelist(plain, msg.chatId, msg.senderId, msg.chatType)) return;
 
         const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
         if (!text) return;

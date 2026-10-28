@@ -8,9 +8,8 @@ import vm from "node:vm";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(here, "..");
 const expectedFields = [
-  "enabled", "appId", "appSecretRef", "defaultPath", "openId", "domain",
-  "requireMention", "agentOwnership", "attachSessionId", "provider", "model",
-  "senderAllowlist", "groupAllowlist", "thinkingPolicy",
+  "appId", "appSecretRef", "domain", "defaultPath", "provider", "model",
+  "reasoningEffort", "requireMention", "senderAllowlist",
 ];
 
 function loadClient() {
@@ -49,6 +48,7 @@ function loadClient() {
       if (name === "react") return { createElement: () => null, useId: () => "test" };
       if (name === "react/jsx-runtime") return { jsx: () => null, jsxs: () => null };
       if (name === "@deepseek-ai/dsh-client-ui-primitives") return primitives;
+      if (name === "@deepseek-ai/dsh-client-store") return { createSnapshotStore: (value) => ({ value, getSnapshot: () => value, set(next) { this.value = next; }, subscribe: () => () => {} }) };
       throw new Error("unexpected module " + name);
     },
   };
@@ -67,10 +67,11 @@ test("package exposes a web client configuration page", () => {
 
 test("client registers the native bundle config slot and all fields", () => {
   const { exports, fields, definitions } = loadClient();
-  assert.deepEqual(Array.from(exports.inject), ["slots", "locale", "configForms"]);
+  assert.deepEqual(Array.from(exports.inject), ["slots", "locale", "remote", "remote.session", "configForms"]);
 
   const calls = { get: [], served: [], slots: [] };
   const ctx = {
+    remote: { session: { modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }) } },
     locale: {
       bind: () => (key) => key,
       register: () => () => {},

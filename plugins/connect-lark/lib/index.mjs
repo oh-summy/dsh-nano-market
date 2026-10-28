@@ -367,17 +367,18 @@ const Config = z.object({
 	openId: z.string().default("").volatile().comment("你的 open_id（私聊/测试消息）"),
 	domain: z.union(["feishu", "lark"]).default("feishu").volatile().comment("飞书或 Lark"),
 	requireMention: z.boolean().default(true).volatile().comment("群聊需 @ 机器人才触发（channel policy 已托管，勿重复实现）"),
-	agentOwnership: z.union(["owned-per-chat", "attach-gui"]).default("attach-gui").volatile().comment("agent 所有权：attach-gui 复用宿主 agent；owned-per-chat 插件自建"),
+	agentOwnership: z.union(["owned-per-chat", "attach-gui"]).default("owned-per-chat").volatile().comment("agent 所有权：默认每个聊天独立 agent；attach-gui 仅高级场景使用"),
 	attachSessionId: z.string().default("").volatile().comment("attach-gui 时的目标 session id（无全局 current agent 可读）"),
 	provider: z.string().default("").volatile().comment("owned-per-chat 时必填；默认空串是占位"),
 	model: z.string().default("").volatile().comment("owned-per-chat 时必填"),
-	senderAllowlist: z.array(z.string()).default([]).volatile().comment("sender 白名单（空=拒绝全部，fail-closed）"),
-	groupAllowlist: z.array(z.string()).default([]).volatile().comment("群 chat_id 白名单（空=拒绝全部，fail-closed）"),
+	senderAllowlist: z.array(z.string()).default([]).volatile().comment("私聊用户限制；留空允许所有私聊用户"),
+	groupAllowlist: z.array(z.string()).default([]).volatile().comment("群聊限制；留空允许所有群聊"),
 	thinkingPolicy: z.union([
 		"cot-visible",
 		"cot-discard",
 		"stream-only"
-	]).default("stream-only").volatile().comment("CoT 政策：stream-only=不显示思考过程；cot-* 需 spike")
+	]).default("stream-only").volatile().comment("CoT 政策：当前仅实现 stream-only"),
+	reasoningEffort: z.string().default("").volatile().comment("思考强度；留空跟随 DSH 当前模型默认配置")
 });
 async function resolveAppSecret(ctx, parsed) {
 	const { appSecretRef } = plainConfig(parsed);
@@ -393,10 +394,9 @@ function buildUserMessage(content, source) {
 		source: source ?? { kind: "user" }
 	});
 }
-function passesWhitelist(plain, chatId, senderId) {
-	if (plain.senderAllowlist.length === 0) return false;
-	if (plain.groupAllowlist.length === 0) return false;
-	return plain.senderAllowlist.includes(senderId) && plain.groupAllowlist.includes(chatId);
+function passesWhitelist(plain, chatId, senderId, chatType = "p2p") {
+	if (chatType === "group") return plain.groupAllowlist.length === 0 || plain.groupAllowlist.includes(chatId);
+	return plain.senderAllowlist.length === 0 || plain.senderAllowlist.includes(senderId);
 }
 function apply(ctx, config = {}) {
 	let plain = plainConfig(config);
@@ -413,13 +413,8 @@ function apply(ctx, config = {}) {
 			const current = ++generation;
 			const currentAlive = () => isAlive() && generation === current;
 			plain = plainConfig(config);
-			if (!plain.enabled) {
-				ctx.logger?.info?.("[connect-lark] disabled (enabled=false) — not connecting");
-				return;
-			}
 			const appSecret = await resolveAppSecret(ctx, config);
 			if (!currentAlive()) return;
-			if (!(plain.senderAllowlist.length > 0 || plain.groupAllowlist.length > 0)) ctx.logger?.warn?.("[connect-lark] senderAllowlist and groupAllowlist are both empty — all messages will be denied (fail-closed). Both must be configured to enable messaging.");
 			const chan = createLarkChannel({
 				appId: plain.appId,
 				appSecret,
@@ -451,15 +446,16 @@ function apply(ctx, config = {}) {
 						handle: existing.handle
 					};
 					if (plain.agentOwnership === "owned-per-chat") {
-						if (!plain.provider || !plain.model) throw new Error("[connect-lark] owned-per-chat requires provider and model");
 						const sessionId = "connect-lark:" + chatId;
+						const agentOptions = {
+							...plain.provider ? { provider: plain.provider } : {},
+							...plain.model ? { model: plain.model } : {},
+							...plain.reasoningEffort ? { reasoningEffort: plain.reasoningEffort } : {}
+						};
 						const handle = await ctx.agents.create({
 							sessionId,
 							meta: { cwd: plain.defaultPath || void 0 },
-							agentOptions: {
-								provider: plain.provider,
-								model: plain.model
-							}
+							...Object.keys(agentOptions).length > 0 ? { agentOptions } : {}
 						});
 						return {
 							agent: handle.agent,
@@ -515,7 +511,7 @@ function apply(ctx, config = {}) {
 			});
 			unsubMessage = chan.on("message", async (msg) => {
 				if (!currentAlive()) return;
-				if (!passesWhitelist(plain, msg.chatId, msg.senderId)) return;
+				if (!passesWhitelist(plain, msg.chatId, msg.senderId, msg.chatType)) return;
 				const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
 				if (!text) return;
 				let content = [{

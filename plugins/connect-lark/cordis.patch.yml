@@ -1,26 +1,25 @@
 # bundle layer for @oh-summy/connect-lark: applied automatically when the bundle is
-# listed in a profile's dsh.profile.bundles. enabled=false keeps it idle; flip to true
-# (then restart the host) to start the Feishu long connection.
-# NOTE: both senderAllowlist and groupAllowlist must be non-empty to enable messaging.
+# listed in a profile's dsh.profile.bundles. The bundle enable switch owns the
+# connection lifecycle; there is no second enable switch inside the plugin.
 - insert:
     - id: connect-lark
       name: '@oh-summy/connect-lark'
       config:
-        enabled: false
         appId: ''
         appSecretRef: CONNECT_LARK_APP_SECRET
+        # Workspace used by the per-chat Agent. Empty inherits the host cwd.
         defaultPath: ''
         openId: ''
         domain: feishu
         requireMention: true
-        # Agent ownership: attach-gui (default) reuses host agent;
-        # owned-per-chat creates a new agent per chat (requires provider+model).
-        agentOwnership: attach-gui
+        # Each chat gets its own Agent by default. attach-gui is an advanced option.
+        agentOwnership: owned-per-chat
         attachSessionId: ''
+        # Empty model and effort inherit the current DSH configuration.
         provider: ''
         model: ''
-        # Fail-closed: both lists must be non-empty. Empty = deny all for that dimension.
+        reasoningEffort: ''
+        # Empty lists allow everyone; each list restricts only its own chat kind.
         senderAllowlist: []
         groupAllowlist: []
-        # CoT policy: stream-only (no thinking display).
         thinkingPolicy: stream-only

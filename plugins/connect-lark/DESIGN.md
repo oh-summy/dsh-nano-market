@@ -16,14 +16,13 @@ lark-cli 也是真 WebSocket 长连接，但无托管流式抽象。选 channel 
 
 channel 仍是 0.x，精确 pin 版本（不用 `^`）、锁依赖、显式设置 REST 超时。
 
-### 3. 两种 agent 所有权
+### 3. Agent、工作区与模型默认值
 
-| 模式 | 行为 | 适用场景 |
-|---|---|---|
-| `attach-gui` | 复用宿主已有 agent（`ctx.agents.get(attachSessionId)`） | 共享 GUI agent，需要显式指定目标 session |
-| `owned-per-chat` | 插件自建 agent（`ctx.agents.create({sessionId, meta:{cwd}, agentOptions:{provider,model}})`），运行结束 `handle.dispose()` | 每个 chat 独立 agent，需要 provider/model/cwd |
+默认 `owned-per-chat`：每个飞书聊天拥有独立 Agent 和 Session，工作区来自 `defaultPath`，无需用户填写 Session ID。`attach-gui` 仅作为高级兼容模式保留。
 
-Lark 回调里没有可直接读取的「当前 agent」，必须显式指定目标。
+`provider`、`model`、`reasoningEffort` 全部可选；留空时不传 `agentOptions`，由 DSH 当前模型和思考强度继承。需要覆盖时才传入对应字段。
+
+普通用户只需 App ID 与 App Secret 凭据引用，其他配置均可使用默认值。
 
 ### 4. 流式卡片回复
 
@@ -40,9 +39,9 @@ Lark 回调里没有可直接读取的「当前 agent」，必须显式指定目
 2. `inputModalities === undefined` 检查 — 不能裸 `.includes("image")`
 3. `unknown` 按不支持处理 — 不依赖模型抛错（dsh-llm 会替换成占位文本）
 
-### 6. 白名单 fail-closed
+### 6. 默认放行，按聊天类型可选限制
 
-`senderAllowlist` 和 `groupAllowlist` 都必须配置（非空）才能放行消息。任何一个为空 = 该维度拒绝全部（fail-closed）。
+飞书应用自身的使用权限是默认边界。`senderAllowlist` 为空允许所有私聊用户，非空时仅限制私聊；`groupAllowlist` 为空允许所有群聊，非空时仅限制群聊。两类列表互不影响，群聊默认仍需要 @ 机器人。
 
 ### 7. 资源管理
 
@@ -54,9 +53,9 @@ Lark 回调里没有可直接读取的「当前 agent」，必须显式指定目
 
 第三方插件仅导出 `Config` 不会自动在详情页出现表单。浏览器端还必须注册 `plugins.bundle.config`，key 为 `@oh-summy/connect-lark`，并通过 `configForms.get("connect-lark")` 读取和保存 volatile 配置。
 
-配置页使用 DSH 原生 `SettingsFormModel` / `SettingsForm`，按连接、Agent、消息访问控制和高级设置分组。App Secret 只填写凭据引用名，不在页面或配置文件中保存明文。
+配置页使用 DSH 原生 `SettingsFormModel` / `SettingsForm`，视觉与交互按「连接飞书 → 工作区与模型 → 触发方式」三步组织。国内飞书与海外 Lark 使用分段切换，模型从 DSH `modelCatalog()` 读取，思考强度随模型提供。App Secret 只填写凭据引用名，不保存明文。
 
-所有字段都可 volatile 编辑。保存触发 `loader/volatile-update` 后，插件按代际序列清理旧连接和 RunManager、重新读取 volatile 配置，再按新配置启动；保存 `enabled=false` 不会解析 Secret 或建立连接。
+插件自身的 Cordis 开关是唯一连接开关，旧 `enabled` 配置不再作为第二个开关。保存触发 `loader/volatile-update` 后，插件按代际序列清理旧连接和 RunManager、重新读取 volatile 配置，再按新配置启动。
 
 ## 结构
 

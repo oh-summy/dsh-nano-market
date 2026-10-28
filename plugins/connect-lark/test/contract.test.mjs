@@ -19,11 +19,11 @@ const { Config, plainConfig, resolveAppSecret, buildUserMessage, inject, CONTRAC
 const Schema = (await import("@deepseek-ai/schemastery")).default;
 const parseLikeHost = (input) => new Schema(Config.toJSON())(input);
 
-const FIELD_COUNT = 14;
+const FIELD_COUNT = 15;
 const FIELDS = [
   "enabled", "appId", "appSecretRef", "defaultPath", "openId", "domain",
   "requireMention", "agentOwnership", "attachSessionId", "provider", "model",
-  "senderAllowlist", "groupAllowlist", "thinkingPolicy",
+  "senderAllowlist", "groupAllowlist", "thinkingPolicy", "reasoningEffort",
 ];
 
 test("dsh-settings gate: Config exposes toJSON", () => {
@@ -36,8 +36,9 @@ test("parsed config has every field and the right defaults", () => {
   assert.equal(parsed.enabled.get(), false);
   assert.equal(parsed.domain.get(), "feishu");
   assert.equal(parsed.requireMention.get(), true);
-  assert.equal(parsed.agentOwnership.get(), "attach-gui");
+  assert.equal(parsed.agentOwnership.get(), "owned-per-chat");
   assert.equal(parsed.thinkingPolicy.get(), "stream-only");
+  assert.equal(parsed.reasoningEffort.get(), "");
   assert.deepEqual(parsed.senderAllowlist.get(), []);
 });
 

@@ -4,23 +4,24 @@ import { passesWhitelist, downloadInboundImage, MAX_IMAGE_BYTES, RunManager } fr
 
 // ---- passesWhitelist ----
 
-test("passesWhitelist: empty both = deny all", () => {
+test("passesWhitelist: empty lists allow everyone by default", () => {
   const plain = { senderAllowlist: [], groupAllowlist: [] };
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_1"), false);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "p2p"), true);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "group"), true);
 });
 
-test("passesWhitelist: single dimension = deny (fail-closed)", () => {
-  const senderOnly = { senderAllowlist: ["ou_allowed"], groupAllowlist: [] };
-  assert.equal(passesWhitelist(senderOnly, "chat-1", "ou_allowed"), false);
-  const groupOnly = { senderAllowlist: [], groupAllowlist: ["oc_allowed"] };
-  assert.equal(passesWhitelist(groupOnly, "oc_allowed", "ou_1"), false);
+test("passesWhitelist: sender list optionally restricts only private chats", () => {
+  const plain = { senderAllowlist: ["ou_allowed"], groupAllowlist: [] };
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_allowed", "p2p"), true);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p"), false);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "group"), true);
 });
 
-test("passesWhitelist: both lists required", () => {
-  const plain = { senderAllowlist: ["ou_a"], groupAllowlist: ["oc_x"] };
-  assert.equal(passesWhitelist(plain, "oc_x", "ou_a"), true);
-  assert.equal(passesWhitelist(plain, "oc_x", "ou_b"), false);
-  assert.equal(passesWhitelist(plain, "oc_y", "ou_a"), false);
+test("passesWhitelist: group list optionally restricts only group chats", () => {
+  const plain = { senderAllowlist: [], groupAllowlist: ["oc_allowed"] };
+  assert.equal(passesWhitelist(plain, "oc_allowed", "ou_1", "group"), true);
+  assert.equal(passesWhitelist(plain, "oc_other", "ou_1", "group"), false);
+  assert.equal(passesWhitelist(plain, "oc_other", "ou_1", "p2p"), true);
 });
 
 // ---- downloadInboundImage SSRF ----
