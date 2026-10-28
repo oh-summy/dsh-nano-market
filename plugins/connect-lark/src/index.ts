@@ -3,7 +3,7 @@
 // Long connection + agent driving + streaming card replies + image handling.
 // Core decisions:
 //   - agent ownership: owned-per-chat by default; attach-gui remains an advanced option
-//   - CoT policy: stream-only (no CoT display; cot-discard/cot-visible need the spike)
+//   - CoT policy: cot-visible by default (reasoning is shown in the rich card)
 //   - access: allow everyone by default; optional per-chat-kind allowlists
 //   - hot updates: appId/provider/model require reconnect; others are hot
 //
@@ -104,7 +104,7 @@ export const Config = z.object({
 
 type AnyCtx = any;
 
-// ---- Helpers (kept from v6, verified correct) ----
+// ---- Helpers ----
 
 export async function resolveAppSecret(ctx: AnyCtx, parsed: Config | ParsedConfig): Promise<string> {
   const { appSecretRef } = plainConfig(parsed);
@@ -209,21 +209,29 @@ export async function createOrResumeAgent(ctx: AnyCtx, sessionId: string, meta: 
   const applyPreset = (agent: any) => {
     if (permissionPreset) ctx.permissionPresets.set(agent.session, permissionPreset);
   };
-  const live = ctx.agents.get(sessionId);
-  if (live) {
-    applyPreset(live);
-    return { agent: live, handle: null };
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const live = ctx.agents.get(sessionId);
+    if (live) {
+      applyPreset(live);
+      return { agent: live, handle: null };
+    }
+    try {
+      const handle = await ctx.agents.create({ sessionId, meta, agentOptions });
+      applyPreset(handle.agent);
+      return { agent: handle.agent, handle };
+    } catch (error) {
+      if (!/already exists|already registered|active write handle/i.test((error as Error).message)) throw error;
+      if (attempt < 3) {
+        // The previous AgentHandle may still be releasing its write handle.
+        await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
+        continue;
+      }
+      const handle = await ctx.agents.resume({ resumeSessionId: sessionId, agentOptions });
+      applyPreset(handle.agent);
+      return { agent: handle.agent, handle };
+    }
   }
-  try {
-    const handle = await ctx.agents.create({ sessionId, meta, agentOptions });
-    applyPreset(handle.agent);
-    return { agent: handle.agent, handle };
-  } catch (error) {
-    if (!/already exists|already registered/i.test((error as Error).message)) throw error;
-    const handle = await ctx.agents.resume({ resumeSessionId: sessionId, agentOptions });
-    applyPreset(handle.agent);
-    return { agent: handle.agent, handle };
-  }
+  throw new Error("unreachable");
 }
 
 /** Update one streaming rich card with the latest answer and optional CoT. */
@@ -360,7 +368,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           const unsubError = ctx.on("agent/error", (evt: any) => {
             if (evt.agent === agent) onError(evt.error);
           });
-          unsubEvents.push(unsubStream, unsubTurn, unsubError);
+          // The track() helper already registered all three unsubs.
           // Return real cleanup so RunManager can call it on complete/fail.
           return () => {
             try { unsubStream(); } catch { /* gone */ }
@@ -373,6 +381,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         },
         onStart: (slot) => {
           const done = new Promise<void>((resolve) => { slot.streamDone = resolve; });
+          slot.streamReady = new Promise<void>((resolve) => { slot.streamReadyResolve = resolve; });
           slot.streamPromise = chan.stream(slot.chatId, {
             card: {
               initial: richCard({
@@ -384,11 +393,15 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               }),
               producer: async (controller) => {
                 slot.streamController = controller;
+                slot.streamReadyResolve?.();
                 await done;
               },
             },
           });
-          Promise.resolve(slot.streamPromise).catch((e) => ctx.logger?.warn?.("[connect-lark] stream failed: " + (e as Error).message));
+          Promise.resolve(slot.streamPromise).catch((e) => {
+            slot.streamFailed = e as Error;
+            ctx.logger?.warn?.("[connect-lark] stream failed: " + (e as Error).message);
+          });
         },
         onDelta: (slot) => {
           void updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + (e as Error).message));
@@ -399,10 +412,25 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         onComplete: (slot) => {
           void (async () => {
             try {
-              await updateRunCard(slot, plain.thinkingPolicy);
-            } catch (e) {
-              const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
-              if (reply) await chan.send(slot.chatId, { markdown: reply });
+              if (!slot.streamController && !slot.streamFailed) {
+                // Let card creation finish briefly before deciding to fall back;
+                // otherwise a slow create could cause a duplicate text + card reply.
+                await Promise.race([
+                  slot.streamReady ?? Promise.resolve(),
+                  new Promise((resolve) => setTimeout(resolve, 1000)),
+                ]);
+              }
+              if (slot.streamFailed || !slot.streamController) {
+                const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
+                if (reply) await chan.send(slot.chatId, { markdown: reply });
+                return;
+              }
+              try {
+                await updateRunCard(slot, plain.thinkingPolicy);
+              } catch (e) {
+                const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
+                if (reply) await chan.send(slot.chatId, { markdown: reply });
+              }
             } finally {
               slot.streamDone?.();
             }

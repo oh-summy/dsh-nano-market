@@ -20,20 +20,25 @@ function richCard(opts) {
 			content: line
 		}
 	});
-	if (opts.buttons && opts.buttons.length > 0) {
-		const actions = opts.buttons.map((b) => ({
+	if (opts.buttons && opts.buttons.length > 0) for (const b of opts.buttons) {
+		const behaviors = [];
+		if (b.url) behaviors.push({
+			type: "open_url",
+			default_url: b.url
+		});
+		if (b.value) behaviors.push({
+			type: "callback",
+			value: { value: b.value }
+		});
+		elements.push({
 			tag: "button",
 			text: {
 				tag: "plain_text",
 				content: b.text
 			},
-			type: "default",
-			...b.url ? { url: b.url } : {},
-			...b.value ? { value: b.value } : {}
-		}));
-		elements.push({
-			tag: "action",
-			actions
+			type: "primary",
+			size: "small",
+			behaviors
 		});
 	}
 	if (opts.note) elements.push({
@@ -141,32 +146,39 @@ var RunManager = class {
 			});
 			return slot;
 		}
-		const { agent, sessionId, handle } = await this.opts.resolveAgent(chatId, title);
-		slot.agent = agent;
-		slot.handle = handle;
-		slot.sessionId = sessionId;
-		const unsub = this.opts.subscribe(agent, sessionId, (delta, kind) => {
-			if (kind === "reasoning") {
-				slot.thinkingText += delta;
-				this.opts.onThinking?.(slot, delta);
-			} else {
-				slot.accumulatedText += delta;
-				this.opts.onDelta?.(slot, delta);
-			}
-		}, () => {
-			this.complete(chatId);
-		}, (e) => {
-			this.fail(chatId, e);
-		});
-		this.unsubs.set(chatId, unsub);
 		slot.state = "running";
-		slot.cancelController = new AbortController();
-		slot.accumulatedText = "";
-		slot.thinkingText = "";
-		slot.turnId = (slot.turnId ?? 0) + 1;
-		await this.opts.onStart?.(slot);
-		this.opts.followup(agent, this.opts.buildMessage(content, source));
-		return slot;
+		try {
+			const { agent, sessionId, handle } = await this.opts.resolveAgent(chatId, title);
+			slot.agent = agent;
+			slot.handle = handle;
+			slot.sessionId = sessionId;
+			const unsub = this.opts.subscribe(agent, sessionId, (delta, kind) => {
+				if (kind === "reasoning") {
+					slot.thinkingText += delta;
+					this.opts.onThinking?.(slot, delta);
+				} else {
+					slot.accumulatedText += delta;
+					this.opts.onDelta?.(slot, delta);
+				}
+			}, () => {
+				this.complete(chatId);
+			}, (e) => {
+				this.fail(chatId, e);
+			});
+			this.unsubs.set(chatId, unsub);
+			slot.cancelController = new AbortController();
+			slot.accumulatedText = "";
+			slot.thinkingText = "";
+			slot.turnId = (slot.turnId ?? 0) + 1;
+			await this.opts.onStart?.(slot);
+			this.opts.followup(agent, this.opts.buildMessage(content, source));
+			return slot;
+		} catch (error) {
+			this.cleanup(chatId);
+			slot.state = "idle";
+			slot.streamDone?.();
+			throw error;
+		}
 	}
 	/** Cancel the current run for a chat (does NOT dispose the agent).
 	* Adds a watchdog: if turn/end doesn't arrive within 30s after abort,
@@ -217,9 +229,14 @@ var RunManager = class {
 	}
 	async disposeAll() {
 		const failures = [];
-		for (const slot of this.slots.values()) try {
-			slot.cancelController?.abort();
-		} catch {}
+		for (const slot of this.slots.values()) {
+			try {
+				slot.cancelController?.abort();
+			} catch {}
+			try {
+				slot.streamDone?.();
+			} catch {}
+		}
 		for (const chatId of this.slots.keys()) this.cleanup(chatId);
 		for (const slot of this.slots.values()) {
 			try {
@@ -433,37 +450,44 @@ async function createOrResumeAgent(ctx, sessionId, meta, agentOptions, permissio
 	const applyPreset = (agent) => {
 		if (permissionPreset) ctx.permissionPresets.set(agent.session, permissionPreset);
 	};
-	const live = ctx.agents.get(sessionId);
-	if (live) {
-		applyPreset(live);
-		return {
-			agent: live,
-			handle: null
-		};
+	for (let attempt = 0; attempt < 4; attempt++) {
+		const live = ctx.agents.get(sessionId);
+		if (live) {
+			applyPreset(live);
+			return {
+				agent: live,
+				handle: null
+			};
+		}
+		try {
+			const handle = await ctx.agents.create({
+				sessionId,
+				meta,
+				agentOptions
+			});
+			applyPreset(handle.agent);
+			return {
+				agent: handle.agent,
+				handle
+			};
+		} catch (error) {
+			if (!/already exists|already registered|active write handle/i.test(error.message)) throw error;
+			if (attempt < 3) {
+				await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
+				continue;
+			}
+			const handle = await ctx.agents.resume({
+				resumeSessionId: sessionId,
+				agentOptions
+			});
+			applyPreset(handle.agent);
+			return {
+				agent: handle.agent,
+				handle
+			};
+		}
 	}
-	try {
-		const handle = await ctx.agents.create({
-			sessionId,
-			meta,
-			agentOptions
-		});
-		applyPreset(handle.agent);
-		return {
-			agent: handle.agent,
-			handle
-		};
-	} catch (error) {
-		if (!/already exists|already registered/i.test(error.message)) throw error;
-		const handle = await ctx.agents.resume({
-			resumeSessionId: sessionId,
-			agentOptions
-		});
-		applyPreset(handle.agent);
-		return {
-			agent: handle.agent,
-			handle
-		};
-	}
+	throw new Error("unreachable");
 }
 /** Update one streaming rich card with the latest answer and optional CoT. */
 async function updateRunCard(slot, thinkingPolicy) {
@@ -591,7 +615,6 @@ function apply(ctx, config = {}) {
 					const unsubError = ctx.on("agent/error", (evt) => {
 						if (evt.agent === agent) onError(evt.error);
 					});
-					unsubEvents.push(unsubStream, unsubTurn, unsubError);
 					return () => {
 						try {
 							unsubStream();
@@ -611,6 +634,9 @@ function apply(ctx, config = {}) {
 					const done = new Promise((resolve) => {
 						slot.streamDone = resolve;
 					});
+					slot.streamReady = new Promise((resolve) => {
+						slot.streamReadyResolve = resolve;
+					});
 					slot.streamPromise = chan.stream(slot.chatId, { card: {
 						initial: richCard({
 							title: "DSH 回复",
@@ -624,10 +650,14 @@ function apply(ctx, config = {}) {
 						}),
 						producer: async (controller) => {
 							slot.streamController = controller;
+							slot.streamReadyResolve?.();
 							await done;
 						}
 					} });
-					Promise.resolve(slot.streamPromise).catch((e) => ctx.logger?.warn?.("[connect-lark] stream failed: " + e.message));
+					Promise.resolve(slot.streamPromise).catch((e) => {
+						slot.streamFailed = e;
+						ctx.logger?.warn?.("[connect-lark] stream failed: " + e.message);
+					});
 				},
 				onDelta: (slot) => {
 					updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + e.message));
@@ -638,10 +668,18 @@ function apply(ctx, config = {}) {
 				onComplete: (slot) => {
 					(async () => {
 						try {
-							await updateRunCard(slot, plain.thinkingPolicy);
-						} catch (e) {
-							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
-							if (reply) await chan.send(slot.chatId, { markdown: reply });
+							if (!slot.streamController && !slot.streamFailed) await Promise.race([slot.streamReady ?? Promise.resolve(), new Promise((resolve) => setTimeout(resolve, 1e3))]);
+							if (slot.streamFailed || !slot.streamController) {
+								const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
+								if (reply) await chan.send(slot.chatId, { markdown: reply });
+								return;
+							}
+							try {
+								await updateRunCard(slot, plain.thinkingPolicy);
+							} catch (e) {
+								const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
+								if (reply) await chan.send(slot.chatId, { markdown: reply });
+							}
 						} finally {
 							slot.streamDone?.();
 						}

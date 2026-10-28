@@ -1,6 +1,6 @@
 // @oh-summy/connect-lark — Image handling (ARCHITECTURE §3.1).
 //
-// v6 scope: download -> attachment admission -> vision gate -> honest fallback.
+// Image flow: download -> attachment admission -> vision gate -> honest fallback.
 // The gate must do ALL THREE things (like dsh-acp assertImageRoute):
 //   1) await resolveModelInfo()  — it returns a Promise, must await
 //   2) guard undefined inputModalities — cannot call .includes() on undefined

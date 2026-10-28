@@ -34,14 +34,19 @@ export function richCard(opts: RichCardOptions): Record<string, unknown> {
     else elements.push({ tag: "div", text: { tag: "lark_md", content: line } });
   }
   if (opts.buttons && opts.buttons.length > 0) {
-    const actions = opts.buttons.map((b) => ({
-      tag: "button",
-      text: { tag: "plain_text", content: b.text },
-      type: "default",
-      ...(b.url ? { url: b.url } : {}),
-      ...(b.value ? { value: b.value } : {}),
-    }));
-    elements.push({ tag: "action", actions });
+    // CardKit 2.0: buttons are direct elements, not an action wrapper.
+    for (const b of opts.buttons) {
+      const behaviors: Array<Record<string, unknown>> = [];
+      if (b.url) behaviors.push({ type: "open_url", default_url: b.url });
+      if (b.value) behaviors.push({ type: "callback", value: { value: b.value } });
+      elements.push({
+        tag: "button",
+        text: { tag: "plain_text", content: b.text },
+        type: "primary",
+        size: "small",
+        behaviors,
+      });
+    }
   }
   if (opts.note) {
     // CardKit 2.0 does not accept the legacy `note` tag. Use a plain-text

@@ -34,6 +34,9 @@ export interface RunSlot {
   streamController?: { update: (next: object) => Promise<void> };
   streamDone?: () => void;
   streamPromise?: Promise<unknown>;
+  streamFailed?: Error;
+  streamReady?: Promise<void>;
+  streamReadyResolve?: () => void;
 }
 
 export interface RunManagerOptions {
@@ -113,40 +116,45 @@ export class RunManager {
       return slot;
     }
 
-    // Resolve agent.
-    const { agent, sessionId, handle } = await this.opts.resolveAgent(chatId, title);
-    slot.agent = agent;
-    slot.handle = handle;
-    slot.sessionId = sessionId;
-
-    // Subscribe to events.
-    const unsub = this.opts.subscribe(
-      agent,
-      sessionId,
-      (delta, kind) => {
-        if (kind === "reasoning") {
-          slot.thinkingText += delta;
-          this.opts.onThinking?.(slot, delta);
-        } else {
-          slot.accumulatedText += delta;
-          this.opts.onDelta?.(slot, delta);
-        }
-      },
-      () => { this.complete(chatId); },
-      (e) => { this.fail(chatId, e); },
-    );
-    this.unsubs.set(chatId, unsub);
-
-    // Start the turn.
+    // Set running before awaiting the agent. Another message for this chat
+    // must queue, not create a second writer for the same session.
     slot.state = "running";
-    slot.cancelController = new AbortController();
-    slot.accumulatedText = "";
-    slot.thinkingText = "";
-    slot.turnId = (slot.turnId ?? 0) + 1;
-    await this.opts.onStart?.(slot);
-    this.opts.followup(agent, this.opts.buildMessage(content, source));
+    try {
+      const { agent, sessionId, handle } = await this.opts.resolveAgent(chatId, title);
+      slot.agent = agent;
+      slot.handle = handle;
+      slot.sessionId = sessionId;
 
-    return slot;
+      const unsub = this.opts.subscribe(
+        agent,
+        sessionId,
+        (delta, kind) => {
+          if (kind === "reasoning") {
+            slot.thinkingText += delta;
+            this.opts.onThinking?.(slot, delta);
+          } else {
+            slot.accumulatedText += delta;
+            this.opts.onDelta?.(slot, delta);
+          }
+        },
+        () => { this.complete(chatId); },
+        (e) => { this.fail(chatId, e); },
+      );
+      this.unsubs.set(chatId, unsub);
+
+      slot.cancelController = new AbortController();
+      slot.accumulatedText = "";
+      slot.thinkingText = "";
+      slot.turnId = (slot.turnId ?? 0) + 1;
+      await this.opts.onStart?.(slot);
+      this.opts.followup(agent, this.opts.buildMessage(content, source));
+      return slot;
+    } catch (error) {
+      this.cleanup(chatId);
+      slot.state = "idle";
+      slot.streamDone?.();
+      throw error;
+    }
   }
 
   /** Cancel the current run for a chat (does NOT dispose the agent).
@@ -206,6 +214,7 @@ export class RunManager {
     // Abort all controllers before disposing.
     for (const slot of this.slots.values()) {
       try { slot.cancelController?.abort(); } catch { /* gone */ }
+      try { slot.streamDone?.(); } catch { /* already finished */ }
     }
     // Clean up subscriptions for all slots.
     for (const chatId of this.slots.keys()) this.cleanup(chatId);

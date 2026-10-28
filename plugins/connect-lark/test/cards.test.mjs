@@ -25,10 +25,11 @@ test("richCard: buttons added as action element", () => {
     title: "T", color: "green", lines: ["content"],
     buttons: [{ text: "Click", url: "https://example.com" }],
   });
-  const action = card.body.elements.find((e) => e.tag === "action");
-  assert.ok(action);
-  assert.equal(action.actions[0].text.content, "Click");
-  assert.equal(action.actions[0].url, "https://example.com");
+  const button = card.body.elements.find((e) => e.tag === "button");
+  assert.ok(button);
+  assert.equal(button.text.content, "Click");
+  assert.equal(button.behaviors[0].type, "open_url");
+  assert.equal(button.behaviors[0].default_url, "https://example.com");
 });
 
 test("richCard: no note when not provided", () => {

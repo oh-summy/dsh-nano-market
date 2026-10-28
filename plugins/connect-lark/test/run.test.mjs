@@ -114,3 +114,43 @@ test("RunManager: emits start, text and reasoning callbacks", async () => {
   assert.equal(slot.thinkingText, "think");
   assert.deepEqual(calls, [["start", "chat-1"], ["text", "answer"], ["reasoning", "think"]]);
 });
+
+
+test("RunManager: serializes concurrent starts for one chat", async () => {
+  let resolveCount = 0;
+  let followupCount = 0;
+  const mgr = new RunManager({
+    resolveAgent: async () => {
+      resolveCount++;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { agent: { id: "a" }, sessionId: "s1", handle: null };
+    },
+    buildMessage: () => ({ id: "m" }),
+    subscribe: () => () => {},
+    followup: () => { followupCount++; },
+  });
+  await Promise.all([
+    mgr.start("chat-1", "first", { kind: "user" }),
+    mgr.start("chat-1", "second", { kind: "user" }),
+  ]);
+  assert.equal(resolveCount, 1);
+  assert.equal(followupCount, 1);
+  const slot = mgr.getSlot("chat-1");
+  assert.equal(slot.pending.length, 1);
+  assert.equal(slot.pending[0].content, "second");
+});
+
+
+test("RunManager: disposeAll finishes active streaming producers", async () => {
+  let finished = false;
+  const mgr = new RunManager({
+    resolveAgent: async () => ({ agent: { id: "a" }, sessionId: "s1", handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: () => () => {},
+    followup: () => {},
+  });
+  const slot = await mgr.start("chat-1", "hello", { kind: "user" });
+  slot.streamDone = () => { finished = true; };
+  await mgr.disposeAll();
+  assert.equal(finished, true);
+});

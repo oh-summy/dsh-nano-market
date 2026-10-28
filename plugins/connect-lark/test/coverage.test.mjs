@@ -144,3 +144,19 @@ test("createOrResumeAgent: applies a selected permission preset to the live agen
   await createOrResumeAgent(ctx, "session-live", {}, {}, "workspace-write");
   assert.deepEqual(calls, [["session-live", "workspace-write"]]);
 });
+
+
+test("createOrResumeAgent: retries active write handle and reuses the live agent", async () => {
+  const live = { id: "live" };
+  let gets = 0;
+  let creates = 0;
+  const ctx = { agents: {
+    get: () => (++gets === 3 ? live : undefined),
+    create: async () => { creates++; throw new Error("session is already owned by an active write handle"); },
+  } };
+  const result = await createOrResumeAgent(ctx, "session-live", {}, {});
+  assert.equal(result.agent, live);
+  assert.equal(result.handle, null);
+  assert.equal(gets, 3);
+  assert.equal(creates, 2);
+});

@@ -28,7 +28,7 @@ channel 仍是 0.x，精确 pin 版本（不用 `^`）、锁依赖、显式设�
 
 - 纯 Markdown：`channel.stream(to, { markdown })` — SDK 托管 CardKit
 - 富卡片（标题色 / footer / 按钮）：调用方提供原始 CardKit JSON
-- 回复在 turn 结束后一次性发送（`chan.send`），非逐字流式
+- 回复通过 `chan.stream({ card })` 持续更新同一张富卡片：标题、正文、思考过程、footer 和 GitHub 按钮；失败时回退普通 Markdown，保证不丢回复
 
 ### 5. 图片处理
 
