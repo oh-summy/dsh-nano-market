@@ -7,7 +7,8 @@
   "type": "module",
   "main": "./lib/index.mjs",
   "exports": {
-    ".": "./lib/index.mjs"
+    ".": "./lib/index.mjs",
+    "./client": "./lib/client.js"
   },
   "engines": {
     "node": ">=24",
@@ -24,13 +25,16 @@
     "cordis"
   ],
   "scripts": {
-    "build": "tsc --noEmit && tsdown src/index.ts -d lib --format esm",
+    "build": "tsc --noEmit && tsdown src/index.ts -d lib --format esm && node scripts/build-client.mjs",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   },
   "dependencies": {

@@ -196,3 +196,11 @@ test("FIELDS count matches the schema (guards against drift)", () => {
   assert.equal(FIELDS.length, FIELD_COUNT);
   assert.deepEqual(Object.keys(Config.dict).sort(), [...FIELDS].sort());
 });
+
+
+test("apply listens for volatile updates and re-reads config before reconnecting", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../lib/index.mjs", import.meta.url), "utf8");
+  assert.match(source, /ctx\.on\("loader\/volatile-update"/);
+  assert.match(source, /plain\s*=\s*plainConfig\(config\)/);
+});

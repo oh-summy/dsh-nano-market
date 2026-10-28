@@ -50,6 +50,14 @@ Lark 回调里没有可直接读取的「当前 agent」，必须显式指定目
 - 所有 timer 登记进 disposer
 - `channel.connect()` 失败时 throw，不静默
 
+### 8. 原生配置 UI
+
+第三方插件仅导出 `Config` 不会自动在详情页出现表单。浏览器端还必须注册 `plugins.bundle.config`，key 为 `@oh-summy/connect-lark`，并通过 `configForms.get("connect-lark")` 读取和保存 volatile 配置。
+
+配置页使用 DSH 原生 `SettingsFormModel` / `SettingsForm`，按连接、Agent、消息访问控制和高级设置分组。App Secret 只填写凭据引用名，不在页面或配置文件中保存明文。
+
+所有字段都可 volatile 编辑。保存触发 `loader/volatile-update` 后，插件按代际序列清理旧连接和 RunManager、重新读取 volatile 配置，再按新配置启动；保存 `enabled=false` 不会解析 Secret 或建立连接。
+
 ## 结构
 
     plugins/connect-lark/
@@ -60,6 +68,8 @@ Lark 回调里没有可直接读取的「当前 agent」，必须显式指定目
       src/cards.ts        # 卡片构建（richCard + streamMarkdown）
       src/images.ts       # 图片处理（admitImage + buildImageContent + downloadInboundImage）
       src/run.ts          # RunManager：状态机 + 队列 + 取消 + dispose
+      client-src/client.js # DSH 原生配置表单（plugins.bundle.config）
+      scripts/build-client.mjs # 浏览器模块打包
       test/               # 插件级测试
 
 ## 依赖
@@ -76,7 +86,6 @@ Lark 回调里没有可直接读取的「当前 agent」，必须显式指定目
 ## 待办
 
 - CoT spike（cot-discard / cot-visible 需要 message_cot API 实测）
-- 热更新字段决策（appId / provider / model 改了要不要重连）
 - engines.dsh 最低版本验证（本地 rc.4，声明 rc.2 未验证）
 - zod advisory override 决定（dsh-llm 传递引入 zod 4.4.3，有 high advisory）
 - dsh-remote 添加测试（当前无 test/ 目录）

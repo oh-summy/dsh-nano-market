@@ -176,17 +176,23 @@ class DeltaQueue {
 // ---- apply() ----
 
 export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
-  const plain = plainConfig(config);
+  let plain = plainConfig(config);
   let channel: LarkChannel | null = null;
   let runManager: RunManager | null = null;
   let unsubMessage: (() => void) | null = null;
   let unsubEvents: Array<() => void> = [];
+  let generation = 0;
+  let transition: Promise<void> = Promise.resolve();
 
   ctx.effect(() => {
     let dead = false;
     const isAlive = () => !dead;
 
     const boot = async () => {
+      const current = ++generation;
+      const currentAlive = () => isAlive() && generation === current;
+      // Volatile wrappers are mutated in place; re-read on every (re)start.
+      plain = plainConfig(config);
       // 1) Check enabled first — if disabled, don't even resolve secret.
       if (!plain.enabled) {
         ctx.logger?.info?.("[connect-lark] disabled (enabled=false) — not connecting");
@@ -194,7 +200,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       }
       // 2) Resolve secret (fails closed if unset).
       const appSecret = await resolveAppSecret(ctx, config);
-      if (!isAlive()) return;
+      if (!currentAlive()) return;
 
       // 2) Whitelist pre-check: if both allowlists are empty, deny all (fail-closed).
       const allowlistConfigured = plain.senderAllowlist.length > 0 || plain.groupAllowlist.length > 0;
@@ -218,7 +224,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         ctx.logger?.error?.("[connect-lark] channel connect failed: " + (e as Error).message);
         throw e;
       }
-      if (!isAlive()) { try { await chan.disconnect(); } catch { /* gone */ } return; }
+      if (!currentAlive()) { try { await chan.disconnect(); } catch { /* gone */ } return; }
       ctx.logger?.info?.("[connect-lark] channel connected");
 
       // 4) Create run manager.
@@ -294,7 +300,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
 
       // 5) Subscribe to messages.
       unsubMessage = chan.on("message", async (msg: any) => {
-        if (!isAlive()) return;
+        if (!currentAlive()) return;
         if (!passesWhitelist(plain, msg.chatId, msg.senderId)) return;
 
         const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
@@ -344,20 +350,39 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       ctx.logger?.info?.("[connect-lark] ready");
     };
 
-    boot().catch((e) => {
-      ctx.logger?.error?.("[connect-lark] boot failed: " + (e as Error).message);
-    });
-
-    return () => { // disposer
-      dead = true;
+    const cleanup = async () => {
+      generation++; // invalidate an in-flight boot before touching resources
       for (const unsub of unsubEvents) try { unsub(); } catch { /* already gone */ }
       unsubEvents = [];
       if (unsubMessage) try { unsubMessage(); } catch { /* already gone */ }
       unsubMessage = null;
-      if (channel) { Promise.resolve(channel.disconnect()).catch(() => {}); }
+      const chan = channel;
       channel = null;
-      if (runManager) { Promise.resolve(runManager.disposeAll()).catch((e) => ctx.logger?.warn?.("[connect-lark] dispose failed: " + (e as Error).message)); }
+      const manager = runManager;
       runManager = null;
+      await Promise.allSettled([
+        chan ? Promise.resolve(chan.disconnect()) : Promise.resolve(),
+        manager ? Promise.resolve(manager.disposeAll()) : Promise.resolve(),
+      ]);
+    };
+
+    const queueBoot = () => {
+      transition = transition.then(async () => {
+        await cleanup();
+        if (!dead) await boot();
+      }).catch((e) => {
+        ctx.logger?.error?.("[connect-lark] boot failed: " + (e as Error).message);
+      });
+    };
+
+    const unsubVolatile = ctx.on("loader/volatile-update", queueBoot);
+    queueBoot();
+
+    return async () => { // disposer
+      dead = true;
+      try { unsubVolatile(); } catch { /* already gone */ }
+      transition = transition.then(cleanup).catch(() => {});
+      await transition;
       ctx.logger?.info?.("[connect-lark] disposed");
     };
   });

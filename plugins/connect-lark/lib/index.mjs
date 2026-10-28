@@ -399,21 +399,26 @@ function passesWhitelist(plain, chatId, senderId) {
 	return plain.senderAllowlist.includes(senderId) && plain.groupAllowlist.includes(chatId);
 }
 function apply(ctx, config = {}) {
-	const plain = plainConfig(config);
+	let plain = plainConfig(config);
 	let channel = null;
 	let runManager = null;
 	let unsubMessage = null;
 	let unsubEvents = [];
+	let generation = 0;
+	let transition = Promise.resolve();
 	ctx.effect(() => {
 		let dead = false;
 		const isAlive = () => !dead;
 		const boot = async () => {
+			const current = ++generation;
+			const currentAlive = () => isAlive() && generation === current;
+			plain = plainConfig(config);
 			if (!plain.enabled) {
 				ctx.logger?.info?.("[connect-lark] disabled (enabled=false) — not connecting");
 				return;
 			}
 			const appSecret = await resolveAppSecret(ctx, config);
-			if (!isAlive()) return;
+			if (!currentAlive()) return;
 			if (!(plain.senderAllowlist.length > 0 || plain.groupAllowlist.length > 0)) ctx.logger?.warn?.("[connect-lark] senderAllowlist and groupAllowlist are both empty — all messages will be denied (fail-closed). Both must be configured to enable messaging.");
 			const chan = createLarkChannel({
 				appId: plain.appId,
@@ -430,7 +435,7 @@ function apply(ctx, config = {}) {
 				ctx.logger?.error?.("[connect-lark] channel connect failed: " + e.message);
 				throw e;
 			}
-			if (!isAlive()) {
+			if (!currentAlive()) {
 				try {
 					await chan.disconnect();
 				} catch {}
@@ -509,7 +514,7 @@ function apply(ctx, config = {}) {
 				}
 			});
 			unsubMessage = chan.on("message", async (msg) => {
-				if (!isAlive()) return;
+				if (!currentAlive()) return;
 				if (!passesWhitelist(plain, msg.chatId, msg.senderId)) return;
 				const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
 				if (!text) return;
@@ -552,11 +557,8 @@ function apply(ctx, config = {}) {
 			});
 			ctx.logger?.info?.("[connect-lark] ready");
 		};
-		boot().catch((e) => {
-			ctx.logger?.error?.("[connect-lark] boot failed: " + e.message);
-		});
-		return () => {
-			dead = true;
+		const cleanup = async () => {
+			generation++;
 			for (const unsub of unsubEvents) try {
 				unsub();
 			} catch {}
@@ -565,10 +567,29 @@ function apply(ctx, config = {}) {
 				unsubMessage();
 			} catch {}
 			unsubMessage = null;
-			if (channel) Promise.resolve(channel.disconnect()).catch(() => {});
+			const chan = channel;
 			channel = null;
-			if (runManager) Promise.resolve(runManager.disposeAll()).catch((e) => ctx.logger?.warn?.("[connect-lark] dispose failed: " + e.message));
+			const manager = runManager;
 			runManager = null;
+			await Promise.allSettled([chan ? Promise.resolve(chan.disconnect()) : Promise.resolve(), manager ? Promise.resolve(manager.disposeAll()) : Promise.resolve()]);
+		};
+		const queueBoot = () => {
+			transition = transition.then(async () => {
+				await cleanup();
+				if (!dead) await boot();
+			}).catch((e) => {
+				ctx.logger?.error?.("[connect-lark] boot failed: " + e.message);
+			});
+		};
+		const unsubVolatile = ctx.on("loader/volatile-update", queueBoot);
+		queueBoot();
+		return async () => {
+			dead = true;
+			try {
+				unsubVolatile();
+			} catch {}
+			transition = transition.then(cleanup).catch(() => {});
+			await transition;
 			ctx.logger?.info?.("[connect-lark] disposed");
 		};
 	});

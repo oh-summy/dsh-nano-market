@@ -1,0 +1,78 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { registerHooks } from "node:module";
+
+const stubUrl = "data:text/javascript," + encodeURIComponent(`
+export function createLarkChannel(options) {
+  return globalThis.__connectLarkTestChannel.create(options);
+}
+`);
+
+registerHooks({
+  resolve(specifier, context, next) {
+    if (specifier === "@larksuite/channel") return { url: stubUrl, shortCircuit: true };
+    return next(specifier, context);
+  },
+});
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+test("apply connects and disconnects on volatile enabled updates", async () => {
+  const calls = { create: 0, connect: 0, disconnect: 0 };
+  globalThis.__connectLarkTestChannel = {
+    create() {
+      calls.create++;
+      return {
+        async connect() { calls.connect++; },
+        async disconnect() { calls.disconnect++; },
+        on() { return () => {}; },
+        async send() {},
+      };
+    },
+  };
+  const listeners = new Map();
+  let disposer;
+  const ctx = {
+    logger: { info() {}, warn() {}, error() {} },
+    credentials: { resolve: async () => ({ value: "test-secret" }) },
+    effect(fn) { disposer = fn(); },
+    on(name, handler) {
+      listeners.set(name, handler);
+      return () => listeners.delete(name);
+    },
+  };
+  const config = {
+    enabled: false,
+    appId: "cli_test",
+    appSecretRef: "CONNECT_LARK_TEST",
+    defaultPath: "",
+    openId: "",
+    domain: "feishu",
+    requireMention: true,
+    agentOwnership: "attach-gui",
+    attachSessionId: "session-test",
+    provider: "",
+    model: "",
+    senderAllowlist: ["ou_test"],
+    groupAllowlist: ["oc_test"],
+    thinkingPolicy: "stream-only",
+  };
+  const { apply } = await import("../lib/index.mjs");
+  apply(ctx, config);
+  await settle();
+  assert.equal(calls.create, 0, "disabled config must not connect");
+  assert.equal(calls.connect, 0);
+
+  config.enabled = true;
+  listeners.get("loader/volatile-update")();
+  await settle();
+  assert.equal(calls.create, 1, "saving enabled=true should create a channel");
+  assert.equal(calls.connect, 1, "saving enabled=true should connect");
+
+  config.enabled = false;
+  listeners.get("loader/volatile-update")();
+  await settle();
+  assert.equal(calls.disconnect, 1, "saving enabled=false should disconnect");
+  await disposer?.();
+  delete globalThis.__connectLarkTestChannel;
+});
