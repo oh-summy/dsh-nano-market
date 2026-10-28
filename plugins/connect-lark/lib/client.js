@@ -32,8 +32,8 @@ const zh = {
   appSecretRef: "App Secret 凭据引用",
   appSecretRefHint: "Secret 保存在 DSH 凭据缝，不进入 Git，也不会在页面显示。",
   defaultPath: "默认工作区",
-  defaultPathHint: "从 DSH 工作区中选择，或使用同样的目录选择器添加。",
-  addWorkspace: "添加工作区",
+  defaultPathHint: "从 DSH 工作区中选择，或点击「修改」选择其他目录。",
+  editWorkspace: "修改",
   addingWorkspace: "正在选择目录…",
   workspaceFailed: "未能添加工作区，请重试。",
   model: "模型",
@@ -205,10 +205,12 @@ const styles = `
 .cl-segment{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#f2f3f5;border-radius:10px;padding:4px;margin-bottom:18px}
 .cl-segment button{border:1px solid transparent;border-radius:7px;background:transparent;color:#5f6672;padding:8px 12px;font:inherit;font-size:12px;cursor:pointer}
 .cl-segment button[aria-checked="true"]{background:#fff;color:var(--cl-blue);border-color:#cfdcff;box-shadow:0 1px 4px rgba(31,35,41,.06);font-weight:600}
-.cl-workspace-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;margin-bottom:18px}
-.cl-workspace-row .cl-field{margin-bottom:0}
-.cl-workspace-add{display:flex;align-items:center;justify-content:center;gap:6px;min-height:36px;margin:0;border:1px dashed #cbd5e4;border-radius:8px;background:#f8faff;color:#315dc4;padding:8px 12px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap}
-.cl-workspace-add:hover{background:#eff4ff;border-color:#9fb8ee}
+.cl-workspace-field{margin-bottom:18px}
+.cl-workspace-field-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px}
+.cl-workspace-field-head .cl-label{margin-bottom:0}
+.cl-workspace-edit{display:inline-flex;align-items:center;gap:5px;border:0;border-radius:6px;background:transparent;color:#526174;padding:3px 6px;font:inherit;font-size:11px;font-weight:550;cursor:pointer}
+.cl-workspace-edit:hover{background:#f0f4fa;color:var(--cl-blue)}
+.cl-workspace-edit:focus-visible{outline:2px solid var(--cl-blue);outline-offset:2px}
 .cl-browser-modal{width:min(680px,100%)}
 .cl-browser-path{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin:18px 0 12px}
 .cl-browser-list{height:340px;overflow:auto;border:1px solid #eceff3;border-radius:10px;padding:6px}
@@ -217,7 +219,7 @@ const styles = `
 .cl-browser-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px}
 .cl-browser-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .cl-browser-create{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin-top:14px}
-@media(max-width:560px){.cl-workspace-row{grid-template-columns:1fr}.cl-workspace-add{justify-self:start}.cl-browser-list{height:280px}.cl-browser-footer{align-items:flex-start;flex-direction:column}}
+@media(max-width:560px){.cl-browser-list{height:280px}.cl-browser-footer{align-items:flex-start;flex-direction:column}}
 .cl-picker{position:relative;min-width:0}
 .cl-picker-trigger{display:flex;align-items:center;gap:9px;text-align:left;cursor:pointer;min-height:54px}
 .cl-picker-text{min-width:0;flex:1}
@@ -460,8 +462,12 @@ function WorkspacePicker({ state, value, onEdit, onBrowse, onCreateDirectory, t,
   const [open, setOpen] = React.useState(false);
   const items = state.workspaces?.items || [];
   return jsxs("div", { children: [
-    jsxs("div", { className: "cl-workspace-row", children: [
-      jsx(Field, { label: t("defaultPath"), hint: t("defaultPathHint"), children: jsxs("select", {
+    jsxs("div", { className: "cl-workspace-field", children: [
+      jsxs("div", { className: "cl-workspace-field-head", children: [
+        jsx("span", { className: "cl-label", children: t("defaultPath") }),
+        jsx("button", { type: "button", className: "cl-workspace-edit", disabled, onClick: () => setOpen(true), children: "✎ " + t("editWorkspace") }),
+      ] }),
+      jsxs("select", {
         id: "connect-lark-defaultPath", className: "cl-select", value: value.text, disabled,
         onChange: (event) => onEdit(event.target.value),
         children: [
@@ -469,8 +475,8 @@ function WorkspacePicker({ state, value, onEdit, onBrowse, onCreateDirectory, t,
           value.text && !items.some((item) => item.path === value.text) ? jsx("option", { value: value.text, children: value.text }) : null,
           items.map((item) => jsx("option", { value: item.path, children: item.title + " · " + item.path }, item.workspaceId)),
         ],
-      }) }),
-      jsx("button", { type: "button", className: "cl-workspace-add", disabled, onClick: () => setOpen(true), children: "+ " + t("addWorkspace") }),
+      }),
+      jsx("p", { className: "cl-hint", children: t("defaultPathHint") }),
     ] }),
     open ? jsx(WorkspaceDialog, {
       listDirectory: onBrowse,
