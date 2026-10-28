@@ -80,7 +80,7 @@ export function plainConfig(input: Config | ParsedConfig): ResolvedConfig {
   return out as ResolvedConfig;
 }
 
-export const inject = ["agents", "llm", "attachments", "credentials", "sessionController", "permissionPresets"];
+export const inject = ["agents", "llm", "attachments", "credentials", "sessionController", "permissionPresets", "workspaceRegistry"];
 
 export const Config = z.object({
   enabled: z.boolean().default(false).volatile().comment("启用飞书连接（关闭即断连）"),
@@ -97,7 +97,7 @@ export const Config = z.object({
   model: z.string().default("").volatile().comment("owned-per-chat 时必填"),
   senderAllowlist: z.array(z.string()).default([]).volatile().comment("私聊用户限制；留空允许所有私聊用户"),
   groupAllowlist: z.array(z.string()).default([]).volatile().comment("群聊限制；留空允许所有群聊"),
-  thinkingPolicy: z.union(["cot-visible", "cot-discard", "stream-only"]).default("stream-only").volatile().comment("CoT 政策：当前仅实现 stream-only"),
+  thinkingPolicy: z.union(["cot-visible", "cot-discard", "stream-only"]).default("cot-visible").volatile().comment("思考展示：cot-visible=在卡片中显示思考过程；cot-discard/stream-only=不显示"),
   reasoningEffort: z.string().default("").volatile().comment("思考强度；留空跟随 DSH 当前模型默认配置"),
   permissionPreset: z.string().default("").volatile().comment("权限模式；留空跟随 DSH 默认，支持 read-only/workspace-write/danger-full-access/auto"),
 });
@@ -226,6 +226,26 @@ export async function createOrResumeAgent(ctx: AnyCtx, sessionId: string, meta: 
   }
 }
 
+/** Update one streaming rich card with the latest answer and optional CoT. */
+async function updateRunCard(slot: RunSlot, thinkingPolicy: ResolvedConfig["thinkingPolicy"]): Promise<void> {
+  if (!slot.streamController) return;
+  const lines: string[] = [];
+  if (slot.failedWith) lines.push("**运行失败：** " + slot.failedWith.message);
+  else lines.push(slot.accumulatedText || "正在生成回复…");
+  if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
+    lines.push("---", "**思考过程**");
+    lines.push(slot.thinkingText.split("\n").map((line) => "> " + line).join("\n"));
+  }
+  const note = slot.failedWith ? "运行失败" : slot.state === "done" ? "已完成" : "正在生成…";
+  await slot.streamController.update(richCard({
+    title: "DSH 回复",
+    color: "blue",
+    lines,
+    note: "DeepSeek Harness · connect-lark · " + note,
+    buttons: [{ text: "GitHub 仓库", url: "https://github.com/oh-summy/dsh-nano-market" }],
+  }));
+}
+
 // ---- apply() ----
 
 export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
@@ -274,10 +294,23 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
 
       // 4) Create run manager.
       runManager = new RunManager({
-        resolveAgent: async (chatId) => {
+        resolveAgent: async (chatId, title) => {
           // Reuse existing agent from slot if already created (owned-per-chat).
           const existing = runManager?.getSlot(chatId);
+          const present = async (sessionId: string) => {
+            if (existing?.titleSet || plain.agentOwnership !== "owned-per-chat") return;
+            try {
+              const cwd = plain.defaultPath || process.cwd();
+              const workspace = ctx.workspaceRegistry.list().find((item: any) => item.path === cwd);
+              if (workspace) await workspace.attachSession(sessionId);
+              if (title) await ctx.sessionController.rename({ sessionId, title });
+              if (existing) existing.titleSet = true;
+            } catch (error) {
+              ctx.logger?.warn?.("[connect-lark] session presentation failed: " + (error as Error).message);
+            }
+          };
           if (existing?.agent && existing?.sessionId) {
+            await present(existing.sessionId);
             return { agent: existing.agent, sessionId: existing.sessionId, handle: existing.handle };
           }
           if (plain.agentOwnership === "owned-per-chat") {
@@ -291,6 +324,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               agentOptions,
               plain.permissionPreset,
             );
+            await present(sessionId);
             return { agent, sessionId, handle };
           }
           // attach-gui
@@ -312,10 +346,11 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           const unsubStream = track(ctx.on("agent/assistant-stream", (evt: any) => {
             if (evt.agent !== agent) return;
             // AssistantStreamFrame: chunk variant has chunk: StreamChunk.
-            // text-delta chunks carry the text; reasoning-delta is excluded (stream-only policy).
             const frame = evt.frame;
             if (frame?.type === "chunk" && frame.chunk?.type === "text-delta") {
-              onDelta(frame.chunk.text);
+              onDelta(frame.chunk.text, "text");
+            } else if (frame?.type === "chunk" && frame.chunk?.type === "reasoning-delta") {
+              onDelta(frame.chunk.text, "reasoning");
             }
           }));
           const unsubTurn = ctx.on("session/event", (session: any, event: any) => {
@@ -336,12 +371,42 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         followup: (agent, message) => {
           (agent as { followup: (m: unknown) => void }).followup(message);
         },
+        onStart: (slot) => {
+          const done = new Promise<void>((resolve) => { slot.streamDone = resolve; });
+          slot.streamPromise = chan.stream(slot.chatId, {
+            card: {
+              initial: richCard({
+                title: "DSH 回复",
+                color: "blue",
+                lines: ["正在连接 DSH Agent…"],
+                note: "DeepSeek Harness · connect-lark",
+                buttons: [{ text: "GitHub 仓库", url: "https://github.com/oh-summy/dsh-nano-market" }],
+              }),
+              producer: async (controller) => {
+                slot.streamController = controller;
+                await done;
+              },
+            },
+          });
+          Promise.resolve(slot.streamPromise).catch((e) => ctx.logger?.warn?.("[connect-lark] stream failed: " + (e as Error).message));
+        },
+        onDelta: (slot) => {
+          void updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + (e as Error).message));
+        },
+        onThinking: (slot) => {
+          void updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + (e as Error).message));
+        },
         onComplete: (slot) => {
-          const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
-          if (reply) {
-            Promise.resolve(chan.send(slot.chatId, { markdown: reply }))
-              .catch((e) => ctx.logger?.warn?.("[connect-lark] send failed: " + (e as Error).message));
-          }
+          void (async () => {
+            try {
+              await updateRunCard(slot, plain.thinkingPolicy);
+            } catch (e) {
+              const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
+              if (reply) await chan.send(slot.chatId, { markdown: reply });
+            } finally {
+              slot.streamDone?.();
+            }
+          })().catch((e) => ctx.logger?.warn?.("[connect-lark] reply failed: " + (e as Error).message));
         },
       });
 
@@ -387,7 +452,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         }
 
         try {
-          await runManager!.start(msg.chatId, content, { kind: "user" });
+          const title = text.trim().replace(/\s+/g, " ").slice(0, 32) || "飞书消息";
+          await runManager!.start(msg.chatId, content, { kind: "user" }, title);
         } catch (e) {
           ctx.logger?.error?.("[connect-lark] run failed: " + (e as Error).message);
           Promise.resolve(chan.send(msg.chatId, { markdown: "[connect-lark] 运行失败：" + (e as Error).message })).catch(() => {});

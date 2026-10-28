@@ -75,3 +75,42 @@ test("RunManager: accumulates deltas", async () => {
   getDelta()(" World");
   assert.equal(slot.accumulatedText, "Hello World");
 });
+
+test("RunManager: forwards the first message title to resolveAgent", async () => {
+  let received;
+  const mgr = new RunManager({
+    resolveAgent: async (chatId, title) => {
+      received = { chatId, title };
+      return { agent: { id: "a" }, sessionId: "s1", handle: null };
+    },
+    buildMessage: () => ({ id: "m" }),
+    subscribe: () => () => {},
+    followup: () => {},
+  });
+  await mgr.start("chat-1", "hello", { kind: "user" }, "你是干啥的？现在什么环境");
+  assert.deepEqual(received, { chatId: "chat-1", title: "你是干啥的？现在什么环境" });
+});
+
+
+test("RunManager: emits start, text and reasoning callbacks", async () => {
+  let deltaCb;
+  const calls = [];
+  const mgr = new RunManager({
+    resolveAgent: async () => ({ agent: { id: "a" }, sessionId: "s1", handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: (agent, sessionId, onDelta) => {
+      deltaCb = onDelta;
+      return () => {};
+    },
+    followup: () => {},
+    onStart: (slot) => { calls.push(["start", slot.chatId]); },
+    onDelta: (slot, delta) => { calls.push(["text", delta]); },
+    onThinking: (slot, delta) => { calls.push(["reasoning", delta]); },
+  });
+  const slot = await mgr.start("chat-1", "hello", { kind: "user" });
+  deltaCb("answer", "text");
+  deltaCb("think", "reasoning");
+  assert.equal(slot.accumulatedText, "answer");
+  assert.equal(slot.thinkingText, "think");
+  assert.deepEqual(calls, [["start", "chat-1"], ["text", "answer"], ["reasoning", "think"]]);
+});

@@ -3,6 +3,90 @@ import { credentialRef, isCredentialRefName } from "@deepseek-ai/dsh-credentials
 import { isVolatile } from "@deepseek-ai/cosmokit";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel } from "@larksuite/channel";
+// src/cards.ts
+/**
+* Build a CardKit JSON 2.0 object with header + body elements.
+*
+* This is the "raw CardKit JSON" path — the SDK does NOT own this structure.
+* The caller must provide it (ARCHITECTURE §3.2).
+*/
+function richCard(opts) {
+	const elements = [];
+	for (const line of opts.lines) if (line === "---") elements.push({ tag: "hr" });
+	else elements.push({
+		tag: "div",
+		text: {
+			tag: "lark_md",
+			content: line
+		}
+	});
+	if (opts.buttons && opts.buttons.length > 0) {
+		const actions = opts.buttons.map((b) => ({
+			tag: "button",
+			text: {
+				tag: "plain_text",
+				content: b.text
+			},
+			type: "default",
+			...b.url ? { url: b.url } : {},
+			...b.value ? { value: b.value } : {}
+		}));
+		elements.push({
+			tag: "action",
+			actions
+		});
+	}
+	if (opts.note) elements.push({
+		tag: "div",
+		text: {
+			tag: "plain_text",
+			content: opts.note
+		}
+	});
+	return {
+		schema: "2.0",
+		header: {
+			title: {
+				tag: "plain_text",
+				content: opts.title
+			},
+			template: opts.color
+		},
+		body: { elements }
+	};
+}
+/**
+* Stream plain markdown to a chat via channel.stream().
+*
+* The SDK owns CardKit create + atomic update + finalize here — no raw JSON needed.
+* Returns the SendResult so the caller can track the message ID.
+*/
+async function streamMarkdown(channel, to, getDelta) {
+	return channel.stream(to, { markdown: async (c) => {
+		while (true) {
+			const delta = await getDelta();
+			if (delta === null) break;
+			if (delta.length > 0) c.append(delta);
+		}
+	} });
+}
+/**
+* Stream a rich card via channel.stream({ card: { initial, producer } }).
+*
+* The caller provides the full card JSON; the SDK handles atomic updates.
+*/
+async function streamRichCard(channel, to, initial, getUpdate) {
+	return channel.stream(to, { card: {
+		initial,
+		producer: async (c) => {
+			while (true) {
+				const update = await getUpdate();
+				if (update === null) break;
+				c.update(update);
+			}
+		}
+	} });
+}
 // src/run.ts
 /**
 * Manages per-chat run slots with ordered execution and cancellation.
@@ -27,6 +111,7 @@ var RunManager = class {
 				cancelController: null,
 				streamMessageId: null,
 				accumulatedText: "",
+				thinkingText: "",
 				turnId: null,
 				pending: []
 			};
@@ -47,7 +132,7 @@ var RunManager = class {
 	* Start a run for a chat (or resume if one is already active).
 	* Returns the slot; the actual work happens via subscribe + followup.
 	*/
-	async start(chatId, content, source) {
+	async start(chatId, content, source, title) {
 		const slot = this.getOrCreate(chatId);
 		if (this.isRunning(chatId)) {
 			slot.pending.push({
@@ -56,12 +141,18 @@ var RunManager = class {
 			});
 			return slot;
 		}
-		const { agent, sessionId, handle } = await this.opts.resolveAgent(chatId);
+		const { agent, sessionId, handle } = await this.opts.resolveAgent(chatId, title);
 		slot.agent = agent;
 		slot.handle = handle;
 		slot.sessionId = sessionId;
-		const unsub = this.opts.subscribe(agent, sessionId, (delta) => {
-			slot.accumulatedText += delta;
+		const unsub = this.opts.subscribe(agent, sessionId, (delta, kind) => {
+			if (kind === "reasoning") {
+				slot.thinkingText += delta;
+				this.opts.onThinking?.(slot, delta);
+			} else {
+				slot.accumulatedText += delta;
+				this.opts.onDelta?.(slot, delta);
+			}
 		}, () => {
 			this.complete(chatId);
 		}, (e) => {
@@ -71,7 +162,9 @@ var RunManager = class {
 		slot.state = "running";
 		slot.cancelController = new AbortController();
 		slot.accumulatedText = "";
+		slot.thinkingText = "";
 		slot.turnId = (slot.turnId ?? 0) + 1;
+		await this.opts.onStart?.(slot);
 		this.opts.followup(agent, this.opts.buildMessage(content, source));
 		return slot;
 	}
@@ -263,90 +356,6 @@ async function downloadInboundImage(url, maxBytes = MAX_IMAGE_BYTES) {
 	if (buf.byteLength > maxBytes) throw new Error("image exceeds " + maxBytes + " bytes");
 	return buf;
 }
-// src/cards.ts
-/**
-* Build a CardKit JSON 2.0 object with header + body elements.
-*
-* This is the "raw CardKit JSON" path — the SDK does NOT own this structure.
-* The caller must provide it (ARCHITECTURE §3.2).
-*/
-function richCard(opts) {
-	const elements = [];
-	for (const line of opts.lines) if (line === "---") elements.push({ tag: "hr" });
-	else elements.push({
-		tag: "div",
-		text: {
-			tag: "lark_md",
-			content: line
-		}
-	});
-	if (opts.buttons && opts.buttons.length > 0) {
-		const actions = opts.buttons.map((b) => ({
-			tag: "button",
-			text: {
-				tag: "plain_text",
-				content: b.text
-			},
-			type: "default",
-			...b.url ? { url: b.url } : {},
-			...b.value ? { value: b.value } : {}
-		}));
-		elements.push({
-			tag: "action",
-			actions
-		});
-	}
-	if (opts.note) elements.push({
-		tag: "note",
-		elements: [{
-			tag: "plain_text",
-			content: opts.note
-		}]
-	});
-	return {
-		schema: "2.0",
-		header: {
-			title: {
-				tag: "plain_text",
-				content: opts.title
-			},
-			template: opts.color
-		},
-		body: { elements }
-	};
-}
-/**
-* Stream plain markdown to a chat via channel.stream().
-*
-* The SDK owns CardKit create + atomic update + finalize here — no raw JSON needed.
-* Returns the SendResult so the caller can track the message ID.
-*/
-async function streamMarkdown(channel, to, getDelta) {
-	return channel.stream(to, { markdown: async (c) => {
-		while (true) {
-			const delta = await getDelta();
-			if (delta === null) break;
-			if (delta.length > 0) c.append(delta);
-		}
-	} });
-}
-/**
-* Stream a rich card via channel.stream({ card: { initial, producer } }).
-*
-* The caller provides the full card JSON; the SDK handles atomic updates.
-*/
-async function streamRichCard(channel, to, initial, getUpdate) {
-	return channel.stream(to, { card: {
-		initial,
-		producer: async (c) => {
-			while (true) {
-				const update = await getUpdate();
-				if (update === null) break;
-				c.update(update);
-			}
-		}
-	} });
-}
 // src/index.ts
 function plainConfig(input) {
 	const out = {};
@@ -359,7 +368,8 @@ const inject = [
 	"attachments",
 	"credentials",
 	"sessionController",
-	"permissionPresets"
+	"permissionPresets",
+	"workspaceRegistry"
 ];
 const Config = z.object({
 	enabled: z.boolean().default(false).volatile().comment("启用飞书连接（关闭即断连）"),
@@ -380,7 +390,7 @@ const Config = z.object({
 		"cot-visible",
 		"cot-discard",
 		"stream-only"
-	]).default("stream-only").volatile().comment("CoT 政策：当前仅实现 stream-only"),
+	]).default("cot-visible").volatile().comment("思考展示：cot-visible=在卡片中显示思考过程；cot-discard/stream-only=不显示"),
 	reasoningEffort: z.string().default("").volatile().comment("思考强度；留空跟随 DSH 当前模型默认配置"),
 	permissionPreset: z.string().default("").volatile().comment("权限模式；留空跟随 DSH 默认，支持 read-only/workspace-write/danger-full-access/auto")
 });
@@ -455,6 +465,28 @@ async function createOrResumeAgent(ctx, sessionId, meta, agentOptions, permissio
 		};
 	}
 }
+/** Update one streaming rich card with the latest answer and optional CoT. */
+async function updateRunCard(slot, thinkingPolicy) {
+	if (!slot.streamController) return;
+	const lines = [];
+	if (slot.failedWith) lines.push("**运行失败：** " + slot.failedWith.message);
+	else lines.push(slot.accumulatedText || "正在生成回复…");
+	if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
+		lines.push("---", "**思考过程**");
+		lines.push(slot.thinkingText.split("\n").map((line) => "> " + line).join("\n"));
+	}
+	const note = slot.failedWith ? "运行失败" : slot.state === "done" ? "已完成" : "正在生成…";
+	await slot.streamController.update(richCard({
+		title: "DSH 回复",
+		color: "blue",
+		lines,
+		note: "DeepSeek Harness · connect-lark · " + note,
+		buttons: [{
+			text: "GitHub 仓库",
+			url: "https://github.com/oh-summy/dsh-nano-market"
+		}]
+	}));
+}
 function apply(ctx, config = {}) {
 	let plain = plainConfig(config);
 	let channel = null;
@@ -495,18 +527,37 @@ function apply(ctx, config = {}) {
 			}
 			ctx.logger?.info?.("[connect-lark] channel connected");
 			runManager = new RunManager({
-				resolveAgent: async (chatId) => {
+				resolveAgent: async (chatId, title) => {
 					const existing = runManager?.getSlot(chatId);
-					if (existing?.agent && existing?.sessionId) return {
-						agent: existing.agent,
-						sessionId: existing.sessionId,
-						handle: existing.handle
+					const present = async (sessionId) => {
+						if (existing?.titleSet || plain.agentOwnership !== "owned-per-chat") return;
+						try {
+							const cwd = plain.defaultPath || process.cwd();
+							const workspace = ctx.workspaceRegistry.list().find((item) => item.path === cwd);
+							if (workspace) await workspace.attachSession(sessionId);
+							if (title) await ctx.sessionController.rename({
+								sessionId,
+								title
+							});
+							if (existing) existing.titleSet = true;
+						} catch (error) {
+							ctx.logger?.warn?.("[connect-lark] session presentation failed: " + error.message);
+						}
 					};
+					if (existing?.agent && existing?.sessionId) {
+						await present(existing.sessionId);
+						return {
+							agent: existing.agent,
+							sessionId: existing.sessionId,
+							handle: existing.handle
+						};
+					}
 					if (plain.agentOwnership === "owned-per-chat") {
 						const sessionId = "connect-lark:" + chatId;
 						const catalog = await ctx.sessionController.modelCatalog();
 						const agentOptions = resolveAgentModelOptions(plain, catalog);
 						const { agent, handle } = await createOrResumeAgent(ctx, sessionId, { cwd: plain.defaultPath || void 0 }, agentOptions, plain.permissionPreset);
+						await present(sessionId);
 						return {
 							agent,
 							sessionId,
@@ -531,7 +582,8 @@ function apply(ctx, config = {}) {
 					const unsubStream = track(ctx.on("agent/assistant-stream", (evt) => {
 						if (evt.agent !== agent) return;
 						const frame = evt.frame;
-						if (frame?.type === "chunk" && frame.chunk?.type === "text-delta") onDelta(frame.chunk.text);
+						if (frame?.type === "chunk" && frame.chunk?.type === "text-delta") onDelta(frame.chunk.text, "text");
+						else if (frame?.type === "chunk" && frame.chunk?.type === "reasoning-delta") onDelta(frame.chunk.text, "reasoning");
 					}));
 					const unsubTurn = ctx.on("session/event", (session, event) => {
 						if (event?.type === "turn/end" && session?.id === targetSessionId) onTurnEnd();
@@ -555,9 +607,45 @@ function apply(ctx, config = {}) {
 				followup: (agent, message) => {
 					agent.followup(message);
 				},
+				onStart: (slot) => {
+					const done = new Promise((resolve) => {
+						slot.streamDone = resolve;
+					});
+					slot.streamPromise = chan.stream(slot.chatId, { card: {
+						initial: richCard({
+							title: "DSH 回复",
+							color: "blue",
+							lines: ["正在连接 DSH Agent…"],
+							note: "DeepSeek Harness · connect-lark",
+							buttons: [{
+								text: "GitHub 仓库",
+								url: "https://github.com/oh-summy/dsh-nano-market"
+							}]
+						}),
+						producer: async (controller) => {
+							slot.streamController = controller;
+							await done;
+						}
+					} });
+					Promise.resolve(slot.streamPromise).catch((e) => ctx.logger?.warn?.("[connect-lark] stream failed: " + e.message));
+				},
+				onDelta: (slot) => {
+					updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + e.message));
+				},
+				onThinking: (slot) => {
+					updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + e.message));
+				},
 				onComplete: (slot) => {
-					const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
-					if (reply) Promise.resolve(chan.send(slot.chatId, { markdown: reply })).catch((e) => ctx.logger?.warn?.("[connect-lark] send failed: " + e.message));
+					(async () => {
+						try {
+							await updateRunCard(slot, plain.thinkingPolicy);
+						} catch (e) {
+							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
+							if (reply) await chan.send(slot.chatId, { markdown: reply });
+						} finally {
+							slot.streamDone?.();
+						}
+					})().catch((e) => ctx.logger?.warn?.("[connect-lark] reply failed: " + e.message));
 				}
 			});
 			unsubMessage = chan.on("message", async (msg) => {
@@ -596,7 +684,8 @@ function apply(ctx, config = {}) {
 					});
 				}
 				try {
-					await runManager.start(msg.chatId, content, { kind: "user" });
+					const title = text.trim().replace(/\s+/g, " ").slice(0, 32) || "飞书消息";
+					await runManager.start(msg.chatId, content, { kind: "user" }, title);
 				} catch (e) {
 					ctx.logger?.error?.("[connect-lark] run failed: " + e.message);
 					Promise.resolve(chan.send(msg.chatId, { markdown: "[connect-lark] 运行失败：" + e.message })).catch(() => {});

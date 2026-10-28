@@ -37,7 +37,7 @@ test("parsed config has every field and the right defaults", () => {
   assert.equal(parsed.domain.get(), "feishu");
   assert.equal(parsed.requireMention.get(), true);
   assert.equal(parsed.agentOwnership.get(), "owned-per-chat");
-  assert.equal(parsed.thinkingPolicy.get(), "stream-only");
+  assert.equal(parsed.thinkingPolicy.get(), "cot-visible");
   assert.equal(parsed.reasoningEffort.get(), "");
   assert.deepEqual(parsed.senderAllowlist.get(), []);
 });
@@ -150,7 +150,7 @@ test("buildUserMessage: accepts an explicit source", () => {
 test("inject declares every service the plugin touches", () => {
   assert.deepEqual(
     [...inject].sort(),
-    ["agents", "attachments", "credentials", "llm", "permissionPresets", "sessionController"].sort(),
+    ["agents", "attachments", "credentials", "llm", "permissionPresets", "sessionController", "workspaceRegistry"].sort(),
   );
 });
 

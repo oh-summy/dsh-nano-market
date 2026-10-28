@@ -26,4 +26,4 @@
         # Empty lists allow everyone; each list restricts only its own chat kind.
         senderAllowlist: []
         groupAllowlist: []
-        thinkingPolicy: stream-only
+        thinkingPolicy: cot-visible

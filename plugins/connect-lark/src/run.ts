@@ -24,17 +24,31 @@ export interface RunSlot {
   turnId: number | null;
   /** Queued messages waiting for the current run to finish. */
   pending: Array<{ content: unknown; source: { kind: string } }>;
+  /** Whether the session has already been titled and attached for presentation. */
+  titleSet?: boolean;
   /** Error that caused this run to fail (if any). */
   failedWith?: Error;
+  /** Reasoning deltas captured while the model is working. */
+  thinkingText: string;
+  /** Streaming card controller and completion handle, owned by apply(). */
+  streamController?: { update: (next: object) => Promise<void> };
+  streamDone?: () => void;
+  streamPromise?: Promise<unknown>;
 }
 
 export interface RunManagerOptions {
   /** Resolve or create an agent for a chat. Returns agent, sessionId, and optional handle. */
-  resolveAgent: (chatId: string) => Promise<{ agent: unknown; sessionId: string; handle: RunSlot["handle"] }>;
+  resolveAgent: (chatId: string, title?: string) => Promise<{ agent: unknown; sessionId: string; handle: RunSlot["handle"] }>;
   /** Build a user message from content. */
   buildMessage: (content: unknown, source: { kind: string }) => unknown;
   /** Subscribe to agent events for incremental text. */
-  subscribe: (agent: unknown, sessionId: string, onDelta: (delta: string) => void, onTurnEnd: () => void, onError: (e: Error) => void) => () => void;
+  subscribe: (agent: unknown, sessionId: string, onDelta: (delta: string, kind?: "text" | "reasoning") => void, onTurnEnd: () => void, onError: (e: Error) => void) => () => void;
+  /** Start a streaming card for this run. */
+  onStart?: (slot: RunSlot) => void | Promise<void>;
+  /** Update the card with a normal text delta. */
+  onDelta?: (slot: RunSlot, delta: string) => void;
+  /** Update the card with a reasoning delta. */
+  onThinking?: (slot: RunSlot, delta: string) => void;
   /** Start a turn (call agent.followup). */
   followup: (agent: unknown, message: unknown) => void;
   /** Called when a run completes (turn/end or error). */
@@ -66,6 +80,7 @@ export class RunManager {
         cancelController: null,
         streamMessageId: null,
         accumulatedText: "",
+        thinkingText: "",
         turnId: null,
         pending: [],
       };
@@ -89,7 +104,7 @@ export class RunManager {
    * Start a run for a chat (or resume if one is already active).
    * Returns the slot; the actual work happens via subscribe + followup.
    */
-  async start(chatId: string, content: unknown, source: { kind: string }): Promise<RunSlot> {
+  async start(chatId: string, content: unknown, source: { kind: string }, title?: string): Promise<RunSlot> {
     const slot = this.getOrCreate(chatId);
 
     // If running, queue the message (per-chat serialization).
@@ -99,7 +114,7 @@ export class RunManager {
     }
 
     // Resolve agent.
-    const { agent, sessionId, handle } = await this.opts.resolveAgent(chatId);
+    const { agent, sessionId, handle } = await this.opts.resolveAgent(chatId, title);
     slot.agent = agent;
     slot.handle = handle;
     slot.sessionId = sessionId;
@@ -108,7 +123,15 @@ export class RunManager {
     const unsub = this.opts.subscribe(
       agent,
       sessionId,
-      (delta) => { slot.accumulatedText += delta; },
+      (delta, kind) => {
+        if (kind === "reasoning") {
+          slot.thinkingText += delta;
+          this.opts.onThinking?.(slot, delta);
+        } else {
+          slot.accumulatedText += delta;
+          this.opts.onDelta?.(slot, delta);
+        }
+      },
       () => { this.complete(chatId); },
       (e) => { this.fail(chatId, e); },
     );
@@ -118,7 +141,9 @@ export class RunManager {
     slot.state = "running";
     slot.cancelController = new AbortController();
     slot.accumulatedText = "";
+    slot.thinkingText = "";
     slot.turnId = (slot.turnId ?? 0) + 1;
+    await this.opts.onStart?.(slot);
     this.opts.followup(agent, this.opts.buildMessage(content, source));
 
     return slot;

@@ -15,7 +15,9 @@ test("richCard: builds CardKit JSON with header, elements, and note", () => {
   assert.equal(elements.length, 4);
   assert.equal(elements[0].tag, "div");
   assert.equal(elements[1].tag, "hr");
-  assert.equal(elements[3].tag, "note");
+  assert.equal(elements[3].tag, "div");
+  assert.equal(elements[3].text.tag, "plain_text");
+  assert.equal(elements[3].text.content, "footer text");
 });
 
 test("richCard: buttons added as action element", () => {
@@ -33,6 +35,7 @@ test("richCard: no note when not provided", () => {
   const card = richCard({ title: "T", color: "red", lines: ["x"] });
   const notes = card.body.elements.filter((e) => e.tag === "note");
   assert.equal(notes.length, 0);
+  assert.ok(card.body.elements.every((e) => e.tag !== "note"));
 });
 
 test("streamMarkdown: streams deltas and stops on null", async () => {

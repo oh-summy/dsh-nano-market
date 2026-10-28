@@ -44,7 +44,9 @@ export function richCard(opts: RichCardOptions): Record<string, unknown> {
     elements.push({ tag: "action", actions });
   }
   if (opts.note) {
-    elements.push({ tag: "note", elements: [{ tag: "plain_text", content: opts.note }] });
+    // CardKit 2.0 does not accept the legacy `note` tag. Use a plain-text
+    // div for the small footer instead.
+    elements.push({ tag: "div", text: { tag: "plain_text", content: opts.note } });
   }
   return {
     schema: "2.0",
