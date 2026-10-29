@@ -115,6 +115,7 @@ var RunManager = class {
 	}
 	/** Get or create a run slot for a chat. */
 	getOrCreate(chatId) {
+		if (this.slots.size >= 100 && !this.slots.has(chatId)) this.evictOldest(true);
 		let slot = this.slots.get(chatId);
 		if (!slot) {
 			slot = {
@@ -128,11 +129,24 @@ var RunManager = class {
 				accumulatedText: "",
 				thinkingText: "",
 				turnId: null,
-				pending: []
+				pending: [],
+				lastActiveAt: Date.now()
 			};
 			this.slots.set(chatId, slot);
 		}
 		return slot;
+	}
+	/** Evict the oldest idle/done slot. When force is true (capacity reached)
+	* the TTL is ignored so the cap is a hard bound. */
+	evictOldest(force = false) {
+		const now = Date.now();
+		let oldest;
+		for (const slot of this.slots.values()) {
+			if (slot.state !== "idle" && slot.state !== "done") continue;
+			if (!force && slot.lastActiveAt > now - 6e5) continue;
+			if (!oldest || slot.lastActiveAt < oldest.lastActiveAt) oldest = slot;
+		}
+		if (oldest) this.disposeSlot(oldest.chatId);
 	}
 	/** Get a slot by chatId (for reuse/diagnostics). */
 	getSlot(chatId) {
@@ -167,6 +181,7 @@ var RunManager = class {
 			});
 			return slot;
 		}
+		slot.lastActiveAt = Date.now();
 		slot.state = "running";
 		try {
 			const { agent, sessionId, handle } = await this.opts.resolveAgent(chatId, title);
@@ -287,6 +302,25 @@ var RunManager = class {
 			} catch (nextError) {
 				await this.fail(chatId, nextError);
 			}
+		}
+	}
+	/** Dispose a single slot: unsubscribe, dispose handle, drop it. */
+	disposeSlot(chatId) {
+		const slot = this.slots.get(chatId);
+		if (!slot) return;
+		this.cleanup(chatId);
+		if (slot.handle) Promise.resolve(slot.handle.dispose()).catch(() => {});
+		this.slots.delete(chatId);
+	}
+	/** Wait for in-flight runs to settle before teardown.
+	* Used by config-save cleanup so a turn is not cancelled mid-reply.
+	* Returns early if the deadline passes; callers then dispose what remains.
+	*/
+	async drain(timeoutMs) {
+		const deadline = Date.now() + timeoutMs;
+		while ([...this.slots.values()].some((s) => s.state === "running" || s.state === "cancelling" || s.state === "finishing")) {
+			if (Date.now() >= deadline) return;
+			await new Promise((resolve) => setTimeout(resolve, 50));
 		}
 	}
 	/** Dispose all owned agents and clear all slots. */
@@ -557,7 +591,10 @@ function buildUserMessage(content, source) {
 	});
 }
 function passesWhitelist(plain, chatId, senderId, chatType = "p2p") {
-	if (chatType !== "group" && plain.openId && plain.openId !== senderId) return false;
+	if (chatType !== "group" && plain.openId) {
+		if (plain.openId !== senderId) return false;
+		return true;
+	}
 	if (plain.accessMode === "restricted") {
 		if (chatType === "group") return plain.groupAllowlist.includes(chatId);
 		return plain.senderAllowlist.includes(senderId);
@@ -662,7 +699,8 @@ async function updateRunCard(slot, thinkingPolicy) {
 	if (!slot.streamController) return;
 	const lines = [];
 	if (slot.failedWith) lines.push("**运行失败：** " + slot.failedWith.message);
-	else lines.push(slot.accumulatedText || "正在生成回复…");
+	else if (slot.accumulatedText) lines.push(slot.accumulatedText);
+	else lines.push(slot.state === "done" ? "本次回复没有文本输出。" : "正在生成回复…");
 	if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
 		lines.push("---", "**思考过程**");
 		lines.push(slot.thinkingText.split("\n").map((line) => "> " + line).join("\n"));
@@ -710,6 +748,9 @@ function apply(ctx, config = {}) {
 				await chan.connect();
 			} catch (e) {
 				ctx.logger?.error?.("[connect-lark] channel connect failed: " + e.message);
+				try {
+					await chan.disconnect();
+				} catch {}
 				throw e;
 			}
 			if (!currentAlive()) {
@@ -760,7 +801,6 @@ function apply(ctx, config = {}) {
 					if (!plain.attachSessionId) throw new Error("[connect-lark] attach-gui requires attachSessionId");
 					const agent = ctx.agents.get(plain.attachSessionId);
 					if (!agent) throw new Error("[connect-lark] attachSessionId not found in agent registry");
-					if (plain.permissionPreset) ctx.permissionPresets.set(agent.session, plain.permissionPreset);
 					return {
 						agent,
 						sessionId: plain.attachSessionId,
@@ -880,15 +920,22 @@ function apply(ctx, config = {}) {
 				if (images.length > 0) {
 					let gateProvider = plain.provider;
 					let gateModel = plain.model;
+					let modelCatalogFailed = false;
 					if (plain.agentOwnership === "owned-per-chat" && (!gateProvider || !gateModel)) try {
 						const cat = await ctx.sessionController.modelCatalog();
 						const route = resolveAgentModelOptions(plain, cat);
 						gateProvider = route.provider;
 						gateModel = route.model;
 					} catch (e) {
+						modelCatalogFailed = true;
 						ctx.logger?.warn?.("[connect-lark] cannot resolve default model for image gate: " + e.message);
 					}
 					const admitResults = [];
+					if (modelCatalogFailed) admitResults.push({
+						supported: false,
+						refs: [],
+						reason: "cannot resolve the default model to verify image input"
+					});
 					const limited = images.slice(0, 4);
 					if (images.length > 4) admitResults.push({
 						supported: false,
@@ -941,6 +988,7 @@ function apply(ctx, config = {}) {
 			channel = null;
 			const manager = runManager;
 			runManager = null;
+			await Promise.resolve(manager?.drain(3e3)).catch(() => {});
 			await Promise.allSettled([chan ? Promise.resolve(chan.disconnect()) : Promise.resolve(), manager ? Promise.resolve(manager.disposeAll()) : Promise.resolve()]);
 		};
 		const queueBoot = () => {

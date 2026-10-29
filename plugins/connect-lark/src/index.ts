@@ -156,8 +156,11 @@ export function buildUserMessage(
 // ---- Optional per-chat-kind access restrictions ----
 
 export function passesWhitelist(plain: ResolvedConfig, chatId: string, senderId: string, chatType: "p2p" | "group" = "p2p"): boolean {
-  // openId is a hard DM restriction whenever configured, in both modes.
-  if (chatType !== "group" && plain.openId && plain.openId !== senderId) return false;
+  // openId is a hard DM restriction: the owner always passes, anyone else never does.
+  if (chatType !== "group" && plain.openId) {
+    if (plain.openId !== senderId) return false;
+    return true;
+  }
   if (plain.accessMode === "restricted") {
     // Fail-closed: an empty list denies, so a bot reachable by others must be
     // explicitly granted access instead of defaulting to everyone.
@@ -249,7 +252,8 @@ async function updateRunCard(slot: RunSlot, thinkingPolicy: ResolvedConfig["thin
   if (!slot.streamController) return;
   const lines: string[] = [];
   if (slot.failedWith) lines.push("**运行失败：** " + slot.failedWith.message);
-  else lines.push(slot.accumulatedText || "正在生成回复…");
+  else if (slot.accumulatedText) lines.push(slot.accumulatedText);
+  else lines.push(slot.state === "done" ? "本次回复没有文本输出。" : "正在生成回复…");
   if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
     lines.push("---", "**思考过程**");
     lines.push(slot.thinkingText.split("\n").map((line) => "> " + line).join("\n"));
@@ -306,6 +310,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         await chan.connect();
       } catch (e) {
         ctx.logger?.error?.("[connect-lark] channel connect failed: " + (e as Error).message);
+        try { await chan.disconnect(); } catch { /* already gone */ }
         throw e;
       }
       if (!currentAlive()) { try { await chan.disconnect(); } catch { /* gone */ } return; }
@@ -352,7 +357,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           }
           const agent = ctx.agents.get(plain.attachSessionId);
           if (!agent) throw new Error("[connect-lark] attachSessionId not found in agent registry");
-          if (plain.permissionPreset) ctx.permissionPresets.set(agent.session, plain.permissionPreset);
+          // Do NOT apply permissionPreset here: attach-gui shares the host GUI
+          // session, and overriding it would change the user's own agent.
           return { agent, sessionId: plain.attachSessionId, handle: null };
         },
         buildMessage: (content: any, source: any) => buildUserMessage(content, source),
@@ -475,6 +481,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           // the host pick the model, so skip the gate there.
           let gateProvider = plain.provider;
           let gateModel = plain.model;
+          let modelCatalogFailed = false;
           if (plain.agentOwnership === "owned-per-chat" && (!gateProvider || !gateModel)) {
             try {
               const cat = await ctx.sessionController.modelCatalog();
@@ -482,10 +489,16 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               gateProvider = route.provider;
               gateModel = route.model;
             } catch (e) {
+              modelCatalogFailed = true;
               ctx.logger?.warn?.("[connect-lark] cannot resolve default model for image gate: " + (e as Error).message);
             }
           }
           const admitResults = [];
+          if (modelCatalogFailed) {
+            // Fail-closed: cannot confirm the model supports images, so refuse
+            // rather than saving an image the host model may not handle.
+            admitResults.push({ supported: false, refs: [], reason: "cannot resolve the default model to verify image input" });
+          }
           const limited = images.slice(0, MAX_IMAGES_PER_MESSAGE);
           if (images.length > MAX_IMAGES_PER_MESSAGE) {
             admitResults.push({ supported: false, refs: [], reason: "too many images in one message" });
@@ -531,6 +544,10 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       channel = null;
       const manager = runManager;
       runManager = null;
+      // Let a running turn finish before disposing so a config save does not
+      // cancel a reply mid-flight. Drain has a bounded timeout; what remains
+      // is then cancelled and disposed.
+      await Promise.resolve(manager?.drain(3000)).catch(() => {});
       await Promise.allSettled([
         chan ? Promise.resolve(chan.disconnect()) : Promise.resolve(),
         manager ? Promise.resolve(manager.disposeAll()) : Promise.resolve(),

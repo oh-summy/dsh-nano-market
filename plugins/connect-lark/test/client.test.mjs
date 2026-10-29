@@ -8,7 +8,8 @@ import vm from "node:vm";
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(here, "..");
 const expectedFields = [
-  "appId", "appSecretPreview", "domain", "defaultPath", "provider", "model", "reasoningEffort", "permissionPreset",
+  "appId", "appSecretPreview", "domain", "accessMode", "openId", "senderAllowlist", "groupAllowlist",
+  "defaultPath", "provider", "model", "reasoningEffort", "permissionPreset",
 ];
 
 function renderElement(node) {
@@ -159,7 +160,7 @@ test("client registers the native bundle config slot and all fields", async () =
   delete globalThis.__dshWorkspaceButtons;
   const source = readFileSync(join(pkgDir, "lib/client.js"), "utf8");
   assert.match(source, /https:\/\/open\.feishu\.cn\/app/);
-  assert.doesNotMatch(source, /connect-lark-requireMention|connect-lark-senderAllowlist|cl-trigger-note/);
+  assert.doesNotMatch(source, /connect-lark-requireMention|cl-trigger-note/);
 });
 
 
@@ -202,4 +203,50 @@ test("client renders the actual configuration card and domain controls", () => {
   assert.ok(larkButton, "rendered Lark domain radio button missing");
   larkButton.props.onClick();
   assert.ok(edits.some(([path, value]) => path === "domain" && value === "lark"));
+});
+
+
+test("client renders the access control section with mode and openId controls", () => {
+  const { exports } = loadClient();
+  let injected;
+  const ctx = {
+    remote: {
+      session: { modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }) },
+      directoryPicker: { list: async () => ({ ok: true, value: { path: "/tmp" } }) },
+      credentials: { set: async () => ({ ok: true }) },
+    },
+    workspaces: { list: { getSnapshot: () => ({ items: [] }), subscribe: () => () => {} } },
+    locale: { bind: () => (key) => key, register: () => () => {} },
+    configForms: {
+      get: () => ({ getSnapshot: () => ({ value: {} }) }),
+      whileServed: (ids, register) => register(new Set(ids)),
+    },
+    slots: {
+      inject: (name, register) => { injected = register(); return () => {}; },
+      register: (options, component) => ({ options, component }),
+    },
+    effect: (fn) => fn(),
+    get(name) { return name === "workspaces" ? this.workspaces : undefined; },
+  };
+  exports.apply(ctx);
+  const actions = injected.options.inject();
+  const state = actions.hooks.larkSettings.getSnapshot();
+  const tree = renderElement(injected.component({
+    ...actions,
+    useLarkSettings: (selector) => selector(state),
+    t: (key) => key,
+  }));
+  const text = collectText(tree).join(" ");
+  assert.match(text, /accessRestricted/);
+  assert.match(text, /accessOpen/);
+  assert.match(text, /openId/);
+  // restricted mode should be the default selected
+  const restrictedBtn = collectButtons(tree).find((b) =>
+    b.props.role === "radio" && collectText(b).includes("accessRestricted"));
+  assert.ok(restrictedBtn, "restricted radio should render");
+  assert.equal(restrictedBtn.props["aria-checked"], true);
+  // Switching to open mode triggers an edit
+  const openBtn = collectButtons(tree).find((b) =>
+    b.props.role === "radio" && collectText(b).includes("accessOpen"));
+  openBtn.props.onClick();
 });

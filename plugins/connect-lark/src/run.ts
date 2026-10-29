@@ -14,6 +14,10 @@ export type RunState = "idle" | "running" | "cancelling" | "finishing" | "done";
 
 /** Bounded resource limits so a chat cannot exhaust memory or queue indefinitely. */
 export const MAX_PENDING = 8;
+/** Maximum chat slots retained before evicting the oldest idle/done ones. */
+export const MAX_SLOTS = 100;
+/** How long a done/idle slot stays before it is eligible for eviction. */
+export const SLOT_TTL_MS = 10 * 60 * 1000;
 export const MAX_TEXT_CHARS = 200_000;
 export const MAX_THINKING_CHARS = 100_000;
 
@@ -37,6 +41,8 @@ export interface RunSlot {
   titleSet?: boolean;
   /** Error that caused this run to fail (if any). */
   failedWith?: Error;
+  /** Last time this slot was touched (for TTL eviction). */
+  lastActiveAt: number;
   /** Reasoning deltas captured while the model is working. */
   thinkingText: string;
   /** Streaming card controller and completion handle, owned by apply(). */
@@ -86,6 +92,7 @@ export class RunManager {
 
   /** Get or create a run slot for a chat. */
   getOrCreate(chatId: string): RunSlot {
+    if (this.slots.size >= MAX_SLOTS && !this.slots.has(chatId)) this.evictOldest(true);
     let slot = this.slots.get(chatId);
     if (!slot) {
       slot = {
@@ -100,10 +107,24 @@ export class RunManager {
         thinkingText: "",
         turnId: null,
         pending: [],
+        lastActiveAt: Date.now(),
       };
       this.slots.set(chatId, slot);
     }
     return slot;
+  }
+
+  /** Evict the oldest idle/done slot. When force is true (capacity reached)
+   * the TTL is ignored so the cap is a hard bound. */
+  private evictOldest(force = false): void {
+    const now = Date.now();
+    let oldest: RunSlot | undefined;
+    for (const slot of this.slots.values()) {
+      if (slot.state !== "idle" && slot.state !== "done") continue;
+      if (!force && slot.lastActiveAt > now - SLOT_TTL_MS) continue;
+      if (!oldest || slot.lastActiveAt < oldest.lastActiveAt) oldest = slot;
+    }
+    if (oldest) this.disposeSlot(oldest.chatId);
   }
 
   /** Get a slot by chatId (for reuse/diagnostics). */
@@ -146,6 +167,7 @@ export class RunManager {
 
     // Set running before awaiting the agent. Another message for this chat
     // must queue, not create a second writer for the same session.
+    slot.lastActiveAt = Date.now();
     slot.state = "running";
     try {
       const { agent, sessionId, handle } = await this.opts.resolveAgent(chatId, title);
@@ -262,6 +284,27 @@ export class RunManager {
       const next = slot.pending.shift()!;
       try { await this.start(chatId, next.content, next.source); }
       catch (nextError) { await this.fail(chatId, nextError as Error); }
+    }
+  }
+
+  /** Dispose a single slot: unsubscribe, dispose handle, drop it. */
+  private disposeSlot(chatId: string): void {
+    const slot = this.slots.get(chatId);
+    if (!slot) return;
+    this.cleanup(chatId);
+    if (slot.handle) { void Promise.resolve(slot.handle.dispose()).catch(() => {}); }
+    this.slots.delete(chatId);
+  }
+
+  /** Wait for in-flight runs to settle before teardown.
+   * Used by config-save cleanup so a turn is not cancelled mid-reply.
+   * Returns early if the deadline passes; callers then dispose what remains.
+   */
+  async drain(timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while ([...this.slots.values()].some((s) => s.state === "running" || s.state === "cancelling" || s.state === "finishing")) {
+      if (Date.now() >= deadline) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
 

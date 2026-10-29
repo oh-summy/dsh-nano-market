@@ -62,6 +62,18 @@ const zh = {
   guideClose: "关闭",
   guideNote: "这是一份最小配置清单，不是密钥；可以复制给应用管理员核对。",
   fixedTrigger: "群里 @ 机器人即可触发，无需额外设置。",
+  access: "访问控制",
+  accessHint: "谁可以给这个机器人发消息。默认只允许你授权的用户，避免其他人驱动本机 Agent。",
+  accessRestricted: "仅授权用户",
+  accessRestrictedHint: "只接受显式授权的聊天；未授权的消息会被忽略。推荐使用。",
+  accessOpen: "允许所有聊天",
+  accessOpenHint: "任何能私聊该机器人的人都可以驱动本机 Agent。仅用于个人私有场景。",
+  openId: "我的 open_id",
+  openIdHint: "设置后只有你能私聊驱动机器人。可在飞书开放平台或发送消息后查看。",
+  senderAllowlist: "私聊用户授权",
+  senderAllowlistHint: "每行一个 open_id；留空则只有设置了 open_id 的用户可私聊。",
+  groupAllowlist: "群聊授权",
+  groupAllowlistHint: "每行一个 chat_id（oc_xxx）；留空则拒绝所有群聊。",
 };
 const en = { ...zh };
 
@@ -76,6 +88,10 @@ const FIELDS = [
   { path: "appId", kind: "text" },
   { path: "appSecretPreview", kind: "text" },
   { path: "domain", kind: "choice", choices: ["feishu", "lark"] },
+  { path: "accessMode", kind: "choice", choices: ["restricted", "open"] },
+  { path: "openId", kind: "text" },
+  { path: "senderAllowlist", kind: "list" },
+  { path: "groupAllowlist", kind: "list" },
   { path: "defaultPath", kind: "text" },
   { path: "provider", kind: "text" },
   { path: "model", kind: "text" },
@@ -89,6 +105,10 @@ function definition(field) {
     ...base,
     parse(text) {
       if (field.kind === "choice") return field.choices.includes(text) ? { kind: "set", value: text } : undefined;
+      if (field.kind === "list") {
+        const value = text.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
+        return value.length === 0 ? { kind: "clear" } : { kind: "set", value };
+      }
       const value = text.trim();
       return value === "" ? { kind: "clear" } : { kind: "set", value };
     },
@@ -192,9 +212,10 @@ const styles = `
 .cl-field{min-width:0;margin-bottom:16px}
 .cl-field:last-child{margin-bottom:0}
 .cl-label{display:block;font-size:12px;font-weight:600;margin-bottom:7px;color:#30343b}
-.cl-input,.cl-select,.cl-picker-trigger{box-sizing:border-box;width:100%;border:1px solid #d8dde5;border-radius:8px;background:#fff;color:var(--cl-ink);padding:9px 11px;font:inherit;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s}
-.cl-input:focus,.cl-select:focus,.cl-picker-trigger:focus-visible,.cl-segment button:focus-visible{outline:none;border-color:var(--cl-blue);box-shadow:0 0 0 3px rgba(51,112,255,.12)}
-.cl-input:disabled,.cl-select:disabled,.cl-picker-trigger:disabled{background:#f5f6f7;color:#8f959e}
+.cl-input,.cl-select,.cl-picker-trigger,.cl-textarea{box-sizing:border-box;width:100%;border:1px solid #d8dde5;border-radius:8px;background:#fff;color:var(--cl-ink);padding:9px 11px;font:inherit;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s}
+.cl-textarea{resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.cl-input:focus,.cl-select:focus,.cl-picker-trigger:focus-visible,.cl-textarea:focus,.cl-segment button:focus-visible{outline:none;border-color:var(--cl-blue);box-shadow:0 0 0 3px rgba(51,112,255,.12)}
+.cl-input:disabled,.cl-select:disabled,.cl-picker-trigger:disabled,.cl-textarea:disabled{background:#f5f6f7;color:#8f959e}
 .cl-hint{margin:6px 0 0;color:var(--cl-muted);font-size:11px;line-height:1.55}
 .cl-segment{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#f2f3f5;border-radius:10px;padding:4px;margin-bottom:18px}
 .cl-segment button{border:1px solid transparent;border-radius:7px;background:transparent;color:#5f6672;padding:8px 12px;font:inherit;font-size:12px;cursor:pointer}
@@ -269,6 +290,13 @@ function TextField({ id, label, hint, value, placeholder, disabled, onEdit, mask
     id, className: "cl-input", value: text, placeholder, disabled,
     onFocus: () => setFocused(true), onBlur: () => setFocused(false),
     onChange: (event) => onEdit(event.target.value),
+  }) });
+}
+
+function ListField({ id, label, hint, value, placeholder, disabled, onEdit }) {
+  return jsx(Field, { label, hint, children: jsx("textarea", {
+    id, className: "cl-textarea", rows: 3, value: (Array.isArray(value.text) ? value.text.join("\n") : value.text) || "",
+    placeholder, disabled, onChange: (event) => onEdit(event.target.value),
   }) });
 }
 
@@ -553,6 +581,26 @@ function GuideDialog({ onClose, t }) {
   }) });
 }
 
+function AccessPicker({ value, onEdit, t, disabled }) {
+  const [open, setOpen] = React.useState(null);
+  const mode = value("accessMode").text || "restricted";
+  const modes = [
+    { id: "restricted", label: t("accessRestricted"), desc: t("accessRestrictedHint") },
+    { id: "open", label: t("accessOpen"), desc: t("accessOpenHint") },
+  ];
+  return jsxs("div", { className: "cl-picker", children: [
+    jsxs("div", { className: "cl-segment", role: "radiogroup", "aria-label": t("access"), children: modes.map((modeItem) => jsx("button", {
+      type: "button", role: "radio", "aria-checked": mode === modeItem.id,
+      disabled, onClick: () => { onEdit("accessMode")(modeItem.id); }, children: modeItem.label,
+    }, modeItem.id)) }),
+    jsxs("div", { className: "cl-grid", children: [
+      jsx(TextField, { id: "connect-lark-openId", label: t("openId"), hint: t("openIdHint"), value: value("openId"), placeholder: "ou_xxx", disabled, onEdit: onEdit("openId") }),
+      jsx(ListField, { id: "connect-lark-senderAllowlist", label: t("senderAllowlist"), hint: t("senderAllowlistHint"), value: value("senderAllowlist"), placeholder: "ou_xxx", disabled, onEdit: onEdit("senderAllowlist") }),
+      jsx(ListField, { id: "connect-lark-groupAllowlist", label: t("groupAllowlist"), hint: t("groupAllowlistHint"), value: value("groupAllowlist"), placeholder: "oc_xxx", disabled, onEdit: onEdit("groupAllowlist") }),
+    ] }),
+  ] });
+}
+
 function LarkConfigCard(props) {
   const state = props.useLarkSettings((snapshot) => snapshot);
   const [guideOpen, setGuideOpen] = React.useState(false);
@@ -587,7 +635,10 @@ function LarkConfigCard(props) {
             jsx(SecretField, { state, onEdit: props.editSecret, t, disabled }),
           ] }),
         ] }, "connection"),
-        jsx(Section, { number: "02", title: t("workspace"), hint: t("workspaceHint"), children: [
+        jsx(Section, { number: "02", title: t("access"), hint: t("accessHint"), children: [
+          jsx(AccessPicker, { value, onEdit: edit, t, disabled }),
+        ] }, "access"),
+        jsx(Section, { number: "03", title: t("workspace"), hint: t("workspaceHint"), children: [
           jsx(WorkspacePicker, { state, value: value("defaultPath"), onEdit: edit("defaultPath"), onBrowse: props.listDirectory, onCreateDirectory: props.createDirectory, t, disabled }),
           state.catalog.status === "error" ? jsxs("div", { className: "cl-catalog-error", children: [t("catalogError"), jsx("button", { className: "cl-retry", type: "button", onClick: props.refreshCatalog, children: t("retry") })] }) : null,
           jsx(ModelPicker, { state, value, edit, t, disabled }),

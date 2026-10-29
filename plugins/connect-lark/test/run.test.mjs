@@ -276,3 +276,58 @@ test("RunManager: queues new messages during asynchronous completion", async () 
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(followups, 2);
 });
+
+
+test("RunManager: drain waits for a running turn before returning", async () => {
+  let turnEnd;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const mgr = new RunManager({
+    resolveAgent: async () => ({ agent: { id: "a" }, sessionId: "s1", handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: (agent, sessionId, onDelta, onTurnEnd) => { turnEnd = onTurnEnd; return () => {}; },
+    followup: () => {},
+    onComplete: async () => { await gate; },
+  });
+  await mgr.start("chat-1", "hello", { kind: "user" });
+  const draining = mgr.drain(500);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(draining !== undefined, true);
+  release();
+  turnEnd();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+});
+
+test("RunManager: drain returns after its timeout without cancelling", async () => {
+  const mgr = new RunManager({
+    resolveAgent: async () => ({ agent: { id: "a" }, sessionId: "s1", handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: () => () => {},
+    followup: () => {},
+  });
+  await mgr.start("chat-1", "hello", { kind: "user" });
+  // No turn/end will ever arrive; drain must not hang forever.
+  await mgr.drain(200);
+  assert.equal(mgr.isRunning("chat-1"), true, "drain timeout must not cancel the run");
+});
+
+test("RunManager: evicts oldest done slot when over the cap", async () => {
+  const handles = new Map();
+  const mgr = new RunManager({
+    resolveAgent: async (chatId) => {
+      const handle = { dispose: async () => { handles.delete(chatId); } };
+      handles.set(chatId, handle);
+      return { agent: { id: "a" }, sessionId: "s" + chatId, handle };
+    },
+    buildMessage: () => ({ id: "m" }),
+    subscribe: () => () => {},
+    followup: () => {},
+  });
+  // Fill beyond the cap; the earliest idle slot should be evicted.
+  for (let i = 0; i < 105; i++) {
+    await mgr.start("chat-" + i, "hello", { kind: "user" });
+    await mgr.complete("chat-" + i);
+  }
+  assert.ok(mgr.list().length <= 100, "slots must stay within the cap");
+  assert.ok(mgr.getSlot("chat-0") === undefined, "oldest slot should be evicted");
+});

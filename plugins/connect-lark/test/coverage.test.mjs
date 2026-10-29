@@ -31,6 +31,18 @@ test("passesWhitelist: openId hard-restricts DMs even in open mode", () => {
   assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "group"), true);
 });
 
+test("passesWhitelist: openId alone authorizes the owner in restricted mode", () => {
+  const plain = { accessMode: "restricted", openId: "ou_owner", senderAllowlist: [], groupAllowlist: [] };
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_owner", "p2p"), true, "owner must pass with openId alone");
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p"), false);
+});
+
+test("passesWhitelist: default restricted config denies everything", () => {
+  const plain = { accessMode: "restricted", openId: "", senderAllowlist: [], groupAllowlist: [] };
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_any", "p2p"), false);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_any", "group"), false);
+});
+
 test("passesWhitelist: sender list optionally restricts only private chats", () => {
   const plain = { accessMode: "open", senderAllowlist: ["ou_allowed"], groupAllowlist: [] };
   assert.equal(passesWhitelist(plain, "chat-1", "ou_allowed", "p2p"), true);

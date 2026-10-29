@@ -53,7 +53,7 @@ channel 仍是 0.x，精确 pin 版本（不用 `^`）、锁依赖、显式设�
 
 第三方插件仅导出 `Config` 不会自动在详情页出现表单。浏览器端还必须注册 `plugins.bundle.config`，key 为 `@oh-summy/connect-lark`，并通过 `configForms.get("connect-lark")` 读取和保存 volatile 配置。
 
-配置页使用 DSH 原生 `SettingsFormModel` / `SettingsForm`，视觉与交互按「连接飞书 → 工作区与模型」组织。国内飞书与海外 Lark 使用分段切换。路径右侧的目录弹窗只选择插件工作目录，不调用 `workspaces.create()`，因此不会加入 DSH 工作区列表；模型从 `modelCatalog()` 读取并使用 DSH 风格搜索弹窗，思考强度随模型提供。应用创建和权限说明放在独立弹窗。完整 App Secret 只保存在 DSH 凭据缝，profile 仅保留前 5 位预览，页面默认显示前 5 位 + 掩码。触发方式不在设置页暴露。
+配置页使用 DSH 原生 `SettingsFormModel` / `SettingsForm`，视觉与交互按「连接飞书 → 访问控制 → 工作区与模型」组织。国内飞书与海外 Lark 使用分段切换；访问控制提供 `accessMode`（restricted/open）、`openId` 和 allowlist 的授权入口。路径右侧的目录弹窗只选择插件工作目录，不调用 `workspaces.create()`，因此不会加入 DSH 工作区列表；模型从 `modelCatalog()` 读取并使用 DSH 风格搜索弹窗，思考强度随模型提供。应用创建和权限说明放在独立弹窗。完整 App Secret 只保存在 DSH 凭据缝，profile 仅保留前 5 位预览，页面默认显示前 5 位 + 掩码。触发方式不在设置页暴露。
 
 插件自身的 Cordis 开关是唯一连接开关，旧 `enabled` 配置不再作为第二个开关。保存触发 `loader/volatile-update` 后，插件按代际序列清理旧连接和 RunManager、重新读取 volatile 配置，再按新配置启动。
 
