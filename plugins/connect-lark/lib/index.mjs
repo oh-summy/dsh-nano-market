@@ -3,6 +3,9 @@ import { credentialRef, isCredentialRefName } from "@deepseek-ai/dsh-credentials
 import { isVolatile } from "@deepseek-ai/cosmokit";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel } from "@larksuite/channel";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 // src/cards.ts
 /**
 * Build a CardKit JSON 2.0 object with header + body elements.
@@ -100,6 +103,8 @@ var RunManager = class {
 	slots = /* @__PURE__ */ new Map();
 	opts;
 	unsubs = /* @__PURE__ */ new Map();
+	watchdogs = /* @__PURE__ */ new Map();
+	disposed = false;
 	constructor(opts) {
 		this.opts = opts;
 	}
@@ -131,13 +136,14 @@ var RunManager = class {
 	/** Check if a chat has an active run. */
 	isRunning(chatId) {
 		const slot = this.slots.get(chatId);
-		return slot?.state === "running" || slot?.state === "cancelling";
+		return slot?.state === "running" || slot?.state === "cancelling" || slot?.state === "finishing";
 	}
 	/**
 	* Start a run for a chat (or resume if one is already active).
 	* Returns the slot; the actual work happens via subscribe + followup.
 	*/
 	async start(chatId, content, source, title) {
+		if (this.disposed) throw new Error("RunManager is disposed");
 		const slot = this.getOrCreate(chatId);
 		if (this.isRunning(chatId)) {
 			slot.pending.push({
@@ -149,9 +155,24 @@ var RunManager = class {
 		slot.state = "running";
 		try {
 			const { agent, sessionId, handle } = await this.opts.resolveAgent(chatId, title);
+			if (this.disposed) {
+				if (handle) await handle.dispose();
+				throw new Error("RunManager is disposed");
+			}
+			if ([...this.slots.values()].some((other) => other !== slot && other.sessionId === sessionId && (other.state === "running" || other.state === "cancelling"))) {
+				if (handle) await handle.dispose();
+				throw new Error("Session is already running in another chat");
+			}
 			slot.agent = agent;
 			slot.handle = handle;
 			slot.sessionId = sessionId;
+			slot.failedWith = void 0;
+			slot.streamController = void 0;
+			slot.streamDone = void 0;
+			slot.streamPromise = void 0;
+			slot.streamFailed = void 0;
+			slot.streamReady = void 0;
+			slot.streamReadyResolve = void 0;
 			const unsub = this.opts.subscribe(agent, sessionId, (delta, kind) => {
 				if (kind === "reasoning") {
 					slot.thinkingText += delta;
@@ -189,34 +210,54 @@ var RunManager = class {
 		if (!slot || slot.state !== "running") return;
 		slot.state = "cancelling";
 		slot.cancelController?.abort();
-		setTimeout(() => {
+		try {
+			Promise.resolve(this.opts.onCancel?.(slot)).catch(() => {});
+		} catch {}
+		const watchdog = setTimeout(() => {
+			this.watchdogs.delete(chatId);
 			const s = this.slots.get(chatId);
 			if (s && s.state === "cancelling") this.complete(chatId);
-		}, 3e4).unref?.();
+		}, 3e4);
+		watchdog.unref?.();
+		this.watchdogs.set(chatId, watchdog);
 	}
 	/** Mark a run as complete and process the next queued message. */
-	complete(chatId) {
+	async complete(chatId) {
 		const slot = this.slots.get(chatId);
 		if (!slot || slot.state !== "running" && slot.state !== "cancelling") return;
-		slot.state = "done";
+		slot.state = "finishing";
 		this.cleanup(chatId);
-		this.opts.onComplete?.(slot);
-		if (slot.pending.length > 0) {
+		try {
+			await this.opts.onComplete?.(slot);
+		} catch {}
+		slot.state = "done";
+		if (slot.pending.length > 0 && !this.disposed) {
 			const next = slot.pending.shift();
-			this.start(chatId, next.content, next.source);
+			try {
+				await this.start(chatId, next.content, next.source);
+			} catch (error) {
+				await this.fail(chatId, error);
+			}
 		}
 	}
 	/** Mark a run as failed and reset state. */
-	fail(chatId, error) {
+	async fail(chatId, error) {
 		const slot = this.slots.get(chatId);
-		if (!slot || slot.state === "done") return;
-		slot.state = "done";
+		if (!slot || slot.state === "done" || slot.state === "finishing") return;
+		slot.state = "finishing";
 		slot.failedWith = error;
 		this.cleanup(chatId);
-		this.opts.onComplete?.(slot);
-		if (slot.pending.length > 0) {
+		try {
+			await this.opts.onComplete?.(slot);
+		} catch {}
+		slot.state = "done";
+		if (slot.pending.length > 0 && !this.disposed) {
 			const next = slot.pending.shift();
-			this.start(chatId, next.content, next.source);
+			try {
+				await this.start(chatId, next.content, next.source);
+			} catch (nextError) {
+				await this.fail(chatId, nextError);
+			}
 		}
 	}
 	/** Dispose all owned agents and clear all slots. */
@@ -226,8 +267,12 @@ var RunManager = class {
 			unsub();
 		} catch {}
 		this.unsubs.delete(chatId);
+		const watchdog = this.watchdogs.get(chatId);
+		if (watchdog) clearTimeout(watchdog);
+		this.watchdogs.delete(chatId);
 	}
 	async disposeAll() {
+		this.disposed = true;
 		const failures = [];
 		for (const slot of this.slots.values()) {
 			try {
@@ -235,6 +280,9 @@ var RunManager = class {
 			} catch {}
 			try {
 				slot.streamDone?.();
+			} catch {}
+			try {
+				await this.opts.onCancel?.(slot);
 			} catch {}
 		}
 		for (const chatId of this.slots.keys()) this.cleanup(chatId);
@@ -259,6 +307,26 @@ var RunManager = class {
 // src/images.ts
 /** Maximum image bytes to admit (20 MiB default, same as dsh-acp). */
 const MAX_IMAGE_BYTES = 20971520;
+/** Download an inbound image with bounded heap usage. */
+async function downloadImageBounded(channel, messageId, fileKey) {
+	if (channel.downloadResourceToFile) {
+		const dir = await mkdtemp(join(tmpdir(), "connect-lark-"));
+		const destPath = join(dir, "image.bin");
+		try {
+			await channel.downloadResourceToFile(messageId, fileKey, "image", destPath);
+			if ((await stat(destPath)).size > 20971520) throw new Error("image exceeds 20971520 bytes");
+			return await readFile(destPath);
+		} finally {
+			await rm(dir, {
+				recursive: true,
+				force: true
+			});
+		}
+	}
+	const buffer = await channel.downloadResource(messageId, fileKey, "image");
+	if (buffer.byteLength > 20971520) throw new Error("image exceeds 20971520 bytes");
+	return buffer;
+}
 /**
 * Admit an image for the current model route.
 *
@@ -270,32 +338,34 @@ const MAX_IMAGE_BYTES = 20971520;
 * @returns admission result; never throws for "unsupported" (returns supported:false).
 */
 async function admitImage(ctx, provider, model, buffer, signal) {
-	let info;
-	try {
-		info = await ctx.llm.resolveModelInfo(provider, model, signal);
-	} catch (e) {
-		return {
-			supported: false,
-			refs: [],
-			reason: "cannot verify model for image input: " + e.message
-		};
-	}
-	signal?.throwIfAborted();
-	if (info === void 0 || info === null) return {
-		supported: false,
-		refs: [],
-		reason: "model info is undefined"
-	};
-	if (info.inputModalities === void 0 || !info.inputModalities.includes("image")) return {
-		supported: false,
-		refs: [],
-		reason: "model does not declare image input"
-	};
 	if (buffer.byteLength > 20971520) return {
 		supported: false,
 		refs: [],
 		reason: "image exceeds 20971520 bytes"
 	};
+	if (provider && model) {
+		let info;
+		try {
+			info = await ctx.llm.resolveModelInfo(provider, model, signal);
+		} catch (e) {
+			return {
+				supported: false,
+				refs: [],
+				reason: "cannot verify model for image input: " + e.message
+			};
+		}
+		signal?.throwIfAborted();
+		if (info === void 0 || info === null) return {
+			supported: false,
+			refs: [],
+			reason: "model info is undefined"
+		};
+		if (info.inputModalities === void 0 || !info.inputModalities.includes("image")) return {
+			supported: false,
+			refs: [],
+			reason: "model does not declare image input"
+		};
+	}
 	const mediaType = detectImageMediaType(buffer);
 	try {
 		return {
@@ -564,6 +634,7 @@ function apply(ctx, config = {}) {
 				appId: plain.appId,
 				appSecret,
 				transport: "websocket",
+				httpTimeoutMs: 3e4,
 				domain: plain.domain === "lark" ? "https://open.larksuite.com" : "https://open.feishu.cn",
 				policy: { requireMention: true },
 				safety: { chatQueue: { enabled: true } }
@@ -623,6 +694,7 @@ function apply(ctx, config = {}) {
 					if (!plain.attachSessionId) throw new Error("[connect-lark] attach-gui requires attachSessionId");
 					const agent = ctx.agents.get(plain.attachSessionId);
 					if (!agent) throw new Error("[connect-lark] attachSessionId not found in agent registry");
+					if (plain.permissionPreset) ctx.permissionPresets.set(agent.session, plain.permissionPreset);
 					return {
 						agent,
 						sessionId: plain.attachSessionId,
@@ -633,7 +705,13 @@ function apply(ctx, config = {}) {
 				subscribe: (agent, targetSessionId, onDelta, onTurnEnd, onError) => {
 					const track = (fn) => {
 						unsubEvents.push(fn);
-						return fn;
+						return () => {
+							try {
+								fn();
+							} finally {
+								unsubEvents = unsubEvents.filter((item) => item !== fn);
+							}
+						};
 					};
 					const unsubStream = track(ctx.on("agent/assistant-stream", (evt) => {
 						if (evt.agent !== agent) return;
@@ -662,6 +740,7 @@ function apply(ctx, config = {}) {
 				followup: (agent, message) => {
 					agent.followup(message);
 				},
+				onCancel: (slot) => ctx.sessionController.cancel({ sessionId: slot.sessionId }),
 				onStart: (slot) => {
 					const done = new Promise((resolve) => {
 						slot.streamDone = resolve;
@@ -674,7 +753,7 @@ function apply(ctx, config = {}) {
 							title: "DSH 回复",
 							color: "blue",
 							lines: ["正在连接 DSH Agent…"],
-							note: "DeepSeek Harness · connect-lark",
+							note: "connect-lark · by @oh-summy · " + (/* @__PURE__ */ new Date()).toISOString(),
 							buttons: [{
 								text: "dsh-nano-market",
 								url: "https://github.com/oh-summy/dsh-nano-market"
@@ -688,6 +767,7 @@ function apply(ctx, config = {}) {
 					} });
 					Promise.resolve(slot.streamPromise).catch((e) => {
 						slot.streamFailed = e;
+						slot.streamReadyResolve?.();
 						ctx.logger?.warn?.("[connect-lark] stream failed: " + e.message);
 					});
 				},
@@ -697,25 +777,23 @@ function apply(ctx, config = {}) {
 				onThinking: (slot) => {
 					updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + e.message));
 				},
-				onComplete: (slot) => {
-					(async () => {
-						try {
-							if (!slot.streamController && !slot.streamFailed) await Promise.race([slot.streamReady ?? Promise.resolve(), new Promise((resolve) => setTimeout(resolve, 1e3))]);
-							if (slot.streamFailed || !slot.streamController) {
-								const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
-								if (reply) await chan.send(slot.chatId, { markdown: reply });
-								return;
-							}
-							try {
-								await updateRunCard(slot, plain.thinkingPolicy);
-							} catch (e) {
-								const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
-								if (reply) await chan.send(slot.chatId, { markdown: reply });
-							}
-						} finally {
-							slot.streamDone?.();
+				onComplete: async (slot) => {
+					try {
+						if (!slot.streamController && !slot.streamFailed) await slot.streamReady;
+						if (slot.streamFailed || !slot.streamController) {
+							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
+							if (reply) await chan.send(slot.chatId, { markdown: reply });
+							return;
 						}
-					})().catch((e) => ctx.logger?.warn?.("[connect-lark] reply failed: " + e.message));
+						try {
+							await updateRunCard(slot, plain.thinkingPolicy);
+						} catch (e) {
+							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
+							if (reply) await chan.send(slot.chatId, { markdown: reply });
+						}
+					} finally {
+						slot.streamDone?.();
+					}
 				}
 			});
 			unsubMessage = chan.on("message", async (msg) => {
@@ -731,14 +809,8 @@ function apply(ctx, config = {}) {
 				if (images.length > 0) {
 					const admitResults = [];
 					for (const img of images) try {
-						const buf = await chan.downloadResource(msg.messageId, img.fileKey, "image");
-						let admit;
-						if (!plain.provider || !plain.model) admit = {
-							supported: true,
-							refs: [{ _passthrough: true }],
-							reason: "attach-gui passthrough"
-						};
-						else admit = await admitImage(ctx, plain.provider, plain.model, buf);
+						const buf = await downloadImageBounded(chan, msg.messageId, img.fileKey);
+						const admit = await admitImage(ctx, plain.provider, plain.model, buf);
 						admitResults.push(admit);
 					} catch (e) {
 						ctx.logger?.warn?.("[connect-lark] image download failed: " + e.message);
@@ -824,4 +896,4 @@ const CONTRACT_NOTES = {
 	whitelistFailClosed: "empty senderAllowlist + empty groupAllowlist = deny all messages",
 	streaming: "channel.stream(to, { markdown: async (c) => { c.append(delta) } }) — SDK-owned CardKit"
 };
-export { CONTRACT_NOTES, Config, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildImageContent, buildUserMessage, createOrResumeAgent, downloadInboundImage, inject, passesWhitelist, plainConfig, resolveAgentModelOptions, resolveAppSecret, richCard, streamMarkdown, streamRichCard };
+export { CONTRACT_NOTES, Config, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildImageContent, buildUserMessage, createOrResumeAgent, downloadImageBounded, downloadInboundImage, inject, passesWhitelist, plainConfig, resolveAgentModelOptions, resolveAppSecret, richCard, streamMarkdown, streamRichCard };

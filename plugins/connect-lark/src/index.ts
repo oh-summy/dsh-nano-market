@@ -22,7 +22,7 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel, type LarkChannel } from "@larksuite/channel";
 import { richCard, streamMarkdown } from "./cards.js";
 import { RunManager, type RunSlot } from "./run.js";
-import { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadInboundImage } from "./images.js";
+import { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage } from "./images.js";
 
 // ---- Config schema (schemastery, not plain zod — ARCHITECTURE §10.6) ----
 
@@ -143,44 +143,6 @@ export function passesWhitelist(plain: ResolvedConfig, chatId: string, senderId:
     return plain.groupAllowlist.length === 0 || plain.groupAllowlist.includes(chatId);
   }
   return plain.senderAllowlist.length === 0 || plain.senderAllowlist.includes(senderId);
-}
-
-// ---- (DeltaQueue removed — streaming is handled via onDelta callback) ----
-
-class DeltaQueue {
-  private resolver: ((d: string | null) => void) | null = null;
-  private pending: string | null = null;
-  private closed = false;
-
-  push(delta: string): void {
-    if (this.closed) return;
-    if (this.resolver) {
-      this.resolver(delta);
-      this.resolver = null;
-    } else {
-      this.pending = delta;
-    }
-  }
-
-  async next(): Promise<string | null> {
-    if (this.pending !== null) {
-      const d = this.pending;
-      this.pending = null;
-      return d;
-    }
-    if (this.closed) return null;
-    return new Promise<string | null>((resolve) => {
-      this.resolver = resolve;
-    });
-  }
-
-  close(): void {
-    this.closed = true;
-    if (this.resolver) {
-      this.resolver(null);
-      this.resolver = null;
-    }
-  }
 }
 
 /** Resolve model and effort from explicit overrides or the DSH new-session default. */
@@ -307,6 +269,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         appId: plain.appId,
         appSecret,
         transport: "websocket",
+        httpTimeoutMs: 30000,
         domain: plain.domain === "lark" ? "https://open.larksuite.com" : "https://open.feishu.cn",
         // Group messages always require an @mention; this is not user-configurable.
         policy: { requireMention: true },
@@ -363,6 +326,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           }
           const agent = ctx.agents.get(plain.attachSessionId);
           if (!agent) throw new Error("[connect-lark] attachSessionId not found in agent registry");
+          if (plain.permissionPreset) ctx.permissionPresets.set(agent.session, plain.permissionPreset);
           return { agent, sessionId: plain.attachSessionId, handle: null };
         },
         buildMessage: (content: any, source: any) => buildUserMessage(content, source),
@@ -371,7 +335,11 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           // from this array so it doesn't grow unbounded across runs.
           const track = (fn: () => void) => {
             unsubEvents.push(fn);
-            return fn;
+            return () => {
+              try { fn(); } finally {
+                unsubEvents = unsubEvents.filter((item) => item !== fn);
+              }
+            };
           };
           const unsubStream = track(ctx.on("agent/assistant-stream", (evt: any) => {
             if (evt.agent !== agent) return;
@@ -401,6 +369,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         followup: (agent, message) => {
           (agent as { followup: (m: unknown) => void }).followup(message);
         },
+        onCancel: (slot) => ctx.sessionController.cancel({ sessionId: slot.sessionId }),
         onStart: (slot) => {
           const done = new Promise<void>((resolve) => { slot.streamDone = resolve; });
           slot.streamReady = new Promise<void>((resolve) => { slot.streamReadyResolve = resolve; });
@@ -410,7 +379,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
                 title: "DSH 回复",
                 color: "blue",
                 lines: ["正在连接 DSH Agent…"],
-                note: "DeepSeek Harness · connect-lark",
+                note: "connect-lark · by @oh-summy · " + new Date().toISOString(),
                 buttons: [{ text: "dsh-nano-market", url: "https://github.com/oh-summy/dsh-nano-market" }],
               }),
               producer: async (controller) => {
@@ -422,6 +391,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           });
           Promise.resolve(slot.streamPromise).catch((e) => {
             slot.streamFailed = e as Error;
+            slot.streamReadyResolve?.();
             ctx.logger?.warn?.("[connect-lark] stream failed: " + (e as Error).message);
           });
         },
@@ -431,32 +401,27 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         onThinking: (slot) => {
           void updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + (e as Error).message));
         },
-        onComplete: (slot) => {
-          void (async () => {
-            try {
-              if (!slot.streamController && !slot.streamFailed) {
-                // Let card creation finish briefly before deciding to fall back;
-                // otherwise a slow create could cause a duplicate text + card reply.
-                await Promise.race([
-                  slot.streamReady ?? Promise.resolve(),
-                  new Promise((resolve) => setTimeout(resolve, 1000)),
-                ]);
-              }
-              if (slot.streamFailed || !slot.streamController) {
-                const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
-                if (reply) await chan.send(slot.chatId, { markdown: reply });
-                return;
-              }
-              try {
-                await updateRunCard(slot, plain.thinkingPolicy);
-              } catch (e) {
-                const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
-                if (reply) await chan.send(slot.chatId, { markdown: reply });
-              }
-            } finally {
-              slot.streamDone?.();
+        onComplete: async (slot) => {
+          try {
+            if (!slot.streamController && !slot.streamFailed) {
+              // Wait for either the producer or stream failure. The channel's
+              // HTTP timeout bounds this wait; no duplicate fallback timer.
+              await slot.streamReady;
             }
-          })().catch((e) => ctx.logger?.warn?.("[connect-lark] reply failed: " + (e as Error).message));
+            if (slot.streamFailed || !slot.streamController) {
+              const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
+              if (reply) await chan.send(slot.chatId, { markdown: reply });
+              return;
+            }
+            try {
+              await updateRunCard(slot, plain.thinkingPolicy);
+            } catch (e) {
+              const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
+              if (reply) await chan.send(slot.chatId, { markdown: reply });
+            }
+          } finally {
+            slot.streamDone?.();
+          }
         },
       });
 
@@ -477,17 +442,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           for (const img of images) {
             try {
               // channel.downloadResource downloads by fileKey (SDK-owned).
-              const buf = await chan.downloadResource(msg.messageId, img.fileKey, "image") as Buffer;
-              // In attach-gui mode, provider/model may be empty (host default).
-              // When route is unknown, skip the gate — the host agent decides.
-              // When route is known, gate normally.
-              let admit;
-              if (!plain.provider || !plain.model) {
-                // attach-gui without explicit route: pass through without gate.
-                admit = { supported: true, refs: [{ _passthrough: true }], reason: "attach-gui passthrough" };
-              } else {
-                admit = await admitImage(ctx, plain.provider, plain.model, buf);
-              }
+              const buf = await downloadImageBounded(chan, msg.messageId, img.fileKey);
+              const admit = await admitImage(ctx, plain.provider, plain.model, buf);
               admitResults.push(admit);
             } catch (e) {
               ctx.logger?.warn?.("[connect-lark] image download failed: " + (e as Error).message);
@@ -578,7 +534,7 @@ function extractImages(msg: any): Array<{ fileKey: string }> {
 
 // ---- Re-exports (for tests + consumers) ----
 export { richCard, streamMarkdown, streamRichCard } from "./cards.js";
-export { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadInboundImage, MAX_IMAGE_BYTES, FEISHU_CDN_HOSTS } from "./images.js";
+export { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage, MAX_IMAGE_BYTES, FEISHU_CDN_HOSTS } from "./images.js";
 export { RunManager } from "./run.js";
 export type { RunSlot, RunState, RunManagerOptions } from "./run.js";
 

@@ -4,10 +4,7 @@
 
 ## Quick Start
 
-1. **安装**（从市场或直接，**当前未注册，请用 git 方式安装**）：
-   ```sh
-   dsh plugin --profile web add git+https://github.com/oh-summy/dsh-nano-market.git#main&path:/plugins/connect-lark
-   ```
+1. **安装**：当前尚未注册到市场，暂不提供公开安装 spec。正式发布后从 DSH Discover 安装；开发审查使用本仓库 `plugins/connect-lark` 本地目录。
 2. **创建应用**：打开 [飞书开放平台](https://open.feishu.cn/app)，创建自建应用并启用机器人。配置页的「创建应用与权限」弹窗提供最小权限清单和复制按钮。
 3. **配置**：填写 App ID 和 App Secret。完整 Secret 只保存在 DSH 凭据缝，应用配置保存在本机 DSH profile，均不进入 Git；页面仅显示前 5 位 + 掩码。
 4. **默认即可**：工作区可通过路径右侧的目录弹窗选择任意文件夹（不会加入 DSH 工作区列表）；模型和思考强度默认跟随 DSH 新会话。
@@ -17,8 +14,7 @@
 
 - 飞书私聊 / 群 @ → 流式富卡片回复（Markdown：粗体 / 列表 / 表格 / 代码 / 链接）
 - 标题 + 背景色、底部小字、按钮（需要调用方提供原始 CardKit JSON）
-- 发送图片
-- 读取 / 识别图片：下载 → attachment admission → 视觉 gate → 否则诚实汇报
+- 读取 / 识别图片：先流式落盘并限制 20 MiB，再保存附件；显式模型路由执行视觉 gate，默认路由交由宿主模型处理
 - 两种 agent 所有权模式：attach-gui / owned-per-chat
 
 ## 配置

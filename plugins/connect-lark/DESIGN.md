@@ -83,8 +83,3 @@ channel 仍是 0.x，精确 pin 版本（不用 `^`）、锁依赖、显式设�
 | @deepseek-ai/dsh-credentials | 0.2.1-rc.4 | 凭据缝 |
 
 ## 待办
-
-- CoT spike（cot-discard / cot-visible 需要 message_cot API 实测）
-- engines.dsh 最低版本验证（本地 rc.4，声明 rc.2 未验证）
-- zod advisory override 决定（dsh-llm 传递引入 zod 4.4.3，有 high advisory）
-- dsh-remote 添加测试（当前无 test/ 目录）

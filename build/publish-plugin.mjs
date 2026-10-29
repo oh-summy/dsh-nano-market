@@ -18,6 +18,16 @@ const tag = `${name}@v${version}`;
 const branch = `pkg/${name}`;
 const tmpIndex = join(run("git rev-parse --git-dir"), "pkg-index");
 
+// Fail before moving the mirror branch. Otherwise a same-version rerun can
+// leave pkg/<name> pointing at new source while the immutable tag still points
+// at the previous commit.
+let tagExists = false;
+try { run(`git rev-parse -q --verify refs/tags/${tag}`); tagExists = true; } catch { /* new tag */ }
+if (tagExists) {
+  console.error(`tag ${tag} already exists; bump the plugin version before republishing`);
+  process.exit(1);
+}
+
 // 1) 以 main 的插件子目录为内容构造 tree（不碰工作区/主 index）
 const tree = run(`git read-tree HEAD:${pkgDir} && git write-tree`, { GIT_INDEX_FILE: tmpIndex });
 

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, FEISHU_CDN_HOSTS } from "../lib/index.mjs";
+import fs from "node:fs";
+import { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, FEISHU_CDN_HOSTS, downloadImageBounded } from "../lib/index.mjs";
 
 function makeCtx(info, saveResult) {
   return {
@@ -78,4 +79,42 @@ test("IMAGE_UNSUPPORTED_REPLY is non-empty string", () => {
 
 test("FEISHU_CDN_HOSTS contains known hosts", () => {
   assert.ok(FEISHU_CDN_HOSTS.has("lf3-cdn-tos.bytecdntp.com"));
+});
+
+test("admitImage: default route persists JPEG without model gate", async () => {
+  let resolveCalls = 0;
+  let saved;
+  const ctx = {
+    llm: { resolveModelInfo: async () => { resolveCalls++; throw new Error("must not gate default route"); } },
+    attachments: { saveImages: async (inputs) => { saved = inputs[0]; return [{ id: "jpeg-ref" }]; } },
+  };
+  const result = await admitImage(ctx, "", "", Buffer.from([0xff, 0xd8, 0xff, 0x00]));
+  assert.equal(result.supported, true);
+  assert.equal(result.refs[0].id, "jpeg-ref");
+  assert.equal(resolveCalls, 0);
+  assert.equal(saved.mediaType, "image/jpeg");
+});
+
+
+test("downloadImageBounded: streams to disk and enforces size before buffering", async () => {
+  let usedFallback = false;
+  const channel = {
+    downloadResourceToFile: async (messageId, fileKey, type, destPath) => {
+      await fs.promises.writeFile(destPath, Buffer.from([0xff, 0xd8, 0xff, 0x00]));
+    },
+    downloadResource: async () => { usedFallback = true; throw new Error("must not buffer"); },
+  };
+  const result = await downloadImageBounded(channel, "m", "k");
+  assert.deepEqual([...result], [0xff, 0xd8, 0xff, 0x00]);
+  assert.equal(usedFallback, false);
+});
+
+test("downloadImageBounded: rejects oversized files after streaming", async () => {
+  const channel = {
+    downloadResourceToFile: async (messageId, fileKey, type, destPath) => {
+      await fs.promises.writeFile(destPath, Buffer.alloc(MAX_IMAGE_BYTES + 1));
+    },
+    downloadResource: async () => { throw new Error("must not buffer"); },
+  };
+  await assert.rejects(() => downloadImageBounded(channel, "m", "k"), /exceeds/);
 });

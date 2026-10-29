@@ -154,3 +154,125 @@ test("RunManager: disposeAll finishes active streaming producers", async () => {
   await mgr.disposeAll();
   assert.equal(finished, true);
 });
+
+
+test("RunManager: resets failure and stream state on the next turn", async () => {
+  let errorCb;
+  const mgr = new RunManager({
+    resolveAgent: async () => ({ agent: { id: "a" }, sessionId: "s1", handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: (agent, sessionId, onDelta, onTurnEnd, onError) => {
+      errorCb = onError;
+      return () => {};
+    },
+    followup: () => {},
+    onComplete: () => {},
+  });
+  const slot = await mgr.start("chat-1", "first", { kind: "user" });
+  slot.streamFailed = new Error("old stream");
+  slot.streamController = { update: async () => {} };
+  errorCb(new Error("boom"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await mgr.start("chat-1", "second", { kind: "user" });
+  assert.equal(slot.failedWith, undefined);
+  assert.equal(slot.streamFailed, undefined);
+  assert.equal(slot.streamController, undefined);
+});
+
+test("RunManager: rejects a second chat sharing a busy session", async () => {
+  let followups = 0;
+  const mgr = new RunManager({
+    resolveAgent: async () => ({ agent: { id: "a" }, sessionId: "shared", handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: () => () => {},
+    followup: () => { followups++; },
+  });
+  await mgr.start("chat-1", "first", { kind: "user" });
+  await assert.rejects(() => mgr.start("chat-2", "second", { kind: "user" }), /busy|already running/);
+  assert.equal(followups, 1);
+});
+
+test("RunManager: waits for onComplete before draining queued work", async () => {
+  let turnEnd;
+  let followups = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const mgr = new RunManager({
+    resolveAgent: async () => ({ agent: { id: "a" }, sessionId: "s1", handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: (agent, sessionId, onDelta, onTurnEnd) => {
+      turnEnd = onTurnEnd;
+      return () => {};
+    },
+    followup: () => { followups++; },
+    onComplete: async () => { await gate; },
+  });
+  await mgr.start("chat-1", "first", { kind: "user" });
+  await mgr.start("chat-1", "second", { kind: "user" });
+  turnEnd();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(followups, 1);
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(followups, 2);
+});
+
+test("RunManager: forwards cancellation to the host", async () => {
+  let cancelled = false;
+  const mgr = new RunManager({
+    resolveAgent: async () => ({ agent: { id: "a" }, sessionId: "s1", handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: () => () => {},
+    followup: () => {},
+    onCancel: () => { cancelled = true; },
+  });
+  await mgr.start("chat-1", "hello", { kind: "user" });
+  mgr.cancel("chat-1");
+  assert.equal(cancelled, true);
+});
+
+
+test("RunManager: disposes a handle that arrives during disposeAll", async () => {
+  let resolveAgent;
+  let disposed = false;
+  let followups = 0;
+  const handle = { dispose: async () => { disposed = true; } };
+  const mgr = new RunManager({
+    resolveAgent: () => new Promise((resolve) => { resolveAgent = () => resolve({ agent: { id: "a" }, sessionId: "s1", handle }); }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: () => () => {},
+    followup: () => { followups++; },
+  });
+  const starting = mgr.start("chat-1", "hello", { kind: "user" });
+  await mgr.disposeAll();
+  resolveAgent();
+  await assert.rejects(() => starting, /disposed/);
+  assert.equal(disposed, true);
+  assert.equal(followups, 0);
+});
+
+
+test("RunManager: queues new messages during asynchronous completion", async () => {
+  let turnEnd;
+  let followups = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const mgr = new RunManager({
+    resolveAgent: async () => ({ agent: { id: "a" }, sessionId: "s1", handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: (agent, sessionId, onDelta, onTurnEnd) => {
+      turnEnd = onTurnEnd;
+      return () => {};
+    },
+    followup: () => { followups++; },
+    onComplete: async () => { await gate; },
+  });
+  await mgr.start("chat-1", "first", { kind: "user" });
+  turnEnd();
+  await mgr.start("chat-1", "during-completion", { kind: "user" });
+  assert.equal(followups, 1);
+  assert.equal(mgr.getSlot("chat-1").pending.length, 1);
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(followups, 2);
+});

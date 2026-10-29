@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
+import fs from "node:fs";
 
 const stubUrl = "data:text/javascript," + encodeURIComponent(`
 export function createLarkChannel(options) {
@@ -75,4 +76,120 @@ test("apply connects and disconnects on volatile enabled updates", async () => {
   assert.equal(calls.domains[1], "https://open.larksuite.com");
   await disposer?.();
   delete globalThis.__connectLarkTestChannel;
+});
+
+
+async function makeMessageHarness({ failStream = false } = {}) {
+  const calls = { streams: 0, sends: [], followups: [], cards: [], savedImages: 0, modelGates: 0 };
+  const handlers = new Map();
+  const channelHandlers = new Map();
+  globalThis.__connectLarkTestChannel = {
+    create() {
+      return {
+        async connect() {},
+        async disconnect() {},
+        on(name, fn) { channelHandlers.set(name, fn); return () => channelHandlers.delete(name); },
+        async send(chatId, input) { calls.sends.push({ chatId, input }); },
+        async stream(chatId, input) {
+          calls.streams++;
+          if (failStream) throw new Error("card failed");
+          const controller = {
+            async update(card) { calls.cards.push(card); },
+          };
+          await input.card.producer(controller);
+        },
+        async downloadResourceToFile(messageId, fileKey, type, destPath) {
+          await fs.promises.writeFile(destPath, Buffer.from([0xff, 0xd8, 0xff, 0x00]));
+        },
+        async downloadResource() { throw new Error("must stream to file"); },
+      };
+    },
+  };
+  const agent = {
+    session: { id: "session-test" },
+    followup(message) { calls.followups.push(message); },
+  };
+  let disposer;
+  const ctx = {
+    logger: { info() {}, warn() {}, error() {} },
+    credentials: { resolve: async () => ({ value: "test-secret" }) },
+    effect(fn) { disposer = fn(); },
+    on(name, fn) {
+      if (!handlers.has(name)) handlers.set(name, new Set());
+      handlers.get(name).add(fn);
+      return () => handlers.get(name)?.delete(fn);
+    },
+    sessionController: {
+      resolveAgent: async () => ({ agent }),
+      cancel: async () => {},
+    },
+    agents: { get: () => agent },
+    permissionPresets: { set() {} },
+    attachments: { saveImages: async () => { calls.savedImages++; return [{ id: "img-1" }]; } },
+    llm: { resolveModelInfo: async () => { calls.modelGates++; return { inputModalities: ["text"] }; } },
+  };
+  const config = {
+    appId: "cli_test", appSecretRef: "CONNECT_LARK_TEST", defaultPath: "", openId: "",
+    domain: "feishu", requireMention: true, agentOwnership: "attach-gui",
+    attachSessionId: "session-test", provider: "", model: "", permissionPreset: "",
+    senderAllowlist: [], groupAllowlist: [], thinkingPolicy: "cot-visible",
+  };
+  const { apply } = await import("../lib/index.mjs");
+  apply(ctx, config);
+  await settle();
+  return {
+    calls, agent,
+    message: (msg) => channelHandlers.get("message")(msg),
+    emit(name, ...args) { for (const fn of handlers.get(name) ?? []) fn(...args); },
+    async dispose() { await disposer?.(); delete globalThis.__connectLarkTestChannel; },
+  };
+}
+
+test("apply streams real messages through two consecutive card turns", async () => {
+  const h = await makeMessageHarness();
+  try {
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    h.emit("agent/assistant-stream", { agent: h.agent, frame: { type: "chunk", chunk: { type: "text-delta", text: "first reply" } } });
+    h.emit("session/event", { id: "session-test" }, { type: "turn/end" });
+    await settle();
+    assert.equal(h.calls.streams, 1);
+    assert.match(JSON.stringify(h.calls.cards.at(-1)), /first reply/);
+
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m2", content: "again" });
+    h.emit("agent/assistant-stream", { agent: h.agent, frame: { type: "chunk", chunk: { type: "text-delta", text: "second reply" } } });
+    h.emit("session/event", { id: "session-test" }, { type: "turn/end" });
+    await settle();
+    assert.equal(h.calls.streams, 2);
+    assert.equal(h.calls.followups.length, 2);
+    assert.match(JSON.stringify(h.calls.cards.at(-1)), /second reply/);
+    assert.doesNotMatch(JSON.stringify(h.calls.cards.at(-1)), /运行失败/);
+    assert.equal(h.calls.sends.length, 0);
+  } finally { await h.dispose(); }
+});
+
+test("apply persists a default-route image through the real message path", async () => {
+  const h = await makeMessageHarness();
+  try {
+    await h.message({
+      chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1",
+      content: "look at this", resources: [{ fileKey: "image-key", type: "image" }],
+    });
+    assert.equal(h.calls.savedImages, 1);
+    assert.equal(h.calls.modelGates, 0);
+    const image = h.calls.followups[0].content.find((block) => block.type === "image");
+    assert.equal(image.attachment.id, "img-1");
+    assert.equal(image.attachment._passthrough, undefined);
+  } finally { await h.dispose(); }
+});
+
+test("apply falls back to Markdown when card streaming fails", async () => {
+  const h = await makeMessageHarness({ failStream: true });
+  try {
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    h.emit("agent/assistant-stream", { agent: h.agent, frame: { type: "chunk", chunk: { type: "text-delta", text: "fallback reply" } } });
+    h.emit("session/event", { id: "session-test" }, { type: "turn/end" });
+    await settle();
+    assert.equal(h.calls.sends.length, 1);
+    assert.equal(h.calls.sends[0].input.markdown, "fallback reply");
+  } finally { await h.dispose(); }
 });

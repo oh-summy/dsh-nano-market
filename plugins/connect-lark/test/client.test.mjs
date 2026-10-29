@@ -11,6 +11,30 @@ const expectedFields = [
   "appId", "appSecretPreview", "domain", "defaultPath", "provider", "model", "reasoningEffort", "permissionPreset",
 ];
 
+function renderElement(node) {
+  if (node === null || node === undefined || typeof node === "boolean") return null;
+  if (Array.isArray(node)) return node.map(renderElement).filter(Boolean);
+  if (typeof node !== "object") return node;
+  if (typeof node.type === "function") return renderElement(node.type(node.props || {}));
+  return { ...node, props: { ...(node.props || {}), children: renderElement(node.props?.children) } };
+}
+
+function collectText(node, out = []) {
+  if (node === null || node === undefined || typeof node === "boolean") return out;
+  if (Array.isArray(node)) { for (const item of node) collectText(item, out); return out; }
+  if (typeof node === "string" || typeof node === "number") { out.push(String(node)); return out; }
+  collectText(node.props?.children, out);
+  return out;
+}
+
+function collectButtons(node, out = []) {
+  if (!node || typeof node !== "object") return out;
+  if (Array.isArray(node)) { for (const item of node) collectButtons(item, out); return out; }
+  if (node.type === "button") out.push(node);
+  collectButtons(node.props?.children, out);
+  return out;
+}
+
 function loadClient() {
   const source = readFileSync(join(pkgDir, "lib/client.js"), "utf8");
   let registration;
@@ -38,16 +62,27 @@ function loadClient() {
   const primitives = {
     SettingsFormModel,
     settingsTextField: (path) => ({ path }),
-    SettingsForm: () => null,
-    SettingsValueField: () => null,
+    SettingsForm: ({ children }) => children,
+    SettingsValueField: ({ children }) => children,
   };
   const sandbox = {
     window,
     document: { querySelectorAll: () => globalThis.__dshWorkspaceButtons || [] },
     console,
     require(name) {
-      if (name === "react") return { createElement: () => null, useId: () => "test" };
-      if (name === "react/jsx-runtime") return { jsx: () => null, jsxs: () => null };
+      if (name === "react") return {
+        createElement: (type, props, ...children) => ({ type, props: { ...(props || {}), children } }),
+        useId: () => "test",
+        useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}],
+        useMemo: (fn) => fn(),
+        useCallback: (fn) => fn,
+        useRef: (initial) => ({ current: initial }),
+        useEffect: () => {},
+      };
+      if (name === "react/jsx-runtime") return {
+        jsx: (type, props) => ({ type, props: props || {} }),
+        jsxs: (type, props) => ({ type, props: props || {} }),
+      };
       if (name === "@deepseek-ai/dsh-client-ui-primitives") return primitives;
       if (name === "@deepseek-ai/dsh-client-store") return { createSnapshotStore: (value) => ({ value, getSnapshot: () => value, set(next) { this.value = next; }, subscribe: () => () => {} }) };
       throw new Error("unexpected module " + name);
@@ -125,4 +160,46 @@ test("client registers the native bundle config slot and all fields", async () =
   const source = readFileSync(join(pkgDir, "lib/client.js"), "utf8");
   assert.match(source, /https:\/\/open\.feishu\.cn\/app/);
   assert.doesNotMatch(source, /connect-lark-requireMention|connect-lark-senderAllowlist|cl-trigger-note/);
+});
+
+
+test("client renders the actual configuration card and domain controls", () => {
+  const { exports, edits } = loadClient();
+  let injected;
+  const ctx = {
+    remote: {
+      session: { modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }) },
+      directoryPicker: { list: async () => ({ ok: true, value: { path: "/tmp" } }) },
+      credentials: { set: async () => ({ ok: true }) },
+    },
+    workspaces: { list: { getSnapshot: () => ({ items: [] }), subscribe: () => () => {} } },
+    locale: { bind: () => (key) => key, register: () => () => {} },
+    configForms: {
+      get: () => ({ getSnapshot: () => ({ value: {} }) }),
+      whileServed: (ids, register) => register(new Set(ids)),
+    },
+    slots: {
+      inject: (name, register) => { injected = register(); return () => {}; },
+      register: (options, component) => ({ options, component }),
+    },
+    effect: (fn) => fn(),
+    get(name) { return name === "workspaces" ? this.workspaces : undefined; },
+  };
+  exports.apply(ctx);
+  const actions = injected.options.inject();
+  const state = actions.hooks.larkSettings.getSnapshot();
+  const tree = renderElement(injected.component({
+    ...actions,
+    useLarkSettings: (selector) => selector(state),
+    t: (key) => key,
+  }));
+  const text = collectText(tree).join(" ");
+  assert.match(text, /heroTitle/);
+  assert.match(text, /appId/);
+  assert.match(text, /权限模式/);
+  const larkButton = collectButtons(tree).find((button) =>
+    button.props.role === "radio" && collectText(button).includes("lark"));
+  assert.ok(larkButton, "rendered Lark domain radio button missing");
+  larkButton.props.onClick();
+  assert.ok(edits.some(([path, value]) => path === "domain" && value === "lark"));
 });

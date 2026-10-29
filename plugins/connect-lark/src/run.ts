@@ -10,7 +10,7 @@
 // Events: agent/assistant-stream (incremental), session/event turn/start + turn/end,
 //         agent/error, agent/inbox/claimed.
 
-export type RunState = "idle" | "running" | "cancelling" | "done";
+export type RunState = "idle" | "running" | "cancelling" | "finishing" | "done";
 
 export interface RunSlot {
   chatId: string;
@@ -55,7 +55,9 @@ export interface RunManagerOptions {
   /** Start a turn (call agent.followup). */
   followup: (agent: unknown, message: unknown) => void;
   /** Called when a run completes (turn/end or error). */
-  onComplete?: (slot: RunSlot) => void;
+  onComplete?: (slot: RunSlot) => void | Promise<void>;
+  /** Forward cancellation to the DSH host. */
+  onCancel?: (slot: RunSlot) => void | Promise<void>;
 }
 
 /**
@@ -65,6 +67,8 @@ export class RunManager {
   private slots = new Map<string, RunSlot>();
   private opts: RunManagerOptions;
   private unsubs = new Map<string, () => void>();
+  private watchdogs = new Map<string, NodeJS.Timeout>();
+  private disposed = false;
 
   constructor(opts: RunManagerOptions) {
     this.opts = opts;
@@ -100,7 +104,7 @@ export class RunManager {
   /** Check if a chat has an active run. */
   isRunning(chatId: string): boolean {
     const slot = this.slots.get(chatId);
-    return slot?.state === "running" || slot?.state === "cancelling";
+    return slot?.state === "running" || slot?.state === "cancelling" || slot?.state === "finishing";
   }
 
   /**
@@ -108,6 +112,7 @@ export class RunManager {
    * Returns the slot; the actual work happens via subscribe + followup.
    */
   async start(chatId: string, content: unknown, source: { kind: string }, title?: string): Promise<RunSlot> {
+    if (this.disposed) throw new Error("RunManager is disposed");
     const slot = this.getOrCreate(chatId);
 
     // If running, queue the message (per-chat serialization).
@@ -121,9 +126,27 @@ export class RunManager {
     slot.state = "running";
     try {
       const { agent, sessionId, handle } = await this.opts.resolveAgent(chatId, title);
+      if (this.disposed) {
+        if (handle) await handle.dispose();
+        throw new Error("RunManager is disposed");
+      }
+      const busy = [...this.slots.values()].some((other) =>
+        other !== slot && other.sessionId === sessionId &&
+        (other.state === "running" || other.state === "cancelling"));
+      if (busy) {
+        if (handle) await handle.dispose();
+        throw new Error("Session is already running in another chat");
+      }
       slot.agent = agent;
       slot.handle = handle;
       slot.sessionId = sessionId;
+      slot.failedWith = undefined;
+      slot.streamController = undefined;
+      slot.streamDone = undefined;
+      slot.streamPromise = undefined;
+      slot.streamFailed = undefined;
+      slot.streamReady = undefined;
+      slot.streamReadyResolve = undefined;
 
       const unsub = this.opts.subscribe(
         agent,
@@ -137,8 +160,8 @@ export class RunManager {
             this.opts.onDelta?.(slot, delta);
           }
         },
-        () => { this.complete(chatId); },
-        (e) => { this.fail(chatId, e); },
+        () => { void this.complete(chatId); },
+        (e) => { void this.fail(chatId, e); },
       );
       this.unsubs.set(chatId, unsub);
 
@@ -166,39 +189,45 @@ export class RunManager {
     if (!slot || slot.state !== "running") return;
     slot.state = "cancelling";
     slot.cancelController?.abort();
+    try { void Promise.resolve(this.opts.onCancel?.(slot)).catch(() => {}); } catch { /* best effort */ }
     // Watchdog: force-complete if turn/end never arrives.
-    setTimeout(() => {
+    const watchdog = setTimeout(() => {
+      this.watchdogs.delete(chatId);
       const s = this.slots.get(chatId);
-      if (s && s.state === "cancelling") this.complete(chatId);
-    }, 30_000).unref?.();
+      if (s && s.state === "cancelling") void this.complete(chatId);
+    }, 30_000);
+    watchdog.unref?.();
+    this.watchdogs.set(chatId, watchdog);
   }
 
   /** Mark a run as complete and process the next queued message. */
-  private complete(chatId: string): void {
+  private async complete(chatId: string): Promise<void> {
     const slot = this.slots.get(chatId);
     if (!slot || (slot.state !== "running" && slot.state !== "cancelling")) return;
-    slot.state = "done";
+    slot.state = "finishing";
     this.cleanup(chatId);
-    this.opts.onComplete?.(slot);
-    // Process next queued message.
-    if (slot.pending.length > 0) {
+    try { await this.opts.onComplete?.(slot); } catch { /* reply fallback owns its errors */ }
+    slot.state = "done";
+    if (slot.pending.length > 0 && !this.disposed) {
       const next = slot.pending.shift()!;
-      void this.start(chatId, next.content, next.source);
+      try { await this.start(chatId, next.content, next.source); }
+      catch (error) { await this.fail(chatId, error as Error); }
     }
   }
 
   /** Mark a run as failed and reset state. */
-  private fail(chatId: string, error: Error): void {
+  private async fail(chatId: string, error: Error): Promise<void> {
     const slot = this.slots.get(chatId);
-    if (!slot || slot.state === "done") return; // already completed
-    slot.state = "done";
+    if (!slot || slot.state === "done" || slot.state === "finishing") return; // already completed
+    slot.state = "finishing";
     slot.failedWith = error;
     this.cleanup(chatId);
-    this.opts.onComplete?.(slot);
-    // Process next queued message even on failure.
-    if (slot.pending.length > 0) {
+    try { await this.opts.onComplete?.(slot); } catch { /* reply fallback owns its errors */ }
+    slot.state = "done";
+    if (slot.pending.length > 0 && !this.disposed) {
       const next = slot.pending.shift()!;
-      void this.start(chatId, next.content, next.source);
+      try { await this.start(chatId, next.content, next.source); }
+      catch (nextError) { await this.fail(chatId, nextError as Error); }
     }
   }
 
@@ -207,14 +236,19 @@ export class RunManager {
     const unsub = this.unsubs.get(chatId);
     if (unsub) { try { unsub(); } catch { /* gone */ } }
     this.unsubs.delete(chatId);
+    const watchdog = this.watchdogs.get(chatId);
+    if (watchdog) clearTimeout(watchdog);
+    this.watchdogs.delete(chatId);
   }
 
   async disposeAll(): Promise<void> {
+    this.disposed = true;
     const failures: Error[] = [];
     // Abort all controllers before disposing.
     for (const slot of this.slots.values()) {
       try { slot.cancelController?.abort(); } catch { /* gone */ }
       try { slot.streamDone?.(); } catch { /* already finished */ }
+      try { await this.opts.onCancel?.(slot); } catch { /* best effort */ }
     }
     // Clean up subscriptions for all slots.
     for (const chatId of this.slots.keys()) this.cleanup(chatId);

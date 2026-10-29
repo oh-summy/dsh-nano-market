@@ -9,8 +9,38 @@
 // DO NOT rely on the model throwing: dsh-llm substitutes a text placeholder
 // instead (dsh-llm/lib/index.js:559). Gate BEFORE queueing.
 
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 /** Maximum image bytes to admit (20 MiB default, same as dsh-acp). */
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+
+/** Download an inbound image with bounded heap usage. */
+export async function downloadImageBounded(
+  channel: {
+    downloadResourceToFile?: (messageId: string, fileKey: string, type: "image" | "file", destPath: string) => Promise<unknown>;
+    downloadResource: (messageId: string, fileKey: string, type: "image" | "file") => Promise<Buffer>;
+  },
+  messageId: string,
+  fileKey: string,
+): Promise<Buffer> {
+  if (channel.downloadResourceToFile) {
+    const dir = await mkdtemp(join(tmpdir(), "connect-lark-"));
+    const destPath = join(dir, "image.bin");
+    try {
+      await channel.downloadResourceToFile(messageId, fileKey, "image", destPath);
+      const info = await stat(destPath);
+      if (info.size > MAX_IMAGE_BYTES) throw new Error("image exceeds " + MAX_IMAGE_BYTES + " bytes");
+      return await readFile(destPath);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+  const buffer = await channel.downloadResource(messageId, fileKey, "image");
+  if (buffer.byteLength > MAX_IMAGE_BYTES) throw new Error("image exceeds " + MAX_IMAGE_BYTES + " bytes");
+  return buffer;
+}
 
 export interface ImageAdmitResult {
   /** True when the current route supports image input. */
@@ -41,27 +71,28 @@ export async function admitImage(
   buffer: Buffer,
   signal?: AbortSignal,
 ): Promise<ImageAdmitResult> {
-  // Gate 1: resolve model info (Promise, must await).
-  let info;
-  try {
-    info = await ctx.llm.resolveModelInfo(provider, model, signal);
-  } catch (e) {
-    return { supported: false, refs: [], reason: "cannot verify model for image input: " + (e as Error).message };
-  }
-  signal?.throwIfAborted();
-
-  // Gate 2: inputModalities can be undefined; unknown means unsupported.
-  // info itself can be undefined if resolveModelInfo returned undefined (not threw).
-  if (info === undefined || info === null) {
-    return { supported: false, refs: [], reason: "model info is undefined" };
-  }
-  if (info.inputModalities === undefined || !info.inputModalities.includes("image")) {
-    return { supported: false, refs: [], reason: "model does not declare image input" };
-  }
-
-  // Gate 3: size check (before admission, not after).
+  // Size check before any model or attachment work.
   if (buffer.byteLength > MAX_IMAGE_BYTES) {
     return { supported: false, refs: [], reason: "image exceeds " + MAX_IMAGE_BYTES + " bytes" };
+  }
+
+  // With an explicit model route, require declared image input. With the DSH
+  // default route the host owns model selection, so persist the image and let
+  // the host apply its own capability checks.
+  if (provider && model) {
+    let info;
+    try {
+      info = await ctx.llm.resolveModelInfo(provider, model, signal);
+    } catch (e) {
+      return { supported: false, refs: [], reason: "cannot verify model for image input: " + (e as Error).message };
+    }
+    signal?.throwIfAborted();
+    if (info === undefined || info === null) {
+      return { supported: false, refs: [], reason: "model info is undefined" };
+    }
+    if (info.inputModalities === undefined || !info.inputModalities.includes("image")) {
+      return { supported: false, refs: [], reason: "model does not declare image input" };
+    }
   }
 
   // Admission: saveImages returns refs in order.
