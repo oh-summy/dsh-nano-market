@@ -421,8 +421,12 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
                 buttons: [{ text: "dsh-nano-market", url: "https://github.com/oh-summy/dsh-nano-market" }],
               }),
               producer: async (controller) => {
-                if (slot.turnId === thisTurn) slot.streamController = controller;
-                if (slot.turnId === thisTurn) slot.streamReadyResolve?.();
+                // Bail out immediately if this stream belongs to a stale turn:
+                // the turn timed out or was replaced, so the late producer must
+                // not hold the channel open or update a card for an old run.
+                if (slot.turnId !== thisTurn) return;
+                slot.streamController = controller;
+                slot.streamReadyResolve?.();
                 await done;
               },
             },

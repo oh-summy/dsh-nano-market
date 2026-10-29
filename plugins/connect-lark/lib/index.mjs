@@ -99,9 +99,12 @@ var RunManager = class {
 	}
 	/** Get or create a run slot for a chat. */
 	getOrCreate(chatId) {
-		if (this.slots.size >= 100 && !this.slots.has(chatId)) {
-			if (![...this.slots.values()].some((s) => s.state === "idle" || s.state === "done")) throw new Error("too many active chats; finish some before starting a new one");
-			this.evictOldest(true);
+		if (!this.slots.has(chatId)) {
+			this.evictOldest(false, chatId);
+			if (this.slots.size >= 100) {
+				if (![...this.slots.values()].some((s) => s.state === "idle" || s.state === "done")) throw new Error("too many active chats; finish some before starting a new one");
+				this.evictOldest(true, chatId);
+			}
 		}
 		let slot = this.slots.get(chatId);
 		if (!slot) {
@@ -124,12 +127,14 @@ var RunManager = class {
 		return slot;
 	}
 	/** Evict the oldest idle/done slot. When force is true (capacity reached)
-	* the TTL is ignored so the cap is a hard bound. */
-	evictOldest(force = false) {
+	* the TTL is ignored so the cap is a hard bound. excludeChatId prevents
+	* the just-completed slot from evicting itself. */
+	evictOldest(force = false, excludeChatId) {
 		const now = Date.now();
 		let oldest;
 		for (const slot of this.slots.values()) {
 			if (slot.state !== "idle" && slot.state !== "done") continue;
+			if (excludeChatId && slot.chatId === excludeChatId) continue;
 			if (!force && slot.lastActiveAt > now - 6e5) continue;
 			if (!oldest || slot.lastActiveAt < oldest.lastActiveAt) oldest = slot;
 		}
@@ -252,7 +257,7 @@ var RunManager = class {
 			await this.opts.onComplete?.(slot);
 		} catch {}
 		slot.state = "done";
-		this.evictOldest(false);
+		this.evictOldest(false, chatId);
 		slot.streamController = void 0;
 		slot.streamPromise = void 0;
 		slot.streamFailed = void 0;
@@ -278,7 +283,7 @@ var RunManager = class {
 			await this.opts.onComplete?.(slot);
 		} catch {}
 		slot.state = "done";
-		this.evictOldest(false);
+		this.evictOldest(false, chatId);
 		slot.streamController = void 0;
 		slot.streamPromise = void 0;
 		slot.streamFailed = void 0;
@@ -882,8 +887,9 @@ function apply(ctx, config = {}) {
 							}]
 						}),
 						producer: async (controller) => {
-							if (slot.turnId === thisTurn) slot.streamController = controller;
-							if (slot.turnId === thisTurn) slot.streamReadyResolve?.();
+							if (slot.turnId !== thisTurn) return;
+							slot.streamController = controller;
+							slot.streamReadyResolve?.();
 							await done;
 						}
 					} });

@@ -366,3 +366,38 @@ test("RunManager: evicts TTL-expired done slots on completion", async () => {
   await mgr.start("chat-new", "hello", { kind: "user" });
   assert.ok(mgr.list().length <= 100);
 });
+
+
+test("RunManager: completion does not evict the just-completed slot", async () => {
+  const mgr = new RunManager({
+    resolveAgent: async (chatId) => ({ agent: { id: "a" }, sessionId: "s-" + chatId, handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: () => () => {},
+    followup: () => {},
+  });
+  await mgr.start("chat-old", "hello", { kind: "user" });
+  // Make this slot eligible for TTL eviction
+  mgr.getSlot("chat-old").lastActiveAt = Date.now() - 20 * 60 * 1000;
+  await mgr.complete("chat-old");
+  // The just-completed slot must still be present
+  assert.ok(mgr.getSlot("chat-old"), "completed slot must not be evicted by its own completion");
+  assert.equal(mgr.getSlot("chat-old").state, "done");
+  assert.equal(mgr.list().length, 1);
+});
+
+test("RunManager: evictOldest still reclaims expired slots on completion", async () => {
+  const mgr = new RunManager({
+    resolveAgent: async (chatId) => ({ agent: { id: "a" }, sessionId: "s-" + chatId, handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: () => () => {},
+    followup: () => {},
+  });
+  // Create an expired done slot
+  await mgr.start("chat-expired", "hello", { kind: "user" });
+  mgr.getSlot("chat-expired").lastActiveAt = Date.now() - 20 * 60 * 1000;
+  await mgr.complete("chat-expired");
+  // Now create a new chat — the expired one should be evicted
+  await mgr.start("chat-new", "hello", { kind: "user" });
+  assert.equal(mgr.getSlot("chat-expired"), undefined, "expired slot should be evicted");
+  assert.ok(mgr.getSlot("chat-new"), "new slot should exist");
+});

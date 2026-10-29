@@ -92,10 +92,14 @@ export class RunManager {
 
   /** Get or create a run slot for a chat. */
   getOrCreate(chatId: string): RunSlot {
-    if (this.slots.size >= MAX_SLOTS && !this.slots.has(chatId)) {
-      const hasReclaimable = [...this.slots.values()].some((s) => s.state === "idle" || s.state === "done");
-      if (!hasReclaimable) throw new Error("too many active chats; finish some before starting a new one");
-      this.evictOldest(true);
+    if (!this.slots.has(chatId)) {
+      // Always try to reclaim TTL-expired slots when a new chat arrives.
+      this.evictOldest(false, chatId);
+      if (this.slots.size >= MAX_SLOTS) {
+        const hasReclaimable = [...this.slots.values()].some((s) => s.state === "idle" || s.state === "done");
+        if (!hasReclaimable) throw new Error("too many active chats; finish some before starting a new one");
+        this.evictOldest(true, chatId);
+      }
     }
     let slot = this.slots.get(chatId);
     if (!slot) {
@@ -119,12 +123,14 @@ export class RunManager {
   }
 
   /** Evict the oldest idle/done slot. When force is true (capacity reached)
-   * the TTL is ignored so the cap is a hard bound. */
-  private evictOldest(force = false): void {
+   * the TTL is ignored so the cap is a hard bound. excludeChatId prevents
+   * the just-completed slot from evicting itself. */
+  private evictOldest(force = false, excludeChatId?: string): void {
     const now = Date.now();
     let oldest: RunSlot | undefined;
     for (const slot of this.slots.values()) {
       if (slot.state !== "idle" && slot.state !== "done") continue;
+      if (excludeChatId && slot.chatId === excludeChatId) continue;
       if (!force && slot.lastActiveAt > now - SLOT_TTL_MS) continue;
       if (!oldest || slot.lastActiveAt < oldest.lastActiveAt) oldest = slot;
     }
@@ -258,7 +264,7 @@ export class RunManager {
     this.cleanup(chatId);
     try { await this.opts.onComplete?.(slot); } catch { /* reply fallback owns its errors */ }
     slot.state = "done";
-    this.evictOldest(false);
+    this.evictOldest(false, chatId);
     slot.streamController = undefined;
     slot.streamPromise = undefined;
     slot.streamFailed = undefined;
@@ -280,7 +286,7 @@ export class RunManager {
     this.cleanup(chatId);
     try { await this.opts.onComplete?.(slot); } catch { /* reply fallback owns its errors */ }
     slot.state = "done";
-    this.evictOldest(false);
+    this.evictOldest(false, chatId);
     slot.streamController = undefined;
     slot.streamPromise = undefined;
     slot.streamFailed = undefined;
