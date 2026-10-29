@@ -99,7 +99,10 @@ var RunManager = class {
 	}
 	/** Get or create a run slot for a chat. */
 	getOrCreate(chatId) {
-		if (this.slots.size >= 100 && !this.slots.has(chatId)) this.evictOldest(true);
+		if (this.slots.size >= 100 && !this.slots.has(chatId)) {
+			if (![...this.slots.values()].some((s) => s.state === "idle" || s.state === "done")) throw new Error("too many active chats; finish some before starting a new one");
+			this.evictOldest(true);
+		}
 		let slot = this.slots.get(chatId);
 		if (!slot) {
 			slot = {
@@ -249,6 +252,7 @@ var RunManager = class {
 			await this.opts.onComplete?.(slot);
 		} catch {}
 		slot.state = "done";
+		this.evictOldest(false);
 		slot.streamController = void 0;
 		slot.streamPromise = void 0;
 		slot.streamFailed = void 0;
@@ -274,6 +278,7 @@ var RunManager = class {
 			await this.opts.onComplete?.(slot);
 		} catch {}
 		slot.state = "done";
+		this.evictOldest(false);
 		slot.streamController = void 0;
 		slot.streamPromise = void 0;
 		slot.streamFailed = void 0;
@@ -293,7 +298,7 @@ var RunManager = class {
 		const slot = this.slots.get(chatId);
 		if (!slot) return;
 		this.cleanup(chatId);
-		if (slot.handle) Promise.resolve(slot.handle.dispose()).catch(() => {});
+		if (slot.handle) Promise.resolve(slot.handle.dispose()).catch(() => {}).finally(() => {});
 		this.slots.delete(chatId);
 	}
 	/** Wait for in-flight runs to settle before teardown.
@@ -706,7 +711,8 @@ async function updateRunCard(slot, thinkingPolicy) {
 	const lines = [];
 	if (slot.failedWith) lines.push("**运行失败：** " + slot.failedWith.message);
 	else if (slot.accumulatedText) lines.push(slot.accumulatedText);
-	else lines.push(slot.state === "done" ? "本次回复没有文本输出。" : "正在生成回复…");
+	else if (slot.state === "done" || slot.state === "finishing") lines.push("本次回复没有文本输出。");
+	else lines.push("正在生成回复…");
 	if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
 		lines.push("---", "**思考过程**");
 		lines.push(slot.thinkingText.split("\n").map((line) => "> " + line).join("\n"));
@@ -863,6 +869,7 @@ function apply(ctx, config = {}) {
 					slot.streamReady = new Promise((resolve) => {
 						slot.streamReadyResolve = resolve;
 					});
+					const thisTurn = slot.turnId;
 					slot.streamPromise = chan.stream(slot.chatId, { card: {
 						initial: richCard({
 							title: "DSH 回复",
@@ -875,14 +882,16 @@ function apply(ctx, config = {}) {
 							}]
 						}),
 						producer: async (controller) => {
-							slot.streamController = controller;
-							slot.streamReadyResolve?.();
+							if (slot.turnId === thisTurn) slot.streamController = controller;
+							if (slot.turnId === thisTurn) slot.streamReadyResolve?.();
 							await done;
 						}
 					} });
 					Promise.resolve(slot.streamPromise).catch((e) => {
-						slot.streamFailed = e;
-						slot.streamReadyResolve?.();
+						if (slot.turnId === thisTurn) {
+							slot.streamFailed = e;
+							slot.streamReadyResolve?.();
+						}
 						ctx.logger?.warn?.("[connect-lark] stream failed: " + e.message);
 					});
 				},
@@ -905,8 +914,8 @@ function apply(ctx, config = {}) {
 						try {
 							await updateRunCard(slot, plain.thinkingPolicy);
 						} catch (e) {
-							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
-							if (reply) await chan.send(slot.chatId, { markdown: reply });
+							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
+							await chan.send(slot.chatId, { markdown: reply });
 						}
 					} finally {
 						slot.streamDone?.();

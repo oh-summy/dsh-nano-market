@@ -55,14 +55,19 @@ function loadClient() {
       fields.push(...definitions.map((item) => item.path));
     }
     bind(project) { return { getSnapshot: project }; }
-    field(path) { return { path, text: "" }; }
+    field(path) {
+      const def = this.definitions.find((d) => d.path === path);
+      const raw = this.scope?.getSnapshot?.()?.value?.[path];
+      const text = def?.format ? def.format(raw) : String(raw ?? "");
+      return { path, text };
+    }
     shell() { return { writable: true }; }
     actions() { return { save() {}, discard() {}, edit(path, text) { edits.push([path, text]); }, resetField() {} }; }
     dispose() {}
   }
   const primitives = {
     SettingsFormModel,
-    settingsTextField: (path) => ({ path }),
+    settingsTextField: (path) => ({ path, format: (t) => typeof t === "string" ? t : "" }),
     SettingsForm: ({ children }) => children,
     SettingsValueField: ({ children }) => children,
   };
@@ -249,4 +254,49 @@ test("client renders the access control section with mode and openId controls", 
   const openBtn = collectButtons(tree).find((b) =>
     b.props.role === "radio" && collectText(b).includes("accessOpen"));
   openBtn.props.onClick();
+});
+
+
+test("client list fields render existing array values as text", () => {
+  const { exports } = loadClient();
+  let injected;
+  const ctx = {
+    remote: {
+      session: { modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }) },
+      directoryPicker: { list: async () => ({ ok: true, value: { path: "/tmp" } }) },
+      credentials: { set: async () => ({ ok: true }) },
+    },
+    workspaces: { list: { getSnapshot: () => ({ items: [] }), subscribe: () => () => {} } },
+    locale: { bind: () => (key) => key, register: () => () => {} },
+    configForms: {
+      get: () => ({ getSnapshot: () => ({ value: { senderAllowlist: ["ou_a", "ou_b"], groupAllowlist: ["oc_x"] } }) }),
+      whileServed: (ids, register) => register(new Set(ids)),
+    },
+    slots: {
+      inject: (name, register) => { injected = register(); return () => {}; },
+      register: (options, component) => ({ options, component }),
+    },
+    effect: (fn) => fn(),
+    get(name) { return name === "workspaces" ? this.workspaces : undefined; },
+  };
+  exports.apply(ctx);
+  const actions = injected.options.inject();
+  const state = actions.hooks.larkSettings.getSnapshot();
+  const tree = renderElement(injected.component({
+    ...actions,
+    useLarkSettings: (selector) => selector(state),
+    t: (key) => key,
+  }));
+  const textareas = [];
+  (function collectTextareas(node) {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const item of node) collectTextareas(item); return; }
+    if (node.type === "textarea") { textareas.push(node); return; }
+    collectTextareas(node.props?.children);
+  })(tree);
+  assert.ok(textareas.length >= 2, "should render sender and group allowlist textareas");
+  const senderText = textareas[0].props?.value || "";
+  const groupText = textareas[1].props?.value || "";
+  assert.ok(senderText.includes("ou_a"), "sender allowlist should show existing values");
+  assert.ok(groupText.includes("oc_x"), "group allowlist should show existing values");
 });

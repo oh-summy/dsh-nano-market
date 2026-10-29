@@ -22,7 +22,7 @@ channel 仍是 0.x，精确 pin 版本（不用 `^`）、锁依赖、显式设�
 
 `provider`、`model`、`reasoningEffort` 全部可选；留空时使用 DSH 新会话的默认模型和思考强度。`permissionPreset` 留空时沿用 DSH 当前权限，选择后通过 `permissionPresets.set()` 同时作用于新建和已有聊天 Session。
 
-普通用户只需 App ID 与 App Secret 凭据引用，其他配置均可使用默认值。
+普通用户需在设置页完成 App ID、App Secret 和访问控制（`openId` 或 `accessMode`），其余配置均可使用默认值。
 
 ### 4. 流式卡片回复
 

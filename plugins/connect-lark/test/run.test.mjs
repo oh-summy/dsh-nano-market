@@ -331,3 +331,38 @@ test("RunManager: evicts oldest done slot when over the cap", async () => {
   assert.ok(mgr.list().length <= 100, "slots must stay within the cap");
   assert.ok(mgr.getSlot("chat-0") === undefined, "oldest slot should be evicted");
 });
+
+
+test("RunManager: rejects new chats when all slots are running", async () => {
+  const mgr = new RunManager({
+    resolveAgent: async (chatId) => ({ agent: { id: "a" }, sessionId: "s-" + chatId, handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: () => () => {},
+    followup: () => {},
+  });
+  // Start MAX_SLOTS chats without completing any
+  for (let i = 0; i < 100; i++) {
+    await mgr.start("chat-" + i, "hello", { kind: "user" });
+  }
+  assert.equal(mgr.list().length, 100);
+  await assert.rejects(() => mgr.start("chat-100", "hello", { kind: "user" }), /too many active chats/);
+});
+
+test("RunManager: evicts TTL-expired done slots on completion", async () => {
+  const mgr = new RunManager({
+    resolveAgent: async (chatId) => ({ agent: { id: "a" }, sessionId: "s-" + chatId, handle: null }),
+    buildMessage: () => ({ id: "m" }),
+    subscribe: () => () => {},
+    followup: () => {},
+  });
+  // Fill to cap with done slots that have old lastActiveAt
+  for (let i = 0; i < 100; i++) {
+    await mgr.start("chat-" + i, "hello", { kind: "user" });
+    const slot = mgr.getSlot("chat-" + i);
+    slot.lastActiveAt = Date.now() - 20 * 60 * 1000; // past TTL
+    await mgr.complete("chat-" + i);
+  }
+  // All done + expired → next chat should trigger eviction and succeed
+  await mgr.start("chat-new", "hello", { kind: "user" });
+  assert.ok(mgr.list().length <= 100);
+});

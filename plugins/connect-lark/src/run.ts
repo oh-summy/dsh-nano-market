@@ -92,7 +92,11 @@ export class RunManager {
 
   /** Get or create a run slot for a chat. */
   getOrCreate(chatId: string): RunSlot {
-    if (this.slots.size >= MAX_SLOTS && !this.slots.has(chatId)) this.evictOldest(true);
+    if (this.slots.size >= MAX_SLOTS && !this.slots.has(chatId)) {
+      const hasReclaimable = [...this.slots.values()].some((s) => s.state === "idle" || s.state === "done");
+      if (!hasReclaimable) throw new Error("too many active chats; finish some before starting a new one");
+      this.evictOldest(true);
+    }
     let slot = this.slots.get(chatId);
     if (!slot) {
       slot = {
@@ -254,6 +258,7 @@ export class RunManager {
     this.cleanup(chatId);
     try { await this.opts.onComplete?.(slot); } catch { /* reply fallback owns its errors */ }
     slot.state = "done";
+    this.evictOldest(false);
     slot.streamController = undefined;
     slot.streamPromise = undefined;
     slot.streamFailed = undefined;
@@ -275,6 +280,7 @@ export class RunManager {
     this.cleanup(chatId);
     try { await this.opts.onComplete?.(slot); } catch { /* reply fallback owns its errors */ }
     slot.state = "done";
+    this.evictOldest(false);
     slot.streamController = undefined;
     slot.streamPromise = undefined;
     slot.streamFailed = undefined;
@@ -292,7 +298,7 @@ export class RunManager {
     const slot = this.slots.get(chatId);
     if (!slot) return;
     this.cleanup(chatId);
-    if (slot.handle) { void Promise.resolve(slot.handle.dispose()).catch(() => {}); }
+    if (slot.handle) { void Promise.resolve(slot.handle.dispose()).catch(() => {}).finally(() => {}); }
     this.slots.delete(chatId);
   }
 

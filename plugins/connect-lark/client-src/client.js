@@ -112,6 +112,12 @@ function definition(field) {
       const value = text.trim();
       return value === "" ? { kind: "clear" } : { kind: "set", value };
     },
+    format(value) {
+      // Array values (from senderAllowlist/groupAllowlist) must render as text
+      // so the UI shows existing grants instead of blank inputs.
+      if (field.kind === "list" && Array.isArray(value)) return value.join("\n");
+      return base.format ? base.format(value) : value;
+    },
   };
 }
 

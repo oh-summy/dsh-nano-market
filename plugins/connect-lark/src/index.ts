@@ -253,7 +253,8 @@ async function updateRunCard(slot: RunSlot, thinkingPolicy: ResolvedConfig["thin
   const lines: string[] = [];
   if (slot.failedWith) lines.push("**运行失败：** " + slot.failedWith.message);
   else if (slot.accumulatedText) lines.push(slot.accumulatedText);
-  else lines.push(slot.state === "done" ? "本次回复没有文本输出。" : "正在生成回复…");
+  else if (slot.state === "done" || slot.state === "finishing") lines.push("本次回复没有文本输出。");
+  else lines.push("正在生成回复…");
   if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
     lines.push("---", "**思考过程**");
     lines.push(slot.thinkingText.split("\n").map((line) => "> " + line).join("\n"));
@@ -409,6 +410,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         onStart: (slot) => {
           const done = new Promise<void>((resolve) => { slot.streamDone = resolve; });
           slot.streamReady = new Promise<void>((resolve) => { slot.streamReadyResolve = resolve; });
+          const thisTurn = slot.turnId;
           slot.streamPromise = chan.stream(slot.chatId, {
             card: {
               initial: richCard({
@@ -419,15 +421,19 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
                 buttons: [{ text: "dsh-nano-market", url: "https://github.com/oh-summy/dsh-nano-market" }],
               }),
               producer: async (controller) => {
-                slot.streamController = controller;
-                slot.streamReadyResolve?.();
+                if (slot.turnId === thisTurn) slot.streamController = controller;
+                if (slot.turnId === thisTurn) slot.streamReadyResolve?.();
                 await done;
               },
             },
           });
           Promise.resolve(slot.streamPromise).catch((e) => {
-            slot.streamFailed = e as Error;
-            slot.streamReadyResolve?.();
+            // Only touch the current slot if this stream belongs to the same turn;
+            // a stale stream must not pollute a newer run.
+            if (slot.turnId === thisTurn) {
+              slot.streamFailed = e as Error;
+              slot.streamReadyResolve?.();
+            }
             ctx.logger?.warn?.("[connect-lark] stream failed: " + (e as Error).message);
           });
         },
@@ -455,8 +461,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             try {
               await updateRunCard(slot, plain.thinkingPolicy);
             } catch (e) {
-              const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
-              if (reply) await chan.send(slot.chatId, { markdown: reply });
+              const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
+              await chan.send(slot.chatId, { markdown: reply });
             }
           } finally {
             slot.streamDone?.();
