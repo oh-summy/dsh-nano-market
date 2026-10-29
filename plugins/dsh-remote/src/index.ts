@@ -227,7 +227,7 @@ async function sendNotify(ctx: AnyCtx, event: string, url: string | null): Promi
   } else {
     lines = url ? ["**访问地址**", url, "---", "**访问密码**", tier] : ["（隧道未运行，暂无访问地址）", "**访问密码**", tier];
   }
-  const card = cardFor(title, color, lines, url, "dsh-remote By oh-summy · " + new Date().toLocaleString("zh-CN"));
+  const card = cardFor(title, color, lines, url, "dsh-remote · by @oh-summy · " + new Date().toLocaleString("zh-CN"));
   try {
     if (channel === "group") {
       // 群聊两种发法：优先应用身份（拉过群列表），否则群机器人 webhook

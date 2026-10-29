@@ -25,12 +25,45 @@ jobs:
       - run: node build/validate.mjs
       - name: Fail build on dry-run-only output
         run: test ! -f dist/index.json || ! grep -q '0.0.0-dry' dist/index.json || { echo 'index contains unresolved dry-run entries'; exit 1; }
-      # 插件构建同步守卫：市场安装的是 pkg 镜像分支里的 lib/（构建产物提交在库），
-      # src 改了忘跑构建 = 装到过期 lib/，破坏 commit 固定可复现承诺。
-      # PR 检查（informational）；main 推送时 build 失败会拦住 Pages 部署（deploy needs build）。
-      - run: npm --prefix plugins/dsh-remote ci
-      - run: npm --prefix plugins/dsh-remote run build
-      - run: git diff --exit-code -- plugins/dsh-remote/lib
+      # 插件守卫（通用，遍历所有 in-repo 插件）：市场安装的是 pkg 镜像分支里的 lib/（构建产物提交在库），
+      # src 改了忘跑构建 = 装到过期 lib/，破坏 commit 固定可复现承诺。新增插件自动纳入，无需改 CI。
+      # 顺序 = 装依赖（有 lockfile 才 ci）→ 构建（有 build 脚本才跑）→ 跑插件自身测试 → 判 lib/
+      # 判 lib/ 用 git status --porcelain（git diff 漏掉未跟踪文件 = 假绿），且要求 lib/ 真实存在。
+      # 注：build job 是 main 的 required status check，本守卫红灯会阻断合并。
+      - name: Plugin build + test sync guard
+        run: |
+          set -e
+          for pkg in plugins/*/; do
+            [ -f "$pkg/package.json" ] || continue
+            echo "=== $pkg"
+            has() { node -e "process.exit(require('./$pkg/package.json').scripts?.$1 ? 0 : 1)"; }
+            # 有 lockfile 才 npm ci；没有就跳过（模板不强制提交 lockfile）
+            if [ -f "$pkg/package-lock.json" ]; then
+              npm --prefix "$pkg" ci
+            else
+              echo "  (no package-lock.json — skipping npm ci)"
+            fi
+            # build BEFORE test: the plugin tests consume lib/, so they must run against
+            # the current source's fresh artifacts, not a stale committed copy.
+            if has build; then
+              npm --prefix "$pkg" run build
+            fi
+            if has test; then
+              npm --prefix "$pkg" test
+            fi
+            # lib/ 必须存在（市场装的就是 lib/）；git status --porcelain 同时捕获
+            # 已修改与未跟踪（git diff 只查已跟踪 = 忘提交 lib/ 会假绿）。
+            if [ ! -d "$pkg/lib" ]; then
+              echo "ERROR: $pkg has no lib/ directory (market installs lib/; run a build or remove the plugin)"
+              exit 1
+            fi
+            if [ -n "$(git status --porcelain -- "$pkg/lib")" ]; then
+              echo "lib/ is dirty or untracked in $pkg — commit the build output (or delete lib/)"
+              git status --porcelain -- "$pkg/lib"
+              exit 1
+            fi
+          done
+
       - uses: actions/upload-pages-artifact@v5
         with:
           path: dist

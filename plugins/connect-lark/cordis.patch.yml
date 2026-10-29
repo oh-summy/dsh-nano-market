@@ -1,0 +1,32 @@
+# bundle layer for @oh-summy/connect-lark: applied automatically when the bundle is
+# listed in a profile's dsh.profile.bundles. The bundle enable switch owns the
+# connection lifecycle; there is no second enable switch inside the plugin.
+- insert:
+    - id: connect-lark
+      name: '@oh-summy/connect-lark'
+      config:
+        appId: ''
+        appSecretRef: CONNECT_LARK_APP_SECRET
+        # Only the first 5 characters are shown in the UI; the full secret stays in the credential seam.
+        appSecretPreview: ''
+        # Workspace used by the per-chat Agent. Empty inherits the host cwd.
+        defaultPath: ''
+        openId: ''
+        domain: feishu
+        requireMention: true
+        # Each chat gets its own Agent by default. attach-gui is an advanced option.
+        agentOwnership: owned-per-chat
+        attachSessionId: ''
+        # Empty model and effort inherit the current DSH configuration.
+        provider: ''
+        model: ''
+        reasoningEffort: ''
+        # Empty inherits DSH; also supports read-only, workspace-write, danger-full-access, auto.
+        permissionPreset: ''
+        # restricted = only explicitly granted chats (recommended for a bot that can run code);
+        # open = allow every chat (personal/private use).
+        accessMode: restricted
+        # In restricted mode an empty list denies that chat kind.
+        senderAllowlist: []
+        groupAllowlist: []
+        thinkingPolicy: cot-visible

@@ -23,7 +23,8 @@
   ],
   "scripts": {
     "build": "tsc --noEmit && tsdown src/index.ts -d lib --format esm && node scripts/build-client.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs"
   },
   "dsh": {
     "bundle": {
