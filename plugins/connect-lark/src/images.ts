@@ -24,10 +24,34 @@ export async function downloadImageBounded(
   channel: {
     downloadResourceToFile?: (messageId: string, fileKey: string, type: "image" | "file", destPath: string) => Promise<unknown>;
     downloadResource: (messageId: string, fileKey: string, type: "image" | "file") => Promise<Buffer>;
+    rawClient?: any;
   },
   messageId: string,
   fileKey: string,
 ): Promise<Buffer> {
+  // H7: pre-check Content-Length so a huge file is rejected before it is
+  // written to disk. Best-effort: if the header is absent we still download.
+  if (channel.rawClient) {
+    try {
+      const response = await channel.rawClient.im.v1.messageResource.get({
+        path: { message_id: messageId, file_key: fileKey },
+        params: { type: "image" },
+        responseType: "stream",
+      });
+      const contentLength = response.headers?.["content-length"];
+      if (contentLength) {
+        const size = parseInt(contentLength, 10);
+        if (!Number.isNaN(size) && size > MAX_IMAGE_BYTES) {
+          response.data?.destroy?.();
+          throw new Error("image exceeds " + MAX_IMAGE_BYTES + " bytes");
+        }
+      }
+      response.data?.destroy?.();
+    } catch (e) {
+      if (/exceeds/.test((e as Error).message)) throw e;
+      // Header check failed; fall through to the actual download.
+    }
+  }
   if (channel.downloadResourceToFile) {
     const dir = await mkdtemp(join(tmpdir(), "connect-lark-"));
     const destPath = join(dir, "image.bin");
@@ -149,7 +173,8 @@ export function buildImageContent(
 }
 
 /**
- * Inbound image download helper (SSRF-guarded).
+ * Internal helper: inbound image download (SSRF-guarded).
+ * Not used by the production path (which uses downloadImageBounded).
  *
  * Only accepts https URLs from known Feishu CDN hosts. Never follows redirects
  * to arbitrary hosts (privacy + SSRF risk, ARCHITECTURE §3.1).

@@ -64,7 +64,8 @@ export function richCard(opts: RichCardOptions): Record<string, unknown> {
 }
 
 /**
- * Stream plain markdown to a chat via channel.stream().
+ * Internal helper: stream plain markdown via channel.stream().
+ * Not used by the production reply path (which uses rich cards).
  *
  * The SDK owns CardKit create + atomic update + finalize here — no raw JSON needed.
  * Returns the SendResult so the caller can track the message ID.
@@ -85,27 +86,3 @@ export async function streamMarkdown(
   });
 }
 
-/**
- * Stream a rich card via channel.stream({ card: { initial, producer } }).
- *
- * The caller provides the full card JSON; the SDK handles atomic updates.
- */
-export async function streamRichCard(
-  channel: { stream: (to: string, input: { card: { initial: object; producer: (c: { update: (next: object) => void }) => Promise<void> } }) => Promise<unknown> },
-  to: string,
-  initial: object,
-  getUpdate: () => Promise<object | null>,
-): Promise<unknown> {
-  return channel.stream(to, {
-    card: {
-      initial,
-      producer: async (c) => {
-        while (true) {
-          const update = await getUpdate();
-          if (update === null) break;
-          c.update(update);
-        }
-      },
-    },
-  });
-}

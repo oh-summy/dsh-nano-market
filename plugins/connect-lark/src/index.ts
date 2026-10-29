@@ -602,7 +602,7 @@ function extractImages(msg: any): Array<{ fileKey: string }> {
 }
 
 // ---- Re-exports (for tests + consumers) ----
-export { richCard, streamMarkdown, streamRichCard } from "./cards.js";
+export { richCard, streamMarkdown } from "./cards.js";
 export { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage, MAX_IMAGE_BYTES, FEISHU_CDN_HOSTS } from "./images.js";
 export { RunManager } from "./run.js";
 export type { RunSlot, RunState, RunManagerOptions } from "./run.js";

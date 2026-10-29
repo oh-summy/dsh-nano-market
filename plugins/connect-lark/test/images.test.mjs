@@ -118,3 +118,34 @@ test("downloadImageBounded: rejects oversized files after streaming", async () =
   };
   await assert.rejects(() => downloadImageBounded(channel, "m", "k"), /exceeds/);
 });
+
+
+test("downloadImageBounded: rejects oversized image before writing to disk via Content-Length", async () => {
+  const channel = {
+    rawClient: {
+      im: { v1: { messageResource: { get: async () => ({
+        headers: { "content-length": String(MAX_IMAGE_BYTES + 1) },
+        data: { destroy: () => {} },
+      }) } } },
+    },
+    downloadResourceToFile: async () => { throw new Error("must not download"); },
+    downloadResource: async () => { throw new Error("must not buffer"); },
+  };
+  await assert.rejects(() => downloadImageBounded(channel, "m", "k"), /exceeds/);
+});
+
+test("downloadImageBounded: proceeds when Content-Length is within limits", async () => {
+  const channel = {
+    rawClient: {
+      im: { v1: { messageResource: { get: async () => ({
+        headers: { "content-length": "1024" },
+        data: { destroy: () => {} },
+      }) } } },
+    },
+    downloadResourceToFile: async (messageId, fileKey, type, destPath) => {
+      await fs.promises.writeFile(destPath, Buffer.from([0xff, 0xd8, 0xff, 0x00]));
+    },
+  };
+  const result = await downloadImageBounded(channel, "m", "k");
+  assert.deepEqual([...result], [0xff, 0xd8, 0xff, 0x00]);
+});

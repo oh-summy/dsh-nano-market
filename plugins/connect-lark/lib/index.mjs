@@ -64,7 +64,8 @@ function richCard(opts) {
 	};
 }
 /**
-* Stream plain markdown to a chat via channel.stream().
+* Internal helper: stream plain markdown via channel.stream().
+* Not used by the production reply path (which uses rich cards).
 *
 * The SDK owns CardKit create + atomic update + finalize here — no raw JSON needed.
 * Returns the SendResult so the caller can track the message ID.
@@ -75,23 +76,6 @@ async function streamMarkdown(channel, to, getDelta) {
 			const delta = await getDelta();
 			if (delta === null) break;
 			if (delta.length > 0) c.append(delta);
-		}
-	} });
-}
-/**
-* Stream a rich card via channel.stream({ card: { initial, producer } }).
-*
-* The caller provides the full card JSON; the SDK handles atomic updates.
-*/
-async function streamRichCard(channel, to, initial, getUpdate) {
-	return channel.stream(to, { card: {
-		initial,
-		producer: async (c) => {
-			while (true) {
-				const update = await getUpdate();
-				if (update === null) break;
-				c.update(update);
-			}
 		}
 	} });
 }
@@ -375,6 +359,27 @@ var RunManager = class {
 const MAX_IMAGE_BYTES = 20971520;
 /** Download an inbound image with bounded heap usage. */
 async function downloadImageBounded(channel, messageId, fileKey) {
+	if (channel.rawClient) try {
+		const response = await channel.rawClient.im.v1.messageResource.get({
+			path: {
+				message_id: messageId,
+				file_key: fileKey
+			},
+			params: { type: "image" },
+			responseType: "stream"
+		});
+		const contentLength = response.headers?.["content-length"];
+		if (contentLength) {
+			const size = parseInt(contentLength, 10);
+			if (!Number.isNaN(size) && size > 20971520) {
+				response.data?.destroy?.();
+				throw new Error("image exceeds 20971520 bytes");
+			}
+		}
+		response.data?.destroy?.();
+	} catch (e) {
+		if (/exceeds/.test(e.message)) throw e;
+	}
 	if (channel.downloadResourceToFile) {
 		const dir = await mkdtemp(join(tmpdir(), "connect-lark-"));
 		const destPath = join(dir, "image.bin");
@@ -483,7 +488,8 @@ function buildImageContent(text, admit) {
 	return content;
 }
 /**
-* Inbound image download helper (SSRF-guarded).
+* Internal helper: inbound image download (SSRF-guarded).
+* Not used by the production path (which uses downloadImageBounded).
 *
 * Only accepts https URLs from known Feishu CDN hosts. Never follows redirects
 * to arbitrary hosts (privacy + SSRF risk, ARCHITECTURE §3.1).
@@ -1036,4 +1042,4 @@ const CONTRACT_NOTES = {
 	whitelistFailClosed: "accessMode=restricted (default) + empty senderAllowlist/groupAllowlist = deny all messages; openId always restricts DMs when set",
 	streaming: "channel.stream(to, { markdown: async (c) => { c.append(delta) } }) — SDK-owned CardKit"
 };
-export { CONTRACT_NOTES, Config, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildImageContent, buildUserMessage, createOrResumeAgent, downloadImageBounded, downloadInboundImage, inject, passesWhitelist, plainConfig, resolveAgentModelOptions, resolveAppSecret, richCard, streamMarkdown, streamRichCard };
+export { CONTRACT_NOTES, Config, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildImageContent, buildUserMessage, createOrResumeAgent, downloadImageBounded, downloadInboundImage, inject, passesWhitelist, plainConfig, resolveAgentModelOptions, resolveAppSecret, richCard, streamMarkdown };

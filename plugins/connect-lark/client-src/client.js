@@ -163,7 +163,7 @@ class LarkSettingsModel {
     const ref = this.scope.getSnapshot().value?.appSecretRef || "CONNECT_LARK_APP_SECRET";
     const response = await this.ctx.remote.credentials.set(ref, value);
     if (!response.ok) throw new Error(response.error?.message || "credential write failed");
-    this.form.actions().edit("appSecretPreview", value.slice(0, 5));
+    this.form.actions().edit("appSecretPreview", value.slice(0, Math.min(5, value.length)));
     this.secretDraft = "";
     this.publish();
   }
@@ -272,6 +272,7 @@ const styles = `
 .cl-primary{border:1px solid var(--cl-blue);background:var(--cl-blue);color:#fff}
 .cl-secondary{border:1px solid #d8dde5;background:#fff;color:#374151}
 .cl-modal-note{color:var(--cl-muted);font-size:10px;margin-top:12px;line-height:1.5}
+.cl-footer{color:var(--cl-muted);font-size:10px;line-height:1.5;margin-top:8px}
 @media(max-width:560px){.cl-hero{padding:18px}.cl-hero-top{align-items:flex-start;flex-direction:column}.cl-card{padding:17px}.cl-status{white-space:normal}.cl-modal{padding:20px}.cl-section-head{flex-direction:column}.cl-guide-link{align-self:flex-start}}
 @media(prefers-reduced-motion:reduce){.cl-input,.cl-select,.cl-picker-trigger{transition:none}.cl-modal-backdrop{backdrop-filter:none}}
 `;

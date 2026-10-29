@@ -81,3 +81,69 @@ test("publish-plugin links the mirror branch across a fresh clone", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test("publish-plugin refuses when origin already has the tag", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-publish-remote-"));
+  const origin = path.join(root, "origin.git");
+  const work = path.join(root, "work");
+  try {
+    fs.mkdirSync(path.join(work, "plugins/demo"), { recursive: true });
+    fs.mkdirSync(path.join(work, "build"), { recursive: true });
+    fs.copyFileSync(path.resolve("build/publish-plugin.mjs"), path.join(work, "build/publish-plugin.mjs"));
+    run(work, ["git", "init", "-b", "main"]);
+    run(work, ["git", "config", "user.email", "test@example.com"]);
+    run(work, ["git", "config", "user.name", "Test"]);
+    fs.writeFileSync(path.join(work, "plugins/demo/package.json"), JSON.stringify({ version: "1.0.0" }));
+    run(work, ["git", "add", "."]);
+    run(work, ["git", "commit", "-m", "v1"]);
+    run(work, [process.execPath, "build/publish-plugin.mjs", "demo"]);
+    run(work, ["git", "init", "--bare", "-b", "main", origin]);
+    run(work, ["git", "remote", "add", "origin", origin]);
+    run(work, ["git", "push", "origin", "main", "pkg/demo", "demo@v1.0.0"]);
+
+    // bump version and publish v1.1.0, then push the tag to origin
+    fs.writeFileSync(path.join(work, "plugins/demo/package.json"), JSON.stringify({ version: "1.1.0" }));
+    run(work, ["git", "add", "."]);
+    run(work, ["git", "commit", "-m", "v2"]);
+    run(work, ["git", "push", "origin", "main"]);
+    run(work, [process.execPath, "build/publish-plugin.mjs", "demo"]);
+    run(work, ["git", "push", "origin", "demo@v1.1.0"]);
+
+    // now try to re-publish v1.1.0 from a clean clone — must refuse
+    const clone = path.join(root, "clone");
+    run(work, ["git", "clone", origin, clone]);
+    assert.throws(() => run(clone, [process.execPath, "build/publish-plugin.mjs", "demo"]), /already exists/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("publish-plugin tag tree contains package.json, lib, cordis.patch.yml, README, LICENSE", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-publish-tree-"));
+  try {
+    fs.mkdirSync(path.join(cwd, "plugins/demo/lib"), { recursive: true });
+    fs.mkdirSync(path.join(cwd, "build"), { recursive: true });
+    fs.copyFileSync(path.resolve("build/publish-plugin.mjs"), path.join(cwd, "build/publish-plugin.mjs"));
+    fs.writeFileSync(path.join(cwd, "plugins/demo/package.json"), JSON.stringify({ version: "1.0.0" }));
+    fs.writeFileSync(path.join(cwd, "plugins/demo/lib/index.mjs"), "export {};\n");
+    fs.writeFileSync(path.join(cwd, "plugins/demo/cordis.patch.yml"), "- insert:\n");
+    fs.writeFileSync(path.join(cwd, "plugins/demo/README.md"), "# demo\n");
+    fs.writeFileSync(path.join(cwd, "plugins/demo/LICENSE"), "MIT\n");
+    run(cwd, ["git", "init", "-b", "main"]);
+    run(cwd, ["git", "config", "user.email", "test@example.com"]);
+    run(cwd, ["git", "config", "user.name", "Test"]);
+    run(cwd, ["git", "add", "."]);
+    run(cwd, ["git", "commit", "-m", "first"]);
+    run(cwd, [process.execPath, "build/publish-plugin.mjs", "demo"]);
+    const tree = run(cwd, ["git", "ls-tree", "--name-only", "demo@v1.0.0"]);
+    const files = tree.split("\n");
+    assert.ok(files.includes("package.json"), "tag tree must contain package.json");
+    assert.ok(files.includes("lib"), "tag tree must contain lib");
+    assert.ok(files.includes("cordis.patch.yml"), "tag tree must contain cordis.patch.yml");
+    assert.ok(files.includes("README.md"), "tag tree must contain README.md");
+    assert.ok(files.includes("LICENSE"), "tag tree must contain LICENSE");
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
