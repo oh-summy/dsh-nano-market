@@ -71,6 +71,9 @@ test("publish-plugin links the mirror branch across a fresh clone", () => {
     assert.equal(hasLocalBranch, false, "fresh clone should not have a local pkg branch");
     assert.ok(hasRemoteBranch, "fresh clone should track origin pkg branch");
 
+    // CI needs explicit identity for commit-tree
+    run(clone, ["git", "config", "user.email", "test@example.com"]);
+    run(clone, ["git", "config", "user.name", "Test"]);
     run(clone, [process.execPath, "build/publish-plugin.mjs", "demo", "--push"]);
     const branchTip = run(clone, ["git", "rev-parse", "pkg/demo"]);
     const tagCommit = run(clone, ["git", "rev-parse", "demo@v1.1.0^{commit}"]);
