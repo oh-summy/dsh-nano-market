@@ -80,7 +80,7 @@ test("apply connects and disconnects on volatile enabled updates", async () => {
 });
 
 
-async function makeMessageHarness({ failStream = false, ownedPerChat = false, imageDownloadFails = false } = {}) {
+async function makeMessageHarness({ failStream = false, failUpdate = false, ownedPerChat = false, imageDownloadFails = false } = {}) {
   const calls = { streams: 0, sends: [], followups: [], cards: [], savedImages: 0, modelGates: 0 };
   const handlers = new Map();
   const channelHandlers = new Map();
@@ -95,7 +95,10 @@ async function makeMessageHarness({ failStream = false, ownedPerChat = false, im
           calls.streams++;
           if (failStream) throw new Error("card failed");
           const controller = {
-            async update(card) { calls.cards.push(card); },
+            async update(card) {
+              if (failUpdate) throw new Error("update failed");
+              calls.cards.push(card);
+            },
           };
           await input.card.producer(controller);
         },
@@ -244,81 +247,87 @@ test("apply sends a no-text completion card instead of hanging at generating", a
   } finally { await h.dispose(); }
 });
 
-test("apply sends fallback when final card update fails with no text", async () => {
-  let controller;
-  const h = await makeMessageHarness({ failStream: false });
+test("apply sends fallback when final card update fails", async () => {
+  const h = await makeMessageHarness({ failUpdate: true });
   try {
-    // Replace stream with a controller that rejects on update
-    const origStream = h.calls;
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
-    // Force the controller to reject
-    // The harness already captures cards; we need to make the final update fail
-    // Instead, verify the fallback path by checking that a reply is always sent
+    h.emit("agent/assistant-stream", { agent: h.agent, frame: { type: "chunk", chunk: { type: "text-delta", text: "my reply" } } });
     h.emit("session/event", { id: "session-test" }, { type: "turn/end" });
     await settle();
-    // With no text and a working card, the card shows "没有文本输出"
-    // This test verifies the card path works for no-text completion
-    assert.ok(h.calls.cards.length >= 1, "card should have been updated");
+    assert.equal(h.calls.sends.length, 1, "fallback should be sent when final update fails");
+    assert.equal(h.calls.sends[0].input.markdown, "my reply");
+  } finally { await h.dispose(); }
+});
+
+test("apply sends fallback when final update fails and there is no text", async () => {
+  const h = await makeMessageHarness({ failUpdate: true });
+  try {
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    h.emit("session/event", { id: "session-test" }, { type: "turn/end" });
+    await settle();
+    assert.equal(h.calls.sends.length, 1, "fallback should be sent even with no text");
+    assert.match(h.calls.sends[0].input.markdown, /回复未生成|运行失败/);
   } finally { await h.dispose(); }
 });
 
 test("apply falls back when stream producer never starts (timeout)", async () => {
-  // Channel that creates the stream but never calls the producer
-  const calls = { sends: [], streams: 0, followups: [] };
-  const handlers = new Map();
-  const channelHandlers = new Map();
-  globalThis.__connectLarkTestChannel = {
-    create() {
-      return {
-        async connect() {},
-        async disconnect() {},
-        on(name, fn) { channelHandlers.set(name, fn); return () => channelHandlers.delete(name); },
-        async send(chatId, input) { calls.sends.push({ chatId, input }); },
-        async stream(chatId, input) {
-          calls.streams++;
-          // Never call the producer — simulates a stuck channel
-          return new Promise(() => {}); // never resolves
-        },
-      };
-    },
-  };
-  const agent = { session: { id: "session-test" }, followup(message) { calls.followups.push(message); } };
-  let disposer;
-  const ctx = {
-    logger: { info() {}, warn() {}, error() {} },
-    credentials: { resolve: async () => ({ value: "test-secret" }) },
-    effect(fn) { disposer = fn(); },
-    on(name, fn) {
-      if (!handlers.has(name)) handlers.set(name, new Set());
-      handlers.get(name).add(fn);
-      return () => handlers.get(name)?.delete(fn);
-    },
-    sessionController: { resolveAgent: async () => ({ agent }), modelCatalog: async () => ({ default: { provider: "kimi", model: "k3.1-pro" } }), cancel: async () => {} },
-    agents: { get: () => agent },
-    permissionPresets: { set() {} },
-    attachments: { saveImages: async () => [] },
-    llm: { resolveModelInfo: async () => ({ inputModalities: ["text"] }) },
-  };
-  const config = {
-    appId: "cli_test", appSecretRef: "CONNECT_LARK_TEST", defaultPath: "", openId: "",
-    accessMode: "open", domain: "feishu", requireMention: true,
-    agentOwnership: "attach-gui", attachSessionId: "session-test",
-    provider: "", model: "", permissionPreset: "",
-    senderAllowlist: [], groupAllowlist: [], thinkingPolicy: "cot-visible",
-  };
-  const { apply } = await import("../lib/index.mjs");
-  apply(ctx, config);
-  await settle();
+  const originalTimeout = process.env.CONNECT_LARK_STREAM_TIMEOUT_MS;
+  process.env.CONNECT_LARK_STREAM_TIMEOUT_MS = "100";
   try {
-    await channelHandlers.get("message")({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
-    // Emit text delta then turn end — onComplete will timeout waiting for producer
-    handlers.get("agent/assistant-stream")?.forEach((fn) => fn({ agent, frame: { type: "chunk", chunk: { type: "text-delta", text: "reply" } } }));
-    handlers.get("session/event")?.forEach((fn) => fn({ id: "session-test" }, { type: "turn/end" }));
-    // Wait for the 10s timeout (we can't wait that long in tests, so just verify the message was received)
+    const calls = { sends: [], streams: 0, followups: [] };
+    const handlers = new Map();
+    const channelHandlers = new Map();
+    globalThis.__connectLarkTestChannel = {
+      create() {
+        return {
+          async connect() {},
+          async disconnect() {},
+          on(name, fn) { channelHandlers.set(name, fn); return () => channelHandlers.delete(name); },
+          async send(chatId, input) { calls.sends.push({ chatId, input }); },
+          async stream(chatId, input) {
+            calls.streams++;
+            return new Promise(() => {});
+          },
+        };
+      },
+    };
+    const agent = { session: { id: "session-test" }, followup(message) { calls.followups.push(message); } };
+    let disposer;
+    const ctx = {
+      logger: { info() {}, warn() {}, error() {} },
+      credentials: { resolve: async () => ({ value: "test-secret" }) },
+      effect(fn) { disposer = fn(); },
+      on(name, fn) {
+        if (!handlers.has(name)) handlers.set(name, new Set());
+        handlers.get(name).add(fn);
+        return () => handlers.get(name)?.delete(fn);
+      },
+      sessionController: { resolveAgent: async () => ({ agent }), modelCatalog: async () => ({ default: { provider: "kimi", model: "k3.1-pro" } }), cancel: async () => {} },
+      agents: { get: () => agent },
+      permissionPresets: { set() {} },
+      attachments: { saveImages: async () => [] },
+      llm: { resolveModelInfo: async () => ({ inputModalities: ["text"] }) },
+    };
+    const config = {
+      appId: "cli_test", appSecretRef: "CONNECT_LARK_TEST", defaultPath: "", openId: "",
+      accessMode: "open", domain: "feishu", requireMention: true,
+      agentOwnership: "attach-gui", attachSessionId: "session-test",
+      provider: "", model: "", permissionPreset: "",
+      senderAllowlist: [], groupAllowlist: [], thinkingPolicy: "cot-visible",
+    };
+    const { apply } = await import("../lib/index.mjs");
+    apply(ctx, config);
     await settle();
+    await channelHandlers.get("message")({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    handlers.get("agent/assistant-stream")?.forEach((fn) => fn({ agent, frame: { type: "chunk", chunk: { type: "text-delta", text: "timeout reply" } } }));
+    handlers.get("session/event")?.forEach((fn) => fn({ id: "session-test" }, { type: "turn/end" }));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(calls.streams, 1, "stream should have been started");
     assert.equal(calls.followups.length, 1, "followup should have been called");
+    assert.equal(calls.sends.length, 1, "fallback should be sent after timeout");
+    assert.match(calls.sends[0].input.markdown, /timeout reply|回复未生成/);
   } finally {
-    await disposer?.();
+    process.env.CONNECT_LARK_STREAM_TIMEOUT_MS = originalTimeout;
     delete globalThis.__connectLarkTestChannel;
   }
 });

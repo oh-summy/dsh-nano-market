@@ -590,8 +590,11 @@ function withTimeout(promise, ms) {
 		});
 	});
 }
-/** How long to wait for the card producer to start before treating it as failed. */
-const STREAM_READY_TIMEOUT_MS = 1e4;
+/** How long to wait for the card producer to start before treating it as failed.
+*  Read at call time (not module load) so tests can override it per-run. */
+function streamReadyTimeoutMs() {
+	return Number(process.env.CONNECT_LARK_STREAM_TIMEOUT_MS) || 1e4;
+}
 async function resolveAppSecret(ctx, parsed) {
 	const { appSecretRef } = plainConfig(parsed);
 	if (typeof appSecretRef !== "string" || !isCredentialRefName(appSecretRef)) throw new Error("[connect-lark] appSecretRef " + String(appSecretRef) + " is not a valid credential reference name (expected a POSIX shell identifier such as CONNECT_LARK_APP_SECRET)");
@@ -910,7 +913,7 @@ function apply(ctx, config = {}) {
 				onComplete: async (slot) => {
 					try {
 						if (!slot.streamController && !slot.streamFailed) {
-							if (!await withTimeout(slot.streamReady ?? Promise.resolve(), STREAM_READY_TIMEOUT_MS)) slot.streamFailed = /* @__PURE__ */ new Error("stream producer did not start within 10000ms");
+							if (!await withTimeout(slot.streamReady ?? Promise.resolve(), streamReadyTimeoutMs())) slot.streamFailed = /* @__PURE__ */ new Error("stream producer did not start within " + streamReadyTimeoutMs() + "ms");
 						}
 						if (slot.streamFailed || !slot.streamController) {
 							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");

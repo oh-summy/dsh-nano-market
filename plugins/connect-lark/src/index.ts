@@ -122,8 +122,11 @@ function withTimeout(promise: Promise<unknown>, ms: number): Promise<boolean> {
   });
 }
 
-/** How long to wait for the card producer to start before treating it as failed. */
-const STREAM_READY_TIMEOUT_MS = 10_000;
+/** How long to wait for the card producer to start before treating it as failed.
+ *  Read at call time (not module load) so tests can override it per-run. */
+function streamReadyTimeoutMs(): number {
+  return Number(process.env.CONNECT_LARK_STREAM_TIMEOUT_MS) || 10_000;
+}
 
 export async function resolveAppSecret(ctx: AnyCtx, parsed: Config | ParsedConfig): Promise<string> {
   const { appSecretRef } = plainConfig(parsed);
@@ -452,9 +455,9 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             if (!slot.streamController && !slot.streamFailed) {
               // Bound the wait so a channel that never starts the producer cannot
               // leave this chat stuck in "finishing" forever.
-              const ready = await withTimeout(slot.streamReady ?? Promise.resolve(), STREAM_READY_TIMEOUT_MS);
+              const ready = await withTimeout(slot.streamReady ?? Promise.resolve(), streamReadyTimeoutMs());
               if (!ready) {
-                slot.streamFailed = new Error("stream producer did not start within " + STREAM_READY_TIMEOUT_MS + "ms");
+                slot.streamFailed = new Error("stream producer did not start within " + streamReadyTimeoutMs() + "ms");
               }
             }
             if (slot.streamFailed || !slot.streamController) {
