@@ -40,10 +40,11 @@ process.on("SIGINT", () => { cleanupTmp(); process.exit(130); });
 
 // 2) 远端存在时，先做安全 guard。
 const hasOrigin = (() => { try { run("git remote get-url origin"); return true; } catch { return false; } })();
+// Dirty check applies regardless of origin: never publish from a dirty tree.
+const dirty = run("git status --porcelain").trim();
+if (dirty) { console.error("working tree is dirty; commit or stash before publishing"); process.exit(1); }
 if (hasOrigin) {
   run("git fetch origin --tags");
-  const dirty = run("git status --porcelain").trim();
-  if (dirty) { console.error("working tree is dirty; commit or stash before publishing"); process.exit(1); }
   const head = run("git rev-parse HEAD");
   const originMain = run("git rev-parse origin/main");
   if (head !== originMain) { console.error(`HEAD (${head}) is not origin/main (${originMain})`); process.exit(1); }

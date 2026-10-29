@@ -79,6 +79,8 @@ async function streamMarkdown(channel, to, getDelta) {
 		}
 	} });
 }
+/** How often to sweep for TTL-expired slots (independent of new messages). */
+const TTL_SWEEP_INTERVAL_MS = 6e4;
 const MAX_TEXT_CHARS = 2e5;
 const MAX_THINKING_CHARS = 1e5;
 function truncateTail(text, limit) {
@@ -93,9 +95,14 @@ var RunManager = class {
 	unsubs = /* @__PURE__ */ new Map();
 	watchdogs = /* @__PURE__ */ new Map();
 	starting = /* @__PURE__ */ new Set();
+	ttlSweep = null;
 	disposed = false;
 	constructor(opts) {
 		this.opts = opts;
+		this.ttlSweep = setInterval(() => {
+			this.evictOldest(false);
+		}, TTL_SWEEP_INTERVAL_MS);
+		this.ttlSweep.unref?.();
 	}
 	/** Get or create a run slot for a chat. */
 	getOrCreate(chatId) {
@@ -129,7 +136,7 @@ var RunManager = class {
 	/** Evict the oldest idle/done slot. When force is true (capacity reached)
 	* the TTL is ignored so the cap is a hard bound. excludeChatId prevents
 	* the just-completed slot from evicting itself. */
-	evictOldest(force = false, excludeChatId) {
+	async evictOldest(force = false, excludeChatId) {
 		const now = Date.now();
 		let oldest;
 		for (const slot of this.slots.values()) {
@@ -138,7 +145,7 @@ var RunManager = class {
 			if (!force && slot.lastActiveAt > now - 6e5) continue;
 			if (!oldest || slot.lastActiveAt < oldest.lastActiveAt) oldest = slot;
 		}
-		if (oldest) this.disposeSlot(oldest.chatId);
+		if (oldest) await this.disposeSlot(oldest.chatId);
 	}
 	/** Get a slot by chatId (for reuse/diagnostics). */
 	getSlot(chatId) {
@@ -257,7 +264,7 @@ var RunManager = class {
 			await this.opts.onComplete?.(slot);
 		} catch {}
 		slot.state = "done";
-		this.evictOldest(false, chatId);
+		await this.evictOldest(false, chatId);
 		slot.streamController = void 0;
 		slot.streamPromise = void 0;
 		slot.streamFailed = void 0;
@@ -283,7 +290,7 @@ var RunManager = class {
 			await this.opts.onComplete?.(slot);
 		} catch {}
 		slot.state = "done";
-		this.evictOldest(false, chatId);
+		await this.evictOldest(false, chatId);
 		slot.streamController = void 0;
 		slot.streamPromise = void 0;
 		slot.streamFailed = void 0;
@@ -299,11 +306,11 @@ var RunManager = class {
 		}
 	}
 	/** Dispose a single slot: unsubscribe, dispose handle, drop it. */
-	disposeSlot(chatId) {
+	async disposeSlot(chatId) {
 		const slot = this.slots.get(chatId);
 		if (!slot) return;
 		this.cleanup(chatId);
-		if (slot.handle) Promise.resolve(slot.handle.dispose()).catch(() => {}).finally(() => {});
+		if (slot.handle) await Promise.resolve(slot.handle.dispose()).catch(() => {});
 		this.slots.delete(chatId);
 	}
 	/** Wait for in-flight runs to settle before teardown.
@@ -330,6 +337,10 @@ var RunManager = class {
 	}
 	async disposeAll() {
 		this.disposed = true;
+		if (this.ttlSweep) {
+			clearInterval(this.ttlSweep);
+			this.ttlSweep = null;
+		}
 		const failures = [];
 		for (const slot of this.slots.values()) try {
 			slot.streamReadyResolve?.();

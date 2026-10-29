@@ -18,6 +18,8 @@ export const MAX_PENDING = 8;
 export const MAX_SLOTS = 100;
 /** How long a done/idle slot stays before it is eligible for eviction. */
 export const SLOT_TTL_MS = 10 * 60 * 1000;
+/** How often to sweep for TTL-expired slots (independent of new messages). */
+export const TTL_SWEEP_INTERVAL_MS = 60 * 1000;
 export const MAX_TEXT_CHARS = 200_000;
 export const MAX_THINKING_CHARS = 100_000;
 
@@ -84,21 +86,24 @@ export class RunManager {
   private unsubs = new Map<string, () => void>();
   private watchdogs = new Map<string, NodeJS.Timeout>();
   private starting = new Set<Promise<unknown>>();
+  private ttlSweep: NodeJS.Timeout | null = null;
   private disposed = false;
 
   constructor(opts: RunManagerOptions) {
     this.opts = opts;
+    this.ttlSweep = setInterval(() => { void this.evictOldest(false); }, TTL_SWEEP_INTERVAL_MS);
+    this.ttlSweep.unref?.();
   }
 
   /** Get or create a run slot for a chat. */
   getOrCreate(chatId: string): RunSlot {
     if (!this.slots.has(chatId)) {
       // Always try to reclaim TTL-expired slots when a new chat arrives.
-      this.evictOldest(false, chatId);
+      void this.evictOldest(false, chatId);
       if (this.slots.size >= MAX_SLOTS) {
         const hasReclaimable = [...this.slots.values()].some((s) => s.state === "idle" || s.state === "done");
         if (!hasReclaimable) throw new Error("too many active chats; finish some before starting a new one");
-        this.evictOldest(true, chatId);
+        void this.evictOldest(true, chatId);
       }
     }
     let slot = this.slots.get(chatId);
@@ -125,7 +130,7 @@ export class RunManager {
   /** Evict the oldest idle/done slot. When force is true (capacity reached)
    * the TTL is ignored so the cap is a hard bound. excludeChatId prevents
    * the just-completed slot from evicting itself. */
-  private evictOldest(force = false, excludeChatId?: string): void {
+  private async evictOldest(force = false, excludeChatId?: string): Promise<void> {
     const now = Date.now();
     let oldest: RunSlot | undefined;
     for (const slot of this.slots.values()) {
@@ -134,7 +139,7 @@ export class RunManager {
       if (!force && slot.lastActiveAt > now - SLOT_TTL_MS) continue;
       if (!oldest || slot.lastActiveAt < oldest.lastActiveAt) oldest = slot;
     }
-    if (oldest) this.disposeSlot(oldest.chatId);
+    if (oldest) await this.disposeSlot(oldest.chatId);
   }
 
   /** Get a slot by chatId (for reuse/diagnostics). */
@@ -264,7 +269,7 @@ export class RunManager {
     this.cleanup(chatId);
     try { await this.opts.onComplete?.(slot); } catch { /* reply fallback owns its errors */ }
     slot.state = "done";
-    this.evictOldest(false, chatId);
+    await this.evictOldest(false, chatId);
     slot.streamController = undefined;
     slot.streamPromise = undefined;
     slot.streamFailed = undefined;
@@ -286,7 +291,7 @@ export class RunManager {
     this.cleanup(chatId);
     try { await this.opts.onComplete?.(slot); } catch { /* reply fallback owns its errors */ }
     slot.state = "done";
-    this.evictOldest(false, chatId);
+    await this.evictOldest(false, chatId);
     slot.streamController = undefined;
     slot.streamPromise = undefined;
     slot.streamFailed = undefined;
@@ -300,11 +305,11 @@ export class RunManager {
   }
 
   /** Dispose a single slot: unsubscribe, dispose handle, drop it. */
-  private disposeSlot(chatId: string): void {
+  private async disposeSlot(chatId: string): Promise<void> {
     const slot = this.slots.get(chatId);
     if (!slot) return;
     this.cleanup(chatId);
-    if (slot.handle) { void Promise.resolve(slot.handle.dispose()).catch(() => {}).finally(() => {}); }
+    if (slot.handle) { await Promise.resolve(slot.handle.dispose()).catch(() => {}); }
     this.slots.delete(chatId);
   }
 
@@ -332,6 +337,7 @@ export class RunManager {
 
   async disposeAll(): Promise<void> {
     this.disposed = true;
+    if (this.ttlSweep) { clearInterval(this.ttlSweep); this.ttlSweep = null; }
     const failures: Error[] = [];
     // Abandon in-flight starts at their next await boundary: start() checks
     // disposed after resolveAgent and after onStart, so no new followup fires.

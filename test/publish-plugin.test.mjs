@@ -147,3 +147,41 @@ test("publish-plugin tag tree contains package.json, lib, cordis.patch.yml, READ
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+
+test("publish-plugin rejects dirty working tree", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-publish-dirty-"));
+  try {
+    fs.mkdirSync(path.join(cwd, "plugins/demo"), { recursive: true });
+    fs.mkdirSync(path.join(cwd, "build"), { recursive: true });
+    fs.copyFileSync(path.resolve("build/publish-plugin.mjs"), path.join(cwd, "build/publish-plugin.mjs"));
+    run(cwd, ["git", "init", "-b", "main"]);
+    run(cwd, ["git", "config", "user.email", "test@example.com"]);
+    run(cwd, ["git", "config", "user.name", "Test"]);
+    fs.writeFileSync(path.join(cwd, "plugins/demo/package.json"), JSON.stringify({ version: "1.0.0" }));
+    run(cwd, ["git", "add", "."]);
+    run(cwd, ["git", "commit", "-m", "first"]);
+    // Create a dirty file
+    fs.writeFileSync(path.join(cwd, "plugins/demo/dirty.txt"), "dirty");
+    assert.throws(() => run(cwd, [process.execPath, "build/publish-plugin.mjs", "demo"]), /dirty/);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("publish-plugin rejects invalid plugin name", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "dsh-publish-badname-"));
+  try {
+    fs.mkdirSync(path.join(cwd, "build"), { recursive: true });
+    fs.copyFileSync(path.resolve("build/publish-plugin.mjs"), path.join(cwd, "build/publish-plugin.mjs"));
+    run(cwd, ["git", "init", "-b", "main"]);
+    run(cwd, ["git", "config", "user.email", "test@example.com"]);
+    run(cwd, ["git", "config", "user.name", "Test"]);
+    run(cwd, ["git", "add", "."]);
+    run(cwd, ["git", "commit", "-m", "first"]);
+    assert.throws(() => run(cwd, [process.execPath, "build/publish-plugin.mjs", "../etc"]), /invalid plugin name/);
+    assert.throws(() => run(cwd, [process.execPath, "build/publish-plugin.mjs", "a/b"]), /invalid plugin name/);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});

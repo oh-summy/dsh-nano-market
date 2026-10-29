@@ -273,6 +273,7 @@ test("apply sends fallback when final update fails and there is no text", async 
 test("apply falls back when stream producer never starts (timeout)", async () => {
   const originalTimeout = process.env.CONNECT_LARK_STREAM_TIMEOUT_MS;
   process.env.CONNECT_LARK_STREAM_TIMEOUT_MS = "100";
+  let disposer;
   try {
     const calls = { sends: [], streams: 0, followups: [] };
     const handlers = new Map();
@@ -292,7 +293,6 @@ test("apply falls back when stream producer never starts (timeout)", async () =>
       },
     };
     const agent = { session: { id: "session-test" }, followup(message) { calls.followups.push(message); } };
-    let disposer;
     const ctx = {
       logger: { info() {}, warn() {}, error() {} },
       credentials: { resolve: async () => ({ value: "test-secret" }) },
@@ -327,6 +327,7 @@ test("apply falls back when stream producer never starts (timeout)", async () =>
     assert.equal(calls.sends.length, 1, "fallback should be sent after timeout");
     assert.match(calls.sends[0].input.markdown, /timeout reply|回复未生成/);
   } finally {
+    await disposer?.();
     process.env.CONNECT_LARK_STREAM_TIMEOUT_MS = originalTimeout;
     delete globalThis.__connectLarkTestChannel;
   }
