@@ -95,7 +95,11 @@ async function streamRichCard(channel, to, initial, getUpdate) {
 		}
 	} });
 }
-// src/run.ts
+const MAX_TEXT_CHARS = 2e5;
+const MAX_THINKING_CHARS = 1e5;
+function truncateTail(text, limit) {
+	return text.length <= limit ? text : text.slice(0, limit) + "\n…(已截断)";
+}
 /**
 * Manages per-chat run slots with ordered execution and cancellation.
 */
@@ -104,6 +108,7 @@ var RunManager = class {
 	opts;
 	unsubs = /* @__PURE__ */ new Map();
 	watchdogs = /* @__PURE__ */ new Map();
+	starting = /* @__PURE__ */ new Set();
 	disposed = false;
 	constructor(opts) {
 		this.opts = opts;
@@ -144,8 +149,18 @@ var RunManager = class {
 	*/
 	async start(chatId, content, source, title) {
 		if (this.disposed) throw new Error("RunManager is disposed");
+		const promise = this.startInternal(chatId, content, source, title);
+		this.starting.add(promise);
+		try {
+			return await promise;
+		} finally {
+			this.starting.delete(promise);
+		}
+	}
+	async startInternal(chatId, content, source, title) {
 		const slot = this.getOrCreate(chatId);
 		if (this.isRunning(chatId)) {
+			if (slot.pending.length >= 8) throw new Error("queue is full; drop oldest message or wait for the current run");
 			slot.pending.push({
 				content,
 				source
@@ -175,10 +190,10 @@ var RunManager = class {
 			slot.streamReadyResolve = void 0;
 			const unsub = this.opts.subscribe(agent, sessionId, (delta, kind) => {
 				if (kind === "reasoning") {
-					slot.thinkingText += delta;
+					slot.thinkingText = truncateTail(slot.thinkingText + delta, MAX_THINKING_CHARS);
 					this.opts.onThinking?.(slot, delta);
 				} else {
-					slot.accumulatedText += delta;
+					slot.accumulatedText = truncateTail(slot.accumulatedText + delta, MAX_TEXT_CHARS);
 					this.opts.onDelta?.(slot, delta);
 				}
 			}, () => {
@@ -192,6 +207,10 @@ var RunManager = class {
 			slot.thinkingText = "";
 			slot.turnId = (slot.turnId ?? 0) + 1;
 			await this.opts.onStart?.(slot);
+			if (this.disposed) {
+				this.cleanup(chatId);
+				throw new Error("RunManager is disposed");
+			}
 			this.opts.followup(agent, this.opts.buildMessage(content, source));
 			return slot;
 		} catch (error) {
@@ -231,6 +250,11 @@ var RunManager = class {
 			await this.opts.onComplete?.(slot);
 		} catch {}
 		slot.state = "done";
+		slot.streamController = void 0;
+		slot.streamPromise = void 0;
+		slot.streamFailed = void 0;
+		slot.streamReady = void 0;
+		slot.streamReadyResolve = void 0;
 		if (slot.pending.length > 0 && !this.disposed) {
 			const next = slot.pending.shift();
 			try {
@@ -251,6 +275,11 @@ var RunManager = class {
 			await this.opts.onComplete?.(slot);
 		} catch {}
 		slot.state = "done";
+		slot.streamController = void 0;
+		slot.streamPromise = void 0;
+		slot.streamFailed = void 0;
+		slot.streamReady = void 0;
+		slot.streamReadyResolve = void 0;
 		if (slot.pending.length > 0 && !this.disposed) {
 			const next = slot.pending.shift();
 			try {
@@ -274,6 +303,9 @@ var RunManager = class {
 	async disposeAll() {
 		this.disposed = true;
 		const failures = [];
+		for (const slot of this.slots.values()) try {
+			slot.streamReadyResolve?.();
+		} catch {}
 		for (const slot of this.slots.values()) {
 			try {
 				slot.cancelController?.abort();
@@ -281,7 +313,7 @@ var RunManager = class {
 			try {
 				slot.streamDone?.();
 			} catch {}
-			try {
+			if (slot.state === "running" || slot.state === "cancelling") try {
 				await this.opts.onCancel?.(slot);
 			} catch {}
 		}
@@ -466,13 +498,14 @@ const Config = z.object({
 	defaultPath: z.string().default("").volatile().comment("默认工作区路径（留空=宿主 cwd）"),
 	openId: z.string().default("").volatile().comment("你的 open_id（私聊/测试消息）"),
 	domain: z.union(["feishu", "lark"]).default("feishu").volatile().comment("飞书或 Lark"),
-	requireMention: z.boolean().default(true).volatile().comment("群聊需 @ 机器人才触发（channel policy 已托管，勿重复实现）"),
+	requireMention: z.boolean().default(true).volatile().comment("群聊需 @ 机器人才触发；默认 true，改为 false 将接受群内任意消息"),
 	agentOwnership: z.union(["owned-per-chat", "attach-gui"]).default("owned-per-chat").volatile().comment("agent 所有权：默认每个聊天独立 agent；attach-gui 仅高级场景使用"),
 	attachSessionId: z.string().default("").volatile().comment("attach-gui 时的目标 session id（无全局 current agent 可读）"),
 	provider: z.string().default("").volatile().comment("owned-per-chat 时必填；默认空串是占位"),
 	model: z.string().default("").volatile().comment("owned-per-chat 时必填"),
-	senderAllowlist: z.array(z.string()).default([]).volatile().comment("私聊用户限制；留空允许所有私聊用户"),
-	groupAllowlist: z.array(z.string()).default([]).volatile().comment("群聊限制；留空允许所有群聊"),
+	accessMode: z.union(["open", "restricted"]).default("restricted").volatile().comment("访问模式：restricted=只允许显式授权的聊天（推荐，空列表拒绝）；open=允许所有聊天（个人自用）"),
+	senderAllowlist: z.array(z.string()).default([]).volatile().comment("私聊用户限制；restricted 模式下为空则拒绝所有私聊"),
+	groupAllowlist: z.array(z.string()).default([]).volatile().comment("群聊限制；restricted 模式下为空则拒绝所有群聊"),
 	thinkingPolicy: z.union([
 		"cot-visible",
 		"cot-discard",
@@ -481,6 +514,34 @@ const Config = z.object({
 	reasoningEffort: z.string().default("").volatile().comment("思考强度；留空跟随 DSH 当前模型默认配置"),
 	permissionPreset: z.string().default("").volatile().comment("权限模式；留空跟随 DSH 默认，支持 read-only/workspace-write/danger-full-access/auto")
 });
+/** Bound a promise; resolve false when the timer fires instead of hanging. */
+function withTimeout(promise, ms) {
+	return new Promise((resolve) => {
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (!settled) {
+				settled = true;
+				resolve(false);
+			}
+		}, ms);
+		timer.unref?.();
+		Promise.resolve(promise).then(() => {
+			if (!settled) {
+				settled = true;
+				clearTimeout(timer);
+				resolve(true);
+			}
+		}, () => {
+			if (!settled) {
+				settled = true;
+				clearTimeout(timer);
+				resolve(false);
+			}
+		});
+	});
+}
+/** How long to wait for the card producer to start before treating it as failed. */
+const STREAM_READY_TIMEOUT_MS = 1e4;
 async function resolveAppSecret(ctx, parsed) {
 	const { appSecretRef } = plainConfig(parsed);
 	if (typeof appSecretRef !== "string" || !isCredentialRefName(appSecretRef)) throw new Error("[connect-lark] appSecretRef " + String(appSecretRef) + " is not a valid credential reference name (expected a POSIX shell identifier such as CONNECT_LARK_APP_SECRET)");
@@ -496,6 +557,11 @@ function buildUserMessage(content, source) {
 	});
 }
 function passesWhitelist(plain, chatId, senderId, chatType = "p2p") {
+	if (chatType !== "group" && plain.openId && plain.openId !== senderId) return false;
+	if (plain.accessMode === "restricted") {
+		if (chatType === "group") return plain.groupAllowlist.includes(chatId);
+		return plain.senderAllowlist.includes(senderId);
+	}
 	if (chatType === "group") return plain.groupAllowlist.length === 0 || plain.groupAllowlist.includes(chatId);
 	return plain.senderAllowlist.length === 0 || plain.senderAllowlist.includes(senderId);
 }
@@ -636,7 +702,7 @@ function apply(ctx, config = {}) {
 				transport: "websocket",
 				httpTimeoutMs: 3e4,
 				domain: plain.domain === "lark" ? "https://open.larksuite.com" : "https://open.feishu.cn",
-				policy: { requireMention: true },
+				policy: { requireMention: plain.requireMention },
 				safety: { chatQueue: { enabled: true } }
 			});
 			channel = chan;
@@ -740,7 +806,10 @@ function apply(ctx, config = {}) {
 				followup: (agent, message) => {
 					agent.followup(message);
 				},
-				onCancel: (slot) => ctx.sessionController.cancel({ sessionId: slot.sessionId }),
+				onCancel: (slot) => {
+					if (plain.agentOwnership !== "owned-per-chat") return;
+					return ctx.sessionController.cancel({ sessionId: slot.sessionId });
+				},
 				onStart: (slot) => {
 					const done = new Promise((resolve) => {
 						slot.streamDone = resolve;
@@ -779,10 +848,12 @@ function apply(ctx, config = {}) {
 				},
 				onComplete: async (slot) => {
 					try {
-						if (!slot.streamController && !slot.streamFailed) await slot.streamReady;
+						if (!slot.streamController && !slot.streamFailed) {
+							if (!await withTimeout(slot.streamReady ?? Promise.resolve(), STREAM_READY_TIMEOUT_MS)) slot.streamFailed = /* @__PURE__ */ new Error("stream producer did not start within 10000ms");
+						}
 						if (slot.streamFailed || !slot.streamController) {
-							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
-							if (reply) await chan.send(slot.chatId, { markdown: reply });
+							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
+							await chan.send(slot.chatId, { markdown: reply });
 							return;
 						}
 						try {
@@ -807,12 +878,33 @@ function apply(ctx, config = {}) {
 				}];
 				const images = extractImages(msg);
 				if (images.length > 0) {
+					let gateProvider = plain.provider;
+					let gateModel = plain.model;
+					if (plain.agentOwnership === "owned-per-chat" && (!gateProvider || !gateModel)) try {
+						const cat = await ctx.sessionController.modelCatalog();
+						const route = resolveAgentModelOptions(plain, cat);
+						gateProvider = route.provider;
+						gateModel = route.model;
+					} catch (e) {
+						ctx.logger?.warn?.("[connect-lark] cannot resolve default model for image gate: " + e.message);
+					}
 					const admitResults = [];
-					for (const img of images) try {
+					const limited = images.slice(0, 4);
+					if (images.length > 4) admitResults.push({
+						supported: false,
+						refs: [],
+						reason: "too many images in one message"
+					});
+					for (const img of limited) try {
 						const buf = await downloadImageBounded(chan, msg.messageId, img.fileKey);
-						const admit = await admitImage(ctx, plain.provider, plain.model, buf);
+						const admit = await admitImage(ctx, gateProvider, gateModel, buf);
 						admitResults.push(admit);
 					} catch (e) {
+						admitResults.push({
+							supported: false,
+							refs: [],
+							reason: e.message
+						});
 						ctx.logger?.warn?.("[connect-lark] image download failed: " + e.message);
 					}
 					if (admitResults.some((r) => !r.supported)) {
@@ -893,7 +985,7 @@ const CONTRACT_NOTES = {
 	credentialField: "z.string().role(\"credential-ref\").default(...).volatile(), then credentialRef(...)",
 	parsedUnwrap: "plainConfig(parsed) before reading any field — volatile fields are wrapper objects",
 	failClosed: "throw on unusable ref name / blank resolved value; never return an empty secret",
-	whitelistFailClosed: "empty senderAllowlist + empty groupAllowlist = deny all messages",
+	whitelistFailClosed: "accessMode=restricted (default) + empty senderAllowlist/groupAllowlist = deny all messages; openId always restricts DMs when set",
 	streaming: "channel.stream(to, { markdown: async (c) => { c.append(delta) } }) — SDK-owned CardKit"
 };
 export { CONTRACT_NOTES, Config, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildImageContent, buildUserMessage, createOrResumeAgent, downloadImageBounded, downloadInboundImage, inject, passesWhitelist, plainConfig, resolveAgentModelOptions, resolveAppSecret, richCard, streamMarkdown, streamRichCard };

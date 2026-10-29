@@ -28,26 +28,26 @@ channel 仍是 0.x，精确 pin 版本（不用 `^`）、锁依赖、显式设�
 
 - 纯 Markdown：`channel.stream(to, { markdown })` — SDK 托管 CardKit
 - 富卡片（标题色 / footer / 按钮）：调用方提供原始 CardKit JSON
-- 回复通过 `chan.stream({ card })` 持续更新同一张富卡片：标题、正文、思考过程、footer 和 GitHub 按钮；失败时回退普通 Markdown，保证不丢回复
+- 回复通过 `chan.stream({ card })` 持续更新同一张富卡片：标题、正文、思考过程、footer 和项目按钮；失败时回退普通 Markdown，保证不丢回复
 
 ### 5. 图片处理
 
-下载 → attachment admission → 视觉能力 gate → 否则诚实汇报。
+下载（流式落盘 + 大小上限）→ attachment admission → 视觉能力 gate → 否则诚实汇报。
 
 三层 gate（照 dsh-acp `assertImageRoute`）：
 1. `await ctx.llm.resolveModelInfo(provider, model, signal)` — 必须 await
 2. `inputModalities === undefined` 检查 — 不能裸 `.includes("image")`
 3. `unknown` 按不支持处理 — 不依赖模型抛错（dsh-llm 会替换成占位文本）
 
-### 6. 默认放行，按聊天类型可选限制
+### 6. 访问控制（fail-closed 默认）
 
-飞书应用自身的使用权限是默认边界。`senderAllowlist` 和 `groupAllowlist` 仅作为高级兼容字段，主界面不暴露。群聊固定要求 @ 机器人，不提供关闭入口。
+默认 `accessMode: restricted`：空 `senderAllowlist` / `groupAllowlist` 拒绝该类消息，机器人必须被显式授权，不依赖飞书应用范围作为唯一边界。`openId` 一旦设置，私聊强制只允许该用户（两种模式都生效）。个人私有场景可显式设 `accessMode: open` 放行全部。群聊默认要求 @ 机器人（`requireMention` 可配，默认 true）。
 
 ### 7. 资源管理
 
 - disposer 断连 + dispose owned agents + 清 slots + unsub events
-- 所有 timer 登记进 disposer
-- `channel.connect()` 失败时 throw，不静默
+- 取消 watchdog 随 RunManager cleanup 清理；`channel.connect()` 失败时 throw，不静默
+- slot 队列上限 8；正文 200K、思考 100K 字符上限，防止单聊天无限增长
 
 ### 8. 原生配置 UI
 
@@ -65,7 +65,7 @@ channel 仍是 0.x，精确 pin 版本（不用 `^`）、锁依赖、显式设�
       LICENSE             # MIT
       src/index.ts        # apply(ctx): channel + 消息处理 + agent 驱动 + disposer
       src/cards.ts        # 卡片构建（richCard + streamMarkdown）
-      src/images.ts       # 图片处理（admitImage + buildImageContent + downloadInboundImage）
+      src/images.ts       # 图片处理（admitImage + buildImageContent + downloadImageBounded）
       src/run.ts          # RunManager：状态机 + 队列 + 取消 + dispose
       client-src/client.js # DSH 原生配置表单（plugins.bundle.config）
       scripts/build-client.mjs # 浏览器模块打包
@@ -82,4 +82,6 @@ channel 仍是 0.x，精确 pin 版本（不用 `^`）、锁依赖、显式设�
 | @deepseek-ai/dsh-llm | 0.2.1-rc.4 | createUserMessage |
 | @deepseek-ai/dsh-credentials | 0.2.1-rc.4 | 凭据缝 |
 
-## 待办
+## 安全边界
+
+机器人运行在本机进程内并可执行文件操作，访问控制是第一道边界：默认 restricted + `openId` 硬限制。卡片上的配置切换（模型 / 思考强度 / 权限）见 Issue #17；扫码创建应用见 Issue #18。

@@ -49,6 +49,7 @@ test("apply connects and disconnects on volatile enabled updates", async () => {
     appSecretRef: "CONNECT_LARK_TEST",
     defaultPath: "",
     openId: "",
+    accessMode: "open",
     domain: "feishu",
     requireMention: true,
     agentOwnership: "attach-gui",
@@ -79,7 +80,7 @@ test("apply connects and disconnects on volatile enabled updates", async () => {
 });
 
 
-async function makeMessageHarness({ failStream = false } = {}) {
+async function makeMessageHarness({ failStream = false, ownedPerChat = false, imageDownloadFails = false } = {}) {
   const calls = { streams: 0, sends: [], followups: [], cards: [], savedImages: 0, modelGates: 0 };
   const handlers = new Map();
   const channelHandlers = new Map();
@@ -99,6 +100,7 @@ async function makeMessageHarness({ failStream = false } = {}) {
           await input.card.producer(controller);
         },
         async downloadResourceToFile(messageId, fileKey, type, destPath) {
+          if (imageDownloadFails) throw new Error("download failed");
           await fs.promises.writeFile(destPath, Buffer.from([0xff, 0xd8, 0xff, 0x00]));
         },
         async downloadResource() { throw new Error("must stream to file"); },
@@ -121,8 +123,10 @@ async function makeMessageHarness({ failStream = false } = {}) {
     },
     sessionController: {
       resolveAgent: async () => ({ agent }),
+      modelCatalog: async () => ({ default: { provider: "kimi", model: "k3.1-pro" } }),
       cancel: async () => {},
     },
+    workspaceRegistry: { list: () => [] },
     agents: { get: () => agent },
     permissionPresets: { set() {} },
     attachments: { saveImages: async () => { calls.savedImages++; return [{ id: "img-1" }]; } },
@@ -130,7 +134,9 @@ async function makeMessageHarness({ failStream = false } = {}) {
   };
   const config = {
     appId: "cli_test", appSecretRef: "CONNECT_LARK_TEST", defaultPath: "", openId: "",
-    domain: "feishu", requireMention: true, agentOwnership: "attach-gui",
+    accessMode: "open",
+    domain: "feishu", requireMention: true,
+    agentOwnership: ownedPerChat ? "owned-per-chat" : "attach-gui",
     attachSessionId: "session-test", provider: "", model: "", permissionPreset: "",
     senderAllowlist: [], groupAllowlist: [], thinkingPolicy: "cot-visible",
   };
@@ -175,10 +181,39 @@ test("apply persists a default-route image through the real message path", async
       content: "look at this", resources: [{ fileKey: "image-key", type: "image" }],
     });
     assert.equal(h.calls.savedImages, 1);
-    assert.equal(h.calls.modelGates, 0);
+    assert.equal(h.calls.modelGates, 0, "attach-gui lets the host choose the model");
     const image = h.calls.followups[0].content.find((block) => block.type === "image");
     assert.equal(image.attachment.id, "img-1");
     assert.equal(image.attachment._passthrough, undefined);
+  } finally { await h.dispose(); }
+});
+
+test("apply gates default-route images against the model the agent actually uses", async () => {
+  const h = await makeMessageHarness({ ownedPerChat: true });
+  try {
+    await h.message({
+      chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1",
+      content: "look at this", resources: [{ fileKey: "image-key", type: "image" }],
+    });
+    assert.equal(h.calls.modelGates, 1, "owned-per-chat resolves the model and gates images");
+    assert.equal(h.calls.savedImages, 0, "text-only model must not save the image");
+    assert.equal(h.calls.sends.length, 1, "user gets a clear unsupported reply");
+    assert.match(h.calls.sends[0].input.markdown, /图片|image/i);
+    assert.equal(h.calls.followups.length, 0);
+  } finally { await h.dispose(); }
+});
+
+test("apply reports a failed image download instead of silently dropping it", async () => {
+  const h = await makeMessageHarness({ imageDownloadFails: true });
+  try {
+    await h.message({
+      chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1",
+      content: "look at this", resources: [{ fileKey: "image-key", type: "image" }],
+    });
+    assert.equal(h.calls.savedImages, 0);
+    assert.equal(h.calls.followups.length, 0, "no silent text-only reply");
+    assert.equal(h.calls.sends.length, 1);
+    assert.match(h.calls.sends[0].input.markdown, /图片|image/i);
   } finally { await h.dispose(); }
 });
 

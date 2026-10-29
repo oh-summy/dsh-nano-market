@@ -16,6 +16,9 @@ import { join } from "node:path";
 /** Maximum image bytes to admit (20 MiB default, same as dsh-acp). */
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
+/** Maximum number of inbound images to process per message. */
+export const MAX_IMAGES_PER_MESSAGE = 4;
+
 /** Download an inbound image with bounded heap usage. */
 export async function downloadImageBounded(
   channel: {

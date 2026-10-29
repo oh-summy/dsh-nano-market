@@ -29,11 +29,15 @@
 | `reasoningEffort` | `""` | 留空跟随所选模型的默认思考强度 |
 | `permissionPreset` | `""` | 留空跟随 DSH；可选仅可查看、工作区内修改、完全权限、自动审查 |
 | `agentOwnership` | `owned-per-chat` | 默认每个聊天独立 Agent；`attach-gui` 仅高级场景使用 |
+| `accessMode` | `restricted` | 访问模式：`restricted` 只允许显式授权的聊天（推荐，空列表拒绝）；`open` 允许所有聊天 |
 | `requireMention` | `true` | 群聊需要 @ 机器人 |
-| `senderAllowlist` | `[]` | 可选私聊用户限制；留空允许所有私聊用户 |
-| `groupAllowlist` | `[]` | 可选群聊限制；留空允许所有群聊 |
+| `senderAllowlist` | `[]` | 私聊用户限制；`restricted` 模式下为空则拒绝所有私聊 |
+| `groupAllowlist` | `[]` | 群聊限制；`restricted` 模式下为空则拒绝所有群聊 |
+| `openId` | `""` | 你的 open_id；设置后私聊强制只允许该用户（两种模式都生效） |
 
 插件本身的启用开关直接控制连接生命周期。旧 `enabled` 配置字段仅为兼容保留，不再作为第二个开关。
+
+> **安全提示**：机器人运行在本机进程内，可执行文件操作。默认 `accessMode: restricted` 拒绝空列表，请显式授权聊天或设置 `openId`；仅个人私有场景可设 `open`。不要在可被他人私聊的飞书应用上使用 `open`。
 
 ## 致谢与参考
 

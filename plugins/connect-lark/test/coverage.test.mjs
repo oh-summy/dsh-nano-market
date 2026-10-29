@@ -4,21 +4,42 @@ import { passesWhitelist, downloadInboundImage, MAX_IMAGE_BYTES, RunManager, res
 
 // ---- passesWhitelist ----
 
-test("passesWhitelist: empty lists allow everyone by default", () => {
-  const plain = { senderAllowlist: [], groupAllowlist: [] };
+test("passesWhitelist: open mode allows everyone by default", () => {
+  const plain = { accessMode: "open", senderAllowlist: [], groupAllowlist: [] };
   assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "p2p"), true);
   assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "group"), true);
 });
 
+test("passesWhitelist: restricted mode denies empty lists (fail-closed)", () => {
+  const plain = { accessMode: "restricted", senderAllowlist: [], groupAllowlist: [] };
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "p2p"), false);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "group"), false);
+});
+
+test("passesWhitelist: restricted mode requires explicit grants", () => {
+  const plain = { accessMode: "restricted", senderAllowlist: ["ou_a"], groupAllowlist: ["oc_a"] };
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_a", "p2p"), true);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_b", "p2p"), false);
+  assert.equal(passesWhitelist(plain, "oc_a", "ou_1", "group"), true);
+  assert.equal(passesWhitelist(plain, "oc_b", "ou_1", "group"), false);
+});
+
+test("passesWhitelist: openId hard-restricts DMs even in open mode", () => {
+  const plain = { accessMode: "open", openId: "ou_owner", senderAllowlist: [], groupAllowlist: [] };
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_owner", "p2p"), true);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p"), false);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "group"), true);
+});
+
 test("passesWhitelist: sender list optionally restricts only private chats", () => {
-  const plain = { senderAllowlist: ["ou_allowed"], groupAllowlist: [] };
+  const plain = { accessMode: "open", senderAllowlist: ["ou_allowed"], groupAllowlist: [] };
   assert.equal(passesWhitelist(plain, "chat-1", "ou_allowed", "p2p"), true);
   assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p"), false);
   assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "group"), true);
 });
 
 test("passesWhitelist: group list optionally restricts only group chats", () => {
-  const plain = { senderAllowlist: [], groupAllowlist: ["oc_allowed"] };
+  const plain = { accessMode: "open", senderAllowlist: [], groupAllowlist: ["oc_allowed"] };
   assert.equal(passesWhitelist(plain, "oc_allowed", "ou_1", "group"), true);
   assert.equal(passesWhitelist(plain, "oc_other", "ou_1", "group"), false);
   assert.equal(passesWhitelist(plain, "oc_other", "ou_1", "p2p"), true);

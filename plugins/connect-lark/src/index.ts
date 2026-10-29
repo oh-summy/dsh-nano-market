@@ -22,7 +22,7 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel, type LarkChannel } from "@larksuite/channel";
 import { richCard, streamMarkdown } from "./cards.js";
 import { RunManager, type RunSlot } from "./run.js";
-import { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage } from "./images.js";
+import { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage, MAX_IMAGES_PER_MESSAGE } from "./images.js";
 
 // ---- Config schema (schemastery, not plain zod — ARCHITECTURE §10.6) ----
 
@@ -39,6 +39,7 @@ export interface Config {
   attachSessionId?: string;
   provider?: string;
   model?: string;
+  accessMode?: "open" | "restricted";
   senderAllowlist?: string[];
   groupAllowlist?: string[];
   thinkingPolicy?: "cot-visible" | "cot-discard" | "stream-only";
@@ -65,6 +66,7 @@ export type ResolvedConfig = {
   attachSessionId: string;
   provider: string;
   model: string;
+  accessMode: "open" | "restricted";
   senderAllowlist: readonly string[];
   groupAllowlist: readonly string[];
   thinkingPolicy: "cot-visible" | "cot-discard" | "stream-only";
@@ -90,13 +92,14 @@ export const Config = z.object({
   defaultPath: z.string().default("").volatile().comment("默认工作区路径（留空=宿主 cwd）"),
   openId: z.string().default("").volatile().comment("你的 open_id（私聊/测试消息）"),
   domain: z.union(["feishu", "lark"]).default("feishu").volatile().comment("飞书或 Lark"),
-  requireMention: z.boolean().default(true).volatile().comment("群聊需 @ 机器人才触发（channel policy 已托管，勿重复实现）"),
+  requireMention: z.boolean().default(true).volatile().comment("群聊需 @ 机器人才触发；默认 true，改为 false 将接受群内任意消息"),
   agentOwnership: z.union(["owned-per-chat", "attach-gui"]).default("owned-per-chat").volatile().comment("agent 所有权：默认每个聊天独立 agent；attach-gui 仅高级场景使用"),
   attachSessionId: z.string().default("").volatile().comment("attach-gui 时的目标 session id（无全局 current agent 可读）"),
   provider: z.string().default("").volatile().comment("owned-per-chat 时必填；默认空串是占位"),
   model: z.string().default("").volatile().comment("owned-per-chat 时必填"),
-  senderAllowlist: z.array(z.string()).default([]).volatile().comment("私聊用户限制；留空允许所有私聊用户"),
-  groupAllowlist: z.array(z.string()).default([]).volatile().comment("群聊限制；留空允许所有群聊"),
+  accessMode: z.union(["open", "restricted"]).default("restricted").volatile().comment("访问模式：restricted=只允许显式授权的聊天（推荐，空列表拒绝）；open=允许所有聊天（个人自用）"),
+  senderAllowlist: z.array(z.string()).default([]).volatile().comment("私聊用户限制；restricted 模式下为空则拒绝所有私聊"),
+  groupAllowlist: z.array(z.string()).default([]).volatile().comment("群聊限制；restricted 模式下为空则拒绝所有群聊"),
   thinkingPolicy: z.union(["cot-visible", "cot-discard", "stream-only"]).default("cot-visible").volatile().comment("思考展示：cot-visible=在卡片中显示思考过程；cot-discard/stream-only=不显示"),
   reasoningEffort: z.string().default("").volatile().comment("思考强度；留空跟随 DSH 当前模型默认配置"),
   permissionPreset: z.string().default("").volatile().comment("权限模式；留空跟随 DSH 默认，支持 read-only/workspace-write/danger-full-access/auto"),
@@ -105,6 +108,22 @@ export const Config = z.object({
 type AnyCtx = any;
 
 // ---- Helpers ----
+
+/** Bound a promise; resolve false when the timer fires instead of hanging. */
+function withTimeout(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => { if (!settled) { settled = true; resolve(false); } }, ms);
+    timer.unref?.();
+    Promise.resolve(promise).then(
+      () => { if (!settled) { settled = true; clearTimeout(timer); resolve(true); } },
+      () => { if (!settled) { settled = true; clearTimeout(timer); resolve(false); } },
+    );
+  });
+}
+
+/** How long to wait for the card producer to start before treating it as failed. */
+const STREAM_READY_TIMEOUT_MS = 10_000;
 
 export async function resolveAppSecret(ctx: AnyCtx, parsed: Config | ParsedConfig): Promise<string> {
   const { appSecretRef } = plainConfig(parsed);
@@ -137,8 +156,15 @@ export function buildUserMessage(
 // ---- Optional per-chat-kind access restrictions ----
 
 export function passesWhitelist(plain: ResolvedConfig, chatId: string, senderId: string, chatType: "p2p" | "group" = "p2p"): boolean {
-  // Feishu app permissions are the default boundary. Optional lists only
-  // narrow their own chat kind; an empty list never blocks the other kind.
+  // openId is a hard DM restriction whenever configured, in both modes.
+  if (chatType !== "group" && plain.openId && plain.openId !== senderId) return false;
+  if (plain.accessMode === "restricted") {
+    // Fail-closed: an empty list denies, so a bot reachable by others must be
+    // explicitly granted access instead of defaulting to everyone.
+    if (chatType === "group") return plain.groupAllowlist.includes(chatId);
+    return plain.senderAllowlist.includes(senderId);
+  }
+  // Explicit opt-in to the permissive default for personal/private use.
   if (chatType === "group") {
     return plain.groupAllowlist.length === 0 || plain.groupAllowlist.includes(chatId);
   }
@@ -272,7 +298,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         httpTimeoutMs: 30000,
         domain: plain.domain === "lark" ? "https://open.larksuite.com" : "https://open.feishu.cn",
         // Group messages always require an @mention; this is not user-configurable.
-        policy: { requireMention: true },
+        policy: { requireMention: plain.requireMention },
         safety: { chatQueue: { enabled: true } },
       });
       channel = chan;
@@ -369,7 +395,11 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         followup: (agent, message) => {
           (agent as { followup: (m: unknown) => void }).followup(message);
         },
-        onCancel: (slot) => ctx.sessionController.cancel({ sessionId: slot.sessionId }),
+        onCancel: (slot) => {
+          // Never cancel the shared GUI session when running attach-gui.
+          if (plain.agentOwnership !== "owned-per-chat") return;
+          return ctx.sessionController.cancel({ sessionId: slot.sessionId });
+        },
         onStart: (slot) => {
           const done = new Promise<void>((resolve) => { slot.streamDone = resolve; });
           slot.streamReady = new Promise<void>((resolve) => { slot.streamReadyResolve = resolve; });
@@ -404,13 +434,16 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         onComplete: async (slot) => {
           try {
             if (!slot.streamController && !slot.streamFailed) {
-              // Wait for either the producer or stream failure. The channel's
-              // HTTP timeout bounds this wait; no duplicate fallback timer.
-              await slot.streamReady;
+              // Bound the wait so a channel that never starts the producer cannot
+              // leave this chat stuck in "finishing" forever.
+              const ready = await withTimeout(slot.streamReady ?? Promise.resolve(), STREAM_READY_TIMEOUT_MS);
+              if (!ready) {
+                slot.streamFailed = new Error("stream producer did not start within " + STREAM_READY_TIMEOUT_MS + "ms");
+              }
             }
             if (slot.streamFailed || !slot.streamController) {
-              const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "");
-              if (reply) await chan.send(slot.chatId, { markdown: reply });
+              const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
+              await chan.send(slot.chatId, { markdown: reply });
               return;
             }
             try {
@@ -438,14 +471,33 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         let content: unknown = [{ type: "text", text }];
         const images = extractImages(msg);
         if (images.length > 0) {
+          // Gate against the model this chat will actually use. attach-gui lets
+          // the host pick the model, so skip the gate there.
+          let gateProvider = plain.provider;
+          let gateModel = plain.model;
+          if (plain.agentOwnership === "owned-per-chat" && (!gateProvider || !gateModel)) {
+            try {
+              const cat = await ctx.sessionController.modelCatalog();
+              const route = resolveAgentModelOptions(plain, cat);
+              gateProvider = route.provider;
+              gateModel = route.model;
+            } catch (e) {
+              ctx.logger?.warn?.("[connect-lark] cannot resolve default model for image gate: " + (e as Error).message);
+            }
+          }
           const admitResults = [];
-          for (const img of images) {
+          const limited = images.slice(0, MAX_IMAGES_PER_MESSAGE);
+          if (images.length > MAX_IMAGES_PER_MESSAGE) {
+            admitResults.push({ supported: false, refs: [], reason: "too many images in one message" });
+          }
+          for (const img of limited) {
             try {
               // channel.downloadResource downloads by fileKey (SDK-owned).
               const buf = await downloadImageBounded(chan, msg.messageId, img.fileKey);
-              const admit = await admitImage(ctx, plain.provider, plain.model, buf);
+              const admit = await admitImage(ctx, gateProvider, gateModel, buf);
               admitResults.push(admit);
             } catch (e) {
+              admitResults.push({ supported: false, refs: [], reason: (e as Error).message });
               ctx.logger?.warn?.("[connect-lark] image download failed: " + (e as Error).message);
             }
           }
@@ -549,6 +601,6 @@ export const CONTRACT_NOTES = {
   credentialField: "z.string().role(\"credential-ref\").default(...).volatile(), then credentialRef(...)",
   parsedUnwrap: "plainConfig(parsed) before reading any field — volatile fields are wrapper objects",
   failClosed: "throw on unusable ref name / blank resolved value; never return an empty secret",
-  whitelistFailClosed: "empty senderAllowlist + empty groupAllowlist = deny all messages",
+  whitelistFailClosed: "accessMode=restricted (default) + empty senderAllowlist/groupAllowlist = deny all messages; openId always restricts DMs when set",
   streaming: "channel.stream(to, { markdown: async (c) => { c.append(delta) } }) — SDK-owned CardKit",
 };

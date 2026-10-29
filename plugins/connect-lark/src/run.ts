@@ -12,6 +12,15 @@
 
 export type RunState = "idle" | "running" | "cancelling" | "finishing" | "done";
 
+/** Bounded resource limits so a chat cannot exhaust memory or queue indefinitely. */
+export const MAX_PENDING = 8;
+export const MAX_TEXT_CHARS = 200_000;
+export const MAX_THINKING_CHARS = 100_000;
+
+function truncateTail(text: string, limit: number): string {
+  return text.length <= limit ? text : text.slice(0, limit) + "\n…(已截断)";
+}
+
 export interface RunSlot {
   chatId: string;
   agent: unknown;            // the Agent driving this run
@@ -68,6 +77,7 @@ export class RunManager {
   private opts: RunManagerOptions;
   private unsubs = new Map<string, () => void>();
   private watchdogs = new Map<string, NodeJS.Timeout>();
+  private starting = new Set<Promise<unknown>>();
   private disposed = false;
 
   constructor(opts: RunManagerOptions) {
@@ -113,10 +123,23 @@ export class RunManager {
    */
   async start(chatId: string, content: unknown, source: { kind: string }, title?: string): Promise<RunSlot> {
     if (this.disposed) throw new Error("RunManager is disposed");
+    const promise = this.startInternal(chatId, content, source, title);
+    this.starting.add(promise);
+    try {
+      return await promise;
+    } finally {
+      this.starting.delete(promise);
+    }
+  }
+
+  private async startInternal(chatId: string, content: unknown, source: { kind: string }, title?: string): Promise<RunSlot> {
     const slot = this.getOrCreate(chatId);
 
     // If running, queue the message (per-chat serialization).
     if (this.isRunning(chatId)) {
+      if (slot.pending.length >= MAX_PENDING) {
+        throw new Error("queue is full; drop oldest message or wait for the current run");
+      }
       slot.pending.push({ content, source });
       return slot;
     }
@@ -153,10 +176,10 @@ export class RunManager {
         sessionId,
         (delta, kind) => {
           if (kind === "reasoning") {
-            slot.thinkingText += delta;
+            slot.thinkingText = truncateTail(slot.thinkingText + delta, MAX_THINKING_CHARS);
             this.opts.onThinking?.(slot, delta);
           } else {
-            slot.accumulatedText += delta;
+            slot.accumulatedText = truncateTail(slot.accumulatedText + delta, MAX_TEXT_CHARS);
             this.opts.onDelta?.(slot, delta);
           }
         },
@@ -170,6 +193,7 @@ export class RunManager {
       slot.thinkingText = "";
       slot.turnId = (slot.turnId ?? 0) + 1;
       await this.opts.onStart?.(slot);
+      if (this.disposed) { this.cleanup(chatId); throw new Error("RunManager is disposed"); }
       this.opts.followup(agent, this.opts.buildMessage(content, source));
       return slot;
     } catch (error) {
@@ -208,6 +232,11 @@ export class RunManager {
     this.cleanup(chatId);
     try { await this.opts.onComplete?.(slot); } catch { /* reply fallback owns its errors */ }
     slot.state = "done";
+    slot.streamController = undefined;
+    slot.streamPromise = undefined;
+    slot.streamFailed = undefined;
+    slot.streamReady = undefined;
+    slot.streamReadyResolve = undefined;
     if (slot.pending.length > 0 && !this.disposed) {
       const next = slot.pending.shift()!;
       try { await this.start(chatId, next.content, next.source); }
@@ -224,6 +253,11 @@ export class RunManager {
     this.cleanup(chatId);
     try { await this.opts.onComplete?.(slot); } catch { /* reply fallback owns its errors */ }
     slot.state = "done";
+    slot.streamController = undefined;
+    slot.streamPromise = undefined;
+    slot.streamFailed = undefined;
+    slot.streamReady = undefined;
+    slot.streamReadyResolve = undefined;
     if (slot.pending.length > 0 && !this.disposed) {
       const next = slot.pending.shift()!;
       try { await this.start(chatId, next.content, next.source); }
@@ -244,11 +278,22 @@ export class RunManager {
   async disposeAll(): Promise<void> {
     this.disposed = true;
     const failures: Error[] = [];
+    // Abandon in-flight starts at their next await boundary: start() checks
+    // disposed after resolveAgent and after onStart, so no new followup fires.
+    // We intentionally do not await them — a start may be blocked on resolveAgent
+    // (e.g. the owner is typing the prompt) and must not deadlock disposeAll.
+    for (const slot of this.slots.values()) {
+      try { slot.streamReadyResolve?.(); } catch { /* already resolved */ }
+    }
     // Abort all controllers before disposing.
     for (const slot of this.slots.values()) {
       try { slot.cancelController?.abort(); } catch { /* gone */ }
       try { slot.streamDone?.(); } catch { /* already finished */ }
-      try { await this.opts.onCancel?.(slot); } catch { /* best effort */ }
+      // Only abandon an owned run; idle/done slots and a shared attach-gui
+      // session must not be cancelled by plugin teardown or config saves.
+      if (slot.state === "running" || slot.state === "cancelling") {
+        try { await this.opts.onCancel?.(slot); } catch { /* best effort */ }
+      }
     }
     // Clean up subscriptions for all slots.
     for (const chatId of this.slots.keys()) this.cleanup(chatId);

@@ -19,9 +19,9 @@ const { Config, plainConfig, resolveAppSecret, buildUserMessage, inject, CONTRAC
 const Schema = (await import("@deepseek-ai/schemastery")).default;
 const parseLikeHost = (input) => new Schema(Config.toJSON())(input);
 
-const FIELD_COUNT = 17;
+const FIELD_COUNT = 18;
 const FIELDS = [
-  "enabled", "appId", "appSecretRef", "defaultPath", "openId", "domain",
+  "enabled", "appId", "appSecretRef", "defaultPath", "openId", "accessMode", "domain",
   "requireMention", "agentOwnership", "attachSessionId", "provider", "model",
   "senderAllowlist", "groupAllowlist", "thinkingPolicy", "reasoningEffort", "appSecretPreview", "permissionPreset",
 ];
@@ -37,6 +37,7 @@ test("parsed config has every field and the right defaults", () => {
   assert.equal(parsed.domain.get(), "feishu");
   assert.equal(parsed.requireMention.get(), true);
   assert.equal(parsed.agentOwnership.get(), "owned-per-chat");
+  assert.equal(parsed.accessMode.get(), "restricted");
   assert.equal(parsed.thinkingPolicy.get(), "cot-visible");
   assert.equal(parsed.reasoningEffort.get(), "");
   assert.deepEqual(parsed.senderAllowlist.get(), []);
@@ -73,6 +74,7 @@ test("plainConfig unwraps every volatile field to plain values", () => {
   assert.equal(plain.appId, "");
   assert.equal(plain.appSecretRef, "CONNECT_LARK_APP_SECRET");
   assert.equal(plain.domain, "feishu");
+  assert.equal(plain.accessMode, "restricted");
   assert.deepEqual(plain.senderAllowlist, []);
 });
 
