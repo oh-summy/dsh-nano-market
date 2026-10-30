@@ -22,7 +22,7 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel, type LarkChannel } from "@larksuite/channel";
 import { richCard, streamMarkdown } from "./cards.js";
 import { RunManager, type RunSlot } from "./run.js";
-import { fetchDirectoryUsers } from "./users.js";
+import { fetchDirectory, fetchDirectoryUsers, type Directory } from "./users.js";
 import { startDirectoryService, type DirectoryService } from "./directory-service.js";
 import { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage, MAX_IMAGES_PER_MESSAGE } from "./images.js";
 
@@ -121,6 +121,26 @@ type Timed<T> = { ok: true; value: T } | { ok: false };
 async function sendBounded(chan: LarkChannel, chatId: string, markdown: string): Promise<void> {
   const sent = await withTimeout(chan.send(chatId, { markdown }), 15000);
   if (!sent.ok) throw new Error("send timed out");
+}
+
+/** 这个 DSH 实例对外公布的地址（隧道域名等），浏览器页面的 origin 就是它。 */
+function advertisedOrigin(ctx: AnyCtx): string {
+  try {
+    const url = ctx?.get?.("webApp")?.getAdvertisedUrl?.();
+    if (typeof url !== "string") return "";
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+}
+
+/** 本机回环地址：直接用 http://127.0.0.1:8083 打开页面时也该能用。 */
+function loopbackOrigins(): string[] {
+  const origins: string[] = [];
+  for (let port = 3000; port <= 9200; port++) {
+    origins.push("http://127.0.0.1:" + String(port), "http://localhost:" + String(port));
+  }
+  return origins;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<Timed<T>> {
@@ -345,10 +365,17 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       if (!currentAlive()) { try { await chan.disconnect(); } catch { /* gone */ } return; }
       ctx.logger?.info?.("[connect-lark] channel connected");
 
-      // 3) 授权用户目录（本机只读 HTTP 面）：配置页按姓名挑人、默认选管理员。
+      // 3) 授权用户目录（本机只读 HTTP 面）：配置页用同一个搜索框找人、找群。
+      //    允许的来源 = 这个 DSH 实例自己的广告地址（隧道域名等）+ 回环地址。
+      //    之前写死一份清单，Cloudflare 域名一换就 403，选择器直接废了。
       try {
+        const allowed = new Set<string>(["null"]);
+        for (const candidate of [advertisedOrigin(ctx), ...loopbackOrigins()]) {
+          if (candidate) allowed.add(candidate);
+        }
         directoryService = await startDirectoryService({
-          listUsers: () => fetchDirectoryUsers((chan as any).rawClient),
+          allowedOrigins: allowed,
+          directory: () => fetchDirectory((chan as any).rawClient),
         });
         ctx.logger?.info?.("[connect-lark] user directory on 127.0.0.1:" + directoryService.port);
       } catch (e) {

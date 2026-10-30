@@ -316,7 +316,7 @@ test("client renders the access control section with mode and openId controls", 
 });
 
 
-test("client list fields render existing array values as text", () => {
+test("client list mode shows the unified people-and-groups picker", () => {
   const { exports } = loadClient();
   let injected;
   const ctx = {
@@ -346,20 +346,13 @@ test("client list fields render existing array values as text", () => {
     useLarkSettings: (selector) => selector(state),
     t: (key) => key,
   }));
-  // In list mode the allowlist textareas render; in app scope they do not.
-  const textareas = [];
-  (function collectTextareas(node) {
-    if (!node || typeof node !== "object") return;
-    if (Array.isArray(node)) { for (const item of node) collectTextareas(item); return; }
-    if (node.type === "textarea") { textareas.push(node); return; }
-    collectTextareas(node.props?.children);
-  })(tree);
-  assert.ok(textareas.length >= 2, "list mode should render the allowlist editors");
-  const senderText = textareas[0].props?.value || "";
-  const groupText = textareas[1].props?.value || "";
-  assert.ok(senderText.includes("ou_a"), "sender allowlist should show existing values");
-  assert.ok(groupText.includes("oc_x"), "group allowlist should show existing values");
+  const text = collectText(tree).join("\n");
+  // One search box finds both people and groups; the old separate editors are gone.
+  assert.match(text, /pickUser/);
+  assert.doesNotMatch(text, /senderAllowlist/);
+  assert.doesNotMatch(text, /groupAllowlist/);
 });
+
 
 
 test("client access mode choices accept the values the UI writes", () => {

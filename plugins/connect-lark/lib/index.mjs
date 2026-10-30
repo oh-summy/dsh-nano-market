@@ -411,11 +411,14 @@ async function listDirectoryUsers(token, fetchImpl = fetch, timeoutMs = 8e3) {
 		const users = [];
 		for (const item of parsed?.data?.items ?? []) {
 			if (!item?.open_id) continue;
+			const avatar = item.avatar;
+			const avatarUrl = typeof avatar === "object" && avatar !== null ? String(avatar.avatar_240 ?? avatar.avatar_640 ?? "") : typeof avatar === "string" ? avatar : "";
 			users.push({
 				name: String(item.name ?? item.en_name ?? item.open_id),
 				openId: String(item.open_id),
 				isManager: item.is_tenant_manager === true,
-				...item.email ? { email: String(item.email) } : {}
+				...item.email ? { email: String(item.email) } : {},
+				...avatarUrl ? { avatar: avatarUrl } : {}
 			});
 		}
 		const manager = users.find((user) => user.isManager);
@@ -489,21 +492,58 @@ async function fetchDirectoryUsers(client) {
 		};
 	}
 }
+/**
+* 列出机器人所在的群（im/v1/chats）。机器人没被拉进任何群时返回空数组，
+* 这不是错误：群目录只是给配置页多一个「按群名搜索」的入口。
+*/
+async function fetchDirectoryChats(client) {
+	const list = client.im?.v1?.chat?.list;
+	if (typeof list !== "function") return [];
+	try {
+		const response = await list.call(client.im?.v1?.chat, { params: { page_size: 50 } });
+		if (response?.code !== 0) return [];
+		const chats = [];
+		for (const item of response?.data?.items ?? []) {
+			const chatId = item.chat_id;
+			if (!chatId) continue;
+			const avatar = item.avatar;
+			const avatarUrl = typeof avatar === "object" && avatar !== null ? String(avatar.avatar_240 ?? avatar.avatar_640 ?? "") : typeof avatar === "string" ? avatar : "";
+			chats.push({
+				name: String(item.name ?? chatId),
+				chatId: String(chatId),
+				...avatarUrl ? { avatar: avatarUrl } : {}
+			});
+		}
+		return chats;
+	} catch {
+		return [];
+	}
+}
+/**
+* 一次拿到人和群：配置页用同一个搜索框找人、找群。
+*
+* @param client - 飞书 SDK 客户端（通常是 channel.rawClient）
+* @returns 通讯录 + 群聊目录；失败时 ok=false 且带原因
+*/
+async function fetchDirectory(client) {
+	const users = await fetchDirectoryUsers(client);
+	if (!users.ok) return {
+		ok: false,
+		users: [],
+		chats: [],
+		reason: users.reason
+	};
+	const chats = await fetchDirectoryChats(client);
+	return {
+		ok: true,
+		users: users.users,
+		chats,
+		...users.manager ? { manager: users.manager } : {}
+	};
+}
 // src/directory-service.ts
 /** 本机端口。dsh-remote 占用 9091，这里错开。 */
 const DIRECTORY_PORT = 9092;
-/** 允许本地开发页与本机 DSH 页面跨域读取。 */
-const DEFAULT_ORIGINS = [
-	"null",
-	"http://127.0.0.1:3080",
-	"http://localhost:3080",
-	"http://127.0.0.1:8080",
-	"http://localhost:8080",
-	"http://127.0.0.1:8083",
-	"http://localhost:8083",
-	"http://127.0.0.1:8084",
-	"http://localhost:8084"
-];
 /**
 * 起一个只读的本机 HTTP 面，给配置页提供「可授权用户」列表。
 *
@@ -511,9 +551,10 @@ const DEFAULT_ORIGINS = [
 * @returns 已监听的目录服务
 */
 async function startDirectoryService(options) {
-	return listen(options, new Set(options.allowedOrigins ?? DEFAULT_ORIGINS), options.port ?? 9092);
+	return listen(options, options.port ?? 9092);
 }
-async function listen(options, origins, port) {
+async function listen(options, port) {
+	const origins = options.allowedOrigins ?? /* @__PURE__ */ new Set();
 	const server = createServer((req, res) => {
 		const requestOrigin = String(req.headers.origin ?? "");
 		if (requestOrigin && !origins.has(requestOrigin)) {
@@ -521,6 +562,7 @@ async function listen(options, origins, port) {
 			res.end(JSON.stringify({
 				ok: false,
 				users: [],
+				chats: [],
 				reason: "origin not allowed"
 			}));
 			return;
@@ -536,7 +578,7 @@ async function listen(options, origins, port) {
 			res.end();
 			return;
 		}
-		if (req.method !== "GET" || !req.url?.startsWith("/lark-api/users")) {
+		if (req.method !== "GET" || !req.url?.startsWith("/lark-api/directory")) {
 			res.writeHead(404, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({
 				ok: false,
@@ -545,7 +587,7 @@ async function listen(options, origins, port) {
 			}));
 			return;
 		}
-		options.listUsers().then((result) => {
+		options.directory().then((result) => {
 			res.writeHead(200, { "Content-Type": "application/json" });
 			res.end(JSON.stringify(result));
 		}).catch((error) => {
@@ -779,6 +821,22 @@ const Config = z.object({
 async function sendBounded(chan, chatId, markdown) {
 	if (!(await withTimeout(chan.send(chatId, { markdown }), 15e3)).ok) throw new Error("send timed out");
 }
+/** 这个 DSH 实例对外公布的地址（隧道域名等），浏览器页面的 origin 就是它。 */
+function advertisedOrigin(ctx) {
+	try {
+		const url = ctx?.get?.("webApp")?.getAdvertisedUrl?.();
+		if (typeof url !== "string") return "";
+		return new URL(url).origin;
+	} catch {
+		return "";
+	}
+}
+/** 本机回环地址：直接用 http://127.0.0.1:8083 打开页面时也该能用。 */
+function loopbackOrigins() {
+	const origins = [];
+	for (let port = 3e3; port <= 9200; port++) origins.push("http://127.0.0.1:" + String(port), "http://localhost:" + String(port));
+	return origins;
+}
 function withTimeout(promise, ms) {
 	return new Promise((resolve) => {
 		let settled = false;
@@ -1000,7 +1058,12 @@ function apply(ctx, config = {}) {
 			}
 			ctx.logger?.info?.("[connect-lark] channel connected");
 			try {
-				directoryService = await startDirectoryService({ listUsers: () => fetchDirectoryUsers(chan.rawClient) });
+				const allowed = /* @__PURE__ */ new Set(["null"]);
+				for (const candidate of [advertisedOrigin(ctx), ...loopbackOrigins()]) if (candidate) allowed.add(candidate);
+				directoryService = await startDirectoryService({
+					allowedOrigins: allowed,
+					directory: () => fetchDirectory(chan.rawClient)
+				});
 				ctx.logger?.info?.("[connect-lark] user directory on 127.0.0.1:" + directoryService.port);
 			} catch (e) {
 				ctx.logger?.warn?.("[connect-lark] user directory unavailable: " + e.message);

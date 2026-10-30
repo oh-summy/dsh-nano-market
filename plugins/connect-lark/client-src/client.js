@@ -27,6 +27,7 @@ const zh = {
   defaultPath: "默认工作区",
   defaultPathHint: "从 DSH 工作区中选择，或点击「修改」选择其他目录。",
   editWorkspace: "修改",
+  addWorkspace: "添加工作区",
   addingWorkspace: "正在选择目录…",
   workspaceFailed: "未能添加工作区，请重试。",
   model: "模型",
@@ -75,12 +76,12 @@ const zh = {
   accessOpenHint: "任何能私聊该机器人的人都可以驱动本机 Agent。仅用于个人私有场景。",
   openId: "我的 open_id",
   openIdHint: "指定唯一的私聊用户；不填就按上面的模式判断。在飞书开放平台或发送消息后可以查到自己的 open_id。",
-  pickUser: "按姓名或 open_id 找人",
-  pickUserHint: "搜索飞书通讯录里的全部可见人员，点一下就加入授权名单。",
-  searchPlaceholder: "输入姓名…",
+  pickUser: "搜索要授权的人或群",
+  pickUserHint: "输入姓名、open_id 或群名，搜到的结果点一下就加入授权名单。",
+  searchPlaceholder: "搜索姓名 / open_id / 群名…",
   loadingUsers: "正在读取通讯录…",
-  noUsers: "通讯录里没有匹配的人",
-  directoryUnavailable: "读不到通讯录——直接手填 open_id 也一样能用。",
+  noUsers: "没有匹配的人或群",
+  directoryUnavailable: "读不到飞书通讯录——可能是应用没有通讯录权限，或本机 9092 端口的目录服务没启动。",
   useManager: "用管理员",
   managerPrefix: "管理员",
   selectedUser: "已选",
@@ -117,6 +118,11 @@ const FIELDS = [
  * 把一个人加入授权名单（文本语义：换行分隔）。
  * 纯函数，便于测试；调用方负责写回表单字段。
  */
+/** 名单字段是换行分隔的文本；读出来是数组。 */
+function readList(text) {
+  return String(text || "").split("\n").map((item) => item.trim()).filter(Boolean);
+}
+
 function grantToList(currentText, openId) {
   const list = String(currentText || "").split("\n").map((item) => item.trim()).filter(Boolean);
   return (list.includes(openId) ? list : [...list, openId]).join("\n");
@@ -246,6 +252,9 @@ const styles = `
 .cl-guide-link{border:0;background:transparent;color:var(--cl-blue);font:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:2px 0;white-space:nowrap}
 .cl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
 .cl-grid-two{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.cl-triple{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:18px}
+.cl-triple>*{min-width:0}
+@media(max-width:900px){.cl-triple{grid-template-columns:1fr}}
 .cl-segment-inline{display:inline-grid;grid-auto-flow:column;grid-auto-columns:max-content;gap:2px;background:#f2f3f5;border:1px solid #eef0f3;border-radius:9px;padding:3px}
 .cl-segment-inline button{border:0;border-radius:7px;background:transparent;padding:7px 18px;font:inherit;font-size:12.5px;font-weight:500;color:#6b7280;cursor:pointer;transition:background .12s,color .12s,box-shadow .12s;white-space:nowrap}
 .cl-segment-inline button:hover:not(:disabled){color:#1f2329}
@@ -273,7 +282,13 @@ const styles = `
 .cl-user{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;border-radius:8px;padding:9px 10px;font:inherit;font-size:13px;cursor:pointer;color:#1f2329;text-align:left;transition:background .12s}
 .cl-user:hover:not(:disabled){background:#f2f6ff}
 .cl-user:disabled{opacity:.6;cursor:not-allowed}
-.cl-user-name{font-weight:550}
+.cl-user-name{font-weight:550;display:block}
+.cl-user-body{min-width:0;flex:1;text-align:left}
+.cl-avatar{flex:0 0 auto;width:28px;height:28px;border-radius:8px;overflow:hidden;background:#eef2f8;display:flex;align-items:center;justify-content:center}
+.cl-avatar img{width:100%;height:100%;object-fit:cover;display:block}
+.cl-avatar-text{font-size:12px;font-weight:600;color:#5b6472}
+.cl-avatar-chat{background:#eaf6f3}
+.cl-avatar-chat .cl-avatar-text{color:#0e9384}
 .cl-user-id{font-size:11px;color:#9ca3af;font-family:ui-monospace,monospace}
 .cl-user-badge{font-size:10px;background:#eef2ff;color:#4f46e5;border-radius:999px;padding:2px 7px;font-weight:600;flex-shrink:0}
 .cl-user-picked{margin-left:auto;font-size:11px;color:#16a34a;font-weight:600;flex-shrink:0}
@@ -281,6 +296,9 @@ const styles = `
 .cl-users-note.warn{color:#8a5a00;background:#fff8e8;border-radius:7px;padding:8px 10px;margin-top:10px}
 .cl-workspace-field-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px}
 .cl-workspace-field-head .cl-label{margin-bottom:0}
+.cl-workspace-add{display:inline-flex;align-items:center;gap:5px;border:1px solid #dde1e8;border-radius:8px;background:#fff;color:#414957;font:inherit;font-size:12px;font-weight:500;padding:5px 10px;cursor:pointer;transition:background .12s,border-color .12s}
+.cl-workspace-add:hover:not(:disabled){background:#f5f7fa;border-color:#c9d2e0}
+.cl-workspace-add:disabled{opacity:.45;cursor:not-allowed}
 .cl-workspace-edit{display:inline-flex;align-items:center;gap:5px;border:0;border-radius:6px;background:transparent;color:#526174;padding:3px 6px;font:inherit;font-size:11px;font-weight:550;cursor:pointer}
 .cl-workspace-edit:hover{background:#f0f4fa;color:var(--cl-blue)}
 .cl-workspace-edit:focus-visible{outline:2px solid var(--cl-blue);outline-offset:2px}
@@ -405,80 +423,83 @@ function modelName(catalog, provider, model) {
 }
 
 function ModelPicker({ state, value, edit, t, disabled }) {
-  const [open, setOpen] = React.useState(null);
+  const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const route = value("provider").text && value("model").text ? value("provider").text + "/" + value("model").text : "";
-  const selectedGroup = (state.catalog.groups || []).find((group) => group.id === value("provider").text);
-  const selectedModel = selectedGroup?.models.find((model) => model.id === value("model").text);
-  const efforts = selectedModel?.reasoning?.efforts || [];
   const defaultRoute = state.catalog.default;
   const defaultName = defaultRoute ? modelName(state.catalog, defaultRoute.provider, defaultRoute.model) : "";
   const currentName = route ? modelName(state.catalog, value("provider").text, value("model").text) : t("followDsh");
-  const currentEffort = value("reasoningEffort").text || t("followModel");
   const filteredGroups = (state.catalog.groups || []).map((group) => ({
     ...group,
     models: group.models.filter((model) => (group.name + " " + model.name).toLowerCase().includes(query.trim().toLowerCase())),
   })).filter((group) => group.models.length > 0);
-  const close = () => setOpen(null);
-  return jsxs("div", { className: "cl-grid", children: [
-    jsxs("div", { className: "cl-picker", children: [
-      jsx("span", { className: "cl-label", children: t("model") }),
-      jsxs("button", { type: "button", className: "cl-picker-trigger", disabled: disabled || state.catalog.status === "loading", onClick: () => setOpen(open === "model" ? null : "model"), children: [
-        jsxs("span", { className: "cl-picker-text", children: [
-          jsx("span", { className: "cl-picker-title", children: currentName }),
-          jsx("span", { className: "cl-picker-sub", children: route ? value("provider").text : defaultName ? "DSH 默认 · " + defaultName : t("followDsh") }),
-        ] }),
-        jsx("span", { className: "cl-chevron", children: open === "model" ? "▲" : "▼" }),
+  const close = () => setOpen(false);
+  return jsx("div", { className: "cl-picker", children: [
+    jsx("span", { className: "cl-label", children: t("model") }),
+    jsxs("button", { type: "button", className: "cl-picker-trigger", disabled: disabled || state.catalog.status === "loading", onClick: () => setOpen(!open), children: [
+      jsxs("span", { className: "cl-picker-text", children: [
+        jsx("span", { className: "cl-picker-title", children: currentName }),
+        jsx("span", { className: "cl-picker-sub", children: route ? value("provider").text : defaultName ? "DSH 默认 · " + defaultName : t("followDsh") }),
       ] }),
-      jsx("p", { className: "cl-hint", children: t("modelHint") }),
-      open === "model" ? jsxs(React.Fragment, { children: [
-        jsx("div", { className: "cl-menu-shield", onClick: close }),
-        jsxs("div", { className: "cl-menu", role: "listbox", children: [
-          jsx("input", { className: "cl-search", value: query, placeholder: t("searchModels"), autoFocus: true, onChange: (event) => setQuery(event.target.value) }),
-          query.trim() === "" ? jsx("button", { className: "cl-option", role: "option", "aria-selected": !route, onClick: () => { edit("provider")(""); edit("model")(""); edit("reasoningEffort")(""); close(); }, children: jsxs("span", { className: "cl-option-text", children: [
-            jsx("span", { className: "cl-option-name", children: t("followDsh") }),
-            defaultName ? jsx("span", { className: "cl-option-desc", children: "DSH 默认 · " + defaultName }) : null,
-          ] }) }) : null,
-          filteredGroups.map((group) => jsxs("div", { children: [
-            jsx("div", { className: "cl-group-label", children: group.name }),
-            group.models.map((model) => jsx("button", {
-              className: "cl-option", role: "option", "aria-selected": route === group.id + "/" + model.id,
-              onClick: () => { edit("provider")(group.id); edit("model")(model.id); edit("reasoningEffort")(""); close(); },
-              children: jsxs("span", { className: "cl-option-text", children: [
-                jsx("span", { className: "cl-option-name", children: model.name }),
-                model.description ? jsx("span", { className: "cl-option-desc", children: model.description }) : null,
-              ] }),
-            }, group.id + "/" + model.id)),
-          ] }, group.id)),
-          filteredGroups.length === 0 ? jsx("div", { className: "cl-empty", children: t("noModels") }) : null,
-        ] }),
-      ] }) : null,
+      jsx("span", { className: "cl-chevron", children: open ? "▲" : "▼" }),
     ] }),
-    jsxs("div", { className: "cl-picker", children: [
-      jsx("span", { className: "cl-label", children: t("reasoningEffort") }),
-      jsxs("button", { type: "button", className: "cl-picker-trigger", disabled: disabled || !selectedModel?.reasoning, onClick: () => setOpen(open === "effort" ? null : "effort"), children: [
-        jsxs("span", { className: "cl-picker-text", children: [
-          jsx("span", { className: "cl-picker-title", children: currentEffort }),
-          jsx("span", { className: "cl-picker-sub", children: selectedModel ? selectedModel.name : t("followDsh") }),
-        ] }),
-        jsx("span", { className: "cl-chevron", children: open === "effort" ? "▲" : "▼" }),
-      ] }),
-      jsx("p", { className: "cl-hint", children: t("reasoningEffortHint") }),
-      open === "effort" ? jsxs(React.Fragment, { children: [
-        jsx("div", { className: "cl-menu-shield", onClick: close }),
-        jsxs("div", { className: "cl-menu", role: "listbox", children: [
-          jsx("button", { className: "cl-option", role: "option", "aria-selected": !value("reasoningEffort").text, onClick: () => { edit("reasoningEffort")(""); close(); }, children: jsx("span", { className: "cl-option-name", children: t("followModel") }) }),
-          efforts.map((effort) => jsx("button", {
-            className: "cl-option", role: "option", "aria-selected": value("reasoningEffort").text === effort.id,
-            onClick: () => { edit("reasoningEffort")(effort.id); close(); },
+    jsx("p", { className: "cl-hint", children: t("modelHint") }),
+    open ? jsxs(React.Fragment, { children: [
+      jsx("div", { className: "cl-menu-shield", onClick: close }),
+      jsxs("div", { className: "cl-menu", role: "listbox", children: [
+        jsx("input", { className: "cl-search", value: query, placeholder: t("searchModels"), autoFocus: true, onChange: (event) => setQuery(event.target.value) }),
+        query.trim() === "" ? jsx("button", { className: "cl-option", role: "option", "aria-selected": !route, onClick: () => { edit("provider")(""); edit("model")(""); edit("reasoningEffort")(""); close(); }, children: jsxs("span", { className: "cl-option-text", children: [
+          jsx("span", { className: "cl-option-name", children: t("followDsh") }),
+          defaultName ? jsx("span", { className: "cl-option-desc", children: "DSH 默认 · " + defaultName }) : null,
+        ] }) }) : null,
+        filteredGroups.map((group) => jsxs("div", { children: [
+          jsx("div", { className: "cl-group-label", children: group.name }),
+          group.models.map((model) => jsx("button", {
+            className: "cl-option", role: "option", "aria-selected": route === group.id + "/" + model.id,
+            onClick: () => { edit("provider")(group.id); edit("model")(model.id); edit("reasoningEffort")(""); close(); },
             children: jsxs("span", { className: "cl-option-text", children: [
-              jsx("span", { className: "cl-option-name", children: effort.name }),
-              effort.description ? jsx("span", { className: "cl-option-desc", children: effort.description }) : null,
+              jsx("span", { className: "cl-option-name", children: model.name }),
+              model.description ? jsx("span", { className: "cl-option-desc", children: model.description }) : null,
             ] }),
-          }, effort.id)),
-        ] }),
-      ] }) : null,
+          }, group.id + "/" + model.id)),
+        ] }, group.id)),
+        filteredGroups.length === 0 ? jsx("div", { className: "cl-empty", children: t("noModels") }) : null,
+      ] }),
+    ] }) : null,
+  ] });
+}
+
+function EffortPicker({ state, value, edit, t, disabled }) {
+  const [open, setOpen] = React.useState(false);
+  const selectedGroup = (state.catalog.groups || []).find((group) => group.id === value("provider").text);
+  const selectedModel = selectedGroup ? selectedGroup.models.find((model) => model.id === value("model").text) : undefined;
+  const efforts = (selectedModel && selectedModel.reasoning ? selectedModel.reasoning.efforts : []) || [];
+  const currentEffort = value("reasoningEffort").text || t("followModel");
+  const close = () => setOpen(false);
+  return jsx("div", { className: "cl-picker", children: [
+    jsx("span", { className: "cl-label", children: t("reasoningEffort") }),
+    jsxs("button", { type: "button", className: "cl-picker-trigger", disabled: disabled || !selectedModel || !selectedModel.reasoning, onClick: () => setOpen(!open), children: [
+      jsxs("span", { className: "cl-picker-text", children: [
+        jsx("span", { className: "cl-picker-title", children: currentEffort }),
+        jsx("span", { className: "cl-picker-sub", children: selectedModel ? selectedModel.name : t("followDsh") }),
+      ] }),
+      jsx("span", { className: "cl-chevron", children: open ? "▲" : "▼" }),
     ] }),
+    jsx("p", { className: "cl-hint", children: t("reasoningEffortHint") }),
+    open ? jsxs(React.Fragment, { children: [
+      jsx("div", { className: "cl-menu-shield", onClick: close }),
+      jsxs("div", { className: "cl-menu", role: "listbox", children: [
+        jsx("button", { className: "cl-option", role: "option", "aria-selected": !value("reasoningEffort").text, onClick: () => { edit("reasoningEffort")(""); close(); }, children: jsx("span", { className: "cl-option-name", children: t("followModel") }) }),
+        efforts.map((effort) => jsx("button", {
+          className: "cl-option", role: "option", "aria-selected": value("reasoningEffort").text === effort.id,
+          onClick: () => { edit("reasoningEffort")(effort.id); close(); },
+          children: jsxs("span", { className: "cl-option-text", children: [
+            jsx("span", { className: "cl-option-name", children: effort.name }),
+            effort.description ? jsx("span", { className: "cl-option-desc", children: effort.description }) : null,
+          ] }),
+        }, effort.id)),
+      ] }),
+    ] }) : null,
   ] });
 }
 
@@ -587,21 +608,34 @@ function WorkspaceDialog({ listDirectory, createDirectory, onPick, onClose, t })
 function WorkspacePicker({ state, value, onEdit, onBrowse, onCreateDirectory, t, disabled }) {
   const [open, setOpen] = React.useState(false);
   const items = state.workspaces?.items || [];
+  const current = value.text;
+  const currentItem = items.find((item) => item.path === current);
+  const currentTitle = currentItem ? currentItem.title : current || t("followDsh");
+  const AddIcon = P.IconAppsAddOutlineRegular;
   return jsxs("div", { children: [
     jsxs("div", { className: "cl-workspace-field", children: [
       jsxs("div", { className: "cl-workspace-field-head", children: [
         jsx("span", { className: "cl-label", children: t("defaultPath") }),
-        jsx("button", { type: "button", className: "cl-workspace-edit", disabled, onClick: () => setOpen(true), children: "✎ " + t("editWorkspace") }),
+        jsx("button", {
+          type: "button",
+          className: "cl-workspace-add",
+          disabled,
+          onClick: () => setOpen(true),
+          children: [
+            jsx(AddIcon, { size: 14 }),
+            jsx("span", { children: t("addWorkspace") }),
+          ],
+        }),
       ] }),
-      jsxs("select", {
-        id: "connect-lark-defaultPath", className: "cl-select", value: value.text, disabled,
-        onChange: (event) => onEdit(event.target.value),
-        children: [
-          jsx("option", { value: "", children: t("followDsh") }),
-          value.text && !items.some((item) => item.path === value.text) ? jsx("option", { value: value.text, children: value.text }) : null,
-          items.map((item) => jsx("option", { value: item.path, children: item.title + " · " + item.path }, item.workspaceId)),
-        ],
-      }),
+      jsxs("div", { className: "cl-picker", children: [
+        jsxs("button", { type: "button", className: "cl-picker-trigger", disabled, onClick: () => setOpen(true), children: [
+          jsxs("span", { className: "cl-picker-text", children: [
+            jsx("span", { className: "cl-picker-title", children: currentTitle }),
+            jsx("span", { className: "cl-picker-sub", children: current || t("followDsh") }),
+          ] }),
+          jsx("span", { className: "cl-chevron", children: "▼" }),
+        ]}),
+      ] }),
       jsx("p", { className: "cl-hint", children: t("defaultPathHint") }),
     ] }),
     open ? jsx(WorkspaceDialog, {
@@ -653,83 +687,109 @@ function GuideDialog({ onClose, t }) {
   }) });
 }
 
-/** 通讯录用户选择器：有权限时按姓名挑人并自动填 open_id；没有权限时降级为手填。 */
-function UserPicker({ value, onEdit, t, disabled }) {
-  const [state, setState] = React.useState({ status: "idle", users: [], manager: null, reason: "" });
+/** 统一搜索：一个人、一个群、一个 id 都能搜到，命中即授权。 */
+function DirectoryPicker({ value, onEdit, t, disabled }) {
+  const [state, setState] = React.useState({ status: "idle", users: [], chats: [], manager: null, reason: "" });
   const [query, setQuery] = React.useState("");
 
   const load = React.useCallback(async () => {
     setState((s) => ({ ...s, status: "loading" }));
-    // 只连固定端口：探测邻近端口可能读到另一个实例的通讯录，
-    // 而飞书 open_id 按应用隔离，那样授权会静默失效。
     try {
-      const response = await fetch("http://127.0.0.1:9092/lark-api/users", { headers: { Accept: "application/json" } });
+      const response = await fetch("http://127.0.0.1:9092/lark-api/directory", { headers: { Accept: "application/json" } });
       if (!response.ok) throw new Error("HTTP " + response.status);
       const body = await response.json();
       if (body && body.ok) {
-        setState({ status: "ready", users: body.users || [], manager: body.manager || null, reason: "" });
+        setState({ status: "ready", users: body.users || [], chats: body.chats || [], manager: body.manager || null, reason: "" });
         return;
       }
-      setState({ status: "unavailable", users: [], manager: null, reason: (body && body.reason) || "directory unavailable" });
+      setState({ status: "unavailable", users: [], chats: [], manager: null, reason: (body && body.reason) || "directory unavailable" });
     } catch (error) {
-      setState({ status: "unavailable", users: [], manager: null, reason: (error && error.message) || "directory unavailable" });
+      setState({ status: "unavailable", users: [], chats: [], manager: null, reason: (error && error.message) || "directory unavailable" });
     }
   }, []);
 
   React.useEffect(() => { void load(); }, [load]);
 
-  const select = (user) => {
+  const grantedUsers = readList(value("senderAllowlist").text);
+  const grantedChats = readList(value("groupAllowlist").text);
+
+  const grantUser = (user) => {
     onEdit("senderAllowlist")(grantToList(value("senderAllowlist").text, user.openId));
-    if (!value("openId").text) onEdit("openId")(user.openId);
+  };
+  const grantChat = (chat) => {
+    onEdit("groupAllowlist")(grantToList(value("groupAllowlist").text, chat.chatId));
   };
 
-  const current = value("openId").text || "";
-  const granted = String(value("senderAllowlist").text || "").split("\n").map((item) => item.trim()).filter(Boolean);
   const needle = query.trim().toLowerCase();
-  const matched = state.users.filter((user) =>
+  const users = state.users.filter((user) =>
     !needle || user.name.toLowerCase().includes(needle) || user.openId.toLowerCase().includes(needle));
+  const chats = state.chats.filter((chat) =>
+    !needle || chat.name.toLowerCase().includes(needle) || chat.chatId.toLowerCase().includes(needle));
 
-  const head = jsx("div", {
-    className: "cl-users-head",
-    children: [
-      jsx("input", {
-        className: "cl-users-search",
-        value: query,
-        placeholder: t("searchPlaceholder"),
-        disabled: disabled || state.status !== "ready",
-        onChange: (event) => setQuery(event.target.value),
-      }),
-      state.manager
-        ? jsx("button", {
-            type: "button",
-            className: "cl-btn",
-            disabled,
-            onClick: () => select(state.manager),
-            children: t("useManager"),
-          })
-        : null,
-    ],
-  });
+  const head = jsxs("div", { className: "cl-users-head", children: [
+    jsx("input", {
+      className: "cl-users-search",
+      value: query,
+      placeholder: t("searchPlaceholder"),
+      disabled: disabled || state.status !== "ready",
+      onChange: (event) => setQuery(event.target.value),
+    }),
+    state.manager
+      ? jsx("button", {
+          type: "button",
+          className: "cl-btn",
+          disabled,
+          onClick: () => grantUser(state.manager),
+          children: t("useManager"),
+        })
+      : null,
+  ] });
 
   const body = state.status === "loading"
-    ? jsx("div", { className: "cl-users-note", children: t("loadingUsers") })
+    ? jsx("div", { className: "cl-users-note" }, t("loadingUsers"))
     : state.status === "unavailable"
-      ? jsx("div", { className: "cl-users-note warn", children: t("directoryUnavailable") })
-      : matched.length === 0
-        ? jsx("div", { className: "cl-users-note", children: t("noUsers") })
-        : jsx("div", { className: "cl-users-list", children: matched.map((user) => jsx("button", {
-            type: "button",
-            className: "cl-user",
-            key: user.openId,
-            disabled,
-            onClick: () => select(user),
-            children: [
-              jsx("span", { className: "cl-user-name", children: user.name }),
-              jsx("span", { className: "cl-user-id", children: user.openId }),
-              user.isManager ? jsx("span", { className: "cl-user-badge", children: t("managerPrefix") }) : null,
-              granted.includes(user.openId) ? jsx("span", { className: "cl-user-picked", children: t("selectedUser") }) : null,
-            ],
-          }, user.openId)) });
+      ? jsx("div", { className: "cl-users-note warn" }, t("directoryUnavailable"))
+      : users.length === 0 && chats.length === 0
+        ? jsx("div", { className: "cl-users-note" }, t("noUsers"))
+        : jsxs("div", { className: "cl-users-list", children: [
+            ...users.map((user) => jsx("button", {
+              type: "button",
+              className: "cl-user",
+              key: "u:" + user.openId,
+              disabled,
+              onClick: () => grantUser(user),
+              children: [
+                jsx("span", { className: "cl-avatar", children: user.avatar
+                  ? jsx("img", { src: user.avatar, alt: "" })
+                  : jsx("span", { className: "cl-avatar-text", children: user.name.slice(0, 1) })
+                }),
+                jsx("span", { className: "cl-user-body", children: [
+                  jsx("span", { className: "cl-user-name", children: user.name }),
+                  jsx("span", { className: "cl-user-id", children: user.openId }),
+                ] }),
+                user.isManager ? jsx("span", { className: "cl-user-badge", children: t("managerPrefix") }) : null,
+                grantedUsers.includes(user.openId) ? jsx("span", { className: "cl-user-picked", children: t("selectedUser") }) : null,
+              ],
+            }, user.openId)),
+            ...chats.map((chat) => jsx("button", {
+              type: "button",
+              className: "cl-user",
+              key: "c:" + chat.chatId,
+              disabled,
+              onClick: () => grantChat(chat),
+              children: [
+                jsx("span", { className: "cl-avatar cl-avatar-chat", children: chat.avatar
+                  ? jsx("img", { src: chat.avatar, alt: "" })
+                  : jsx("span", { className: "cl-avatar-text", children: chat.name.slice(0, 1) })
+                }),
+                jsx("span", { className: "cl-user-body", children: [
+                  jsx("span", { className: "cl-user-name", children: chat.name }),
+                  jsx("span", { className: "cl-user-id", children: chat.chatId }),
+                ] }),
+                grantedChats.includes(chat.chatId) ? jsx("span", { className: "cl-user-picked", children: t("selectedUser") }) : null,
+              ],
+            }, chat.chatId)),
+          ] });
 
   return jsx("div", {
     className: "cl-users",
@@ -738,18 +798,6 @@ function UserPicker({ value, onEdit, t, disabled }) {
       head,
       body,
       jsx("p", { className: "cl-users-note", children: t("pickUserHint") }),
-      jsx("div", {
-        style: { marginTop: 12 },
-        children: jsx(TextField, {
-          id: "connect-lark-openId",
-          label: t("openId"),
-          hint: t("openIdHint"),
-          value: value("openId"),
-          placeholder: "ou_xxx",
-          disabled,
-          onEdit: onEdit("openId"),
-        }),
-      }),
     ],
   });
 }
@@ -774,13 +822,7 @@ function AccessPicker({ value, onEdit, t, disabled }) {
       jsx("p", { className: "cl-hint", children: isAppScope ? t("accessAppHint") : t("accessListHint") }),
       isAppScope
         ? null
-        : jsxs("div", { children: [
-            jsx(UserPicker, { value, onEdit, t, disabled }),
-            jsx("div", { className: "cl-grid cl-grid-two", style: { marginTop: 18 }, children: [
-              jsx(ListField, { id: "connect-lark-senderAllowlist", label: t("senderAllowlist"), hint: t("senderAllowlistHint"), value: value("senderAllowlist"), placeholder: "ou_xxx", disabled, onEdit: onEdit("senderAllowlist") }),
-              jsx(ListField, { id: "connect-lark-groupAllowlist", label: t("groupAllowlist"), hint: t("groupAllowlistHint"), value: value("groupAllowlist"), placeholder: "oc_xxx", disabled, onEdit: onEdit("groupAllowlist") }),
-            ] }),
-          ] }),
+        : jsx(DirectoryPicker, { value, onEdit, t, disabled }),
     ],
   });
 }
@@ -824,8 +866,11 @@ function LarkConfigCard(props) {
         jsx(Section, { number: "03", title: t("workspace"), hint: t("workspaceHint"), children: [
           jsx(WorkspacePicker, { state, value: value("defaultPath"), onEdit: edit("defaultPath"), onBrowse: props.listDirectory, onCreateDirectory: props.createDirectory, t, disabled }),
           state.catalog.status === "error" ? jsxs("div", { className: "cl-catalog-error", children: [t("catalogError"), jsx("button", { className: "cl-retry", type: "button", onClick: props.refreshCatalog, children: t("retry") })] }) : null,
-          jsx(ModelPicker, { state, value, edit, t, disabled }),
-          jsx("div", { style: { marginTop: 18 }, children: jsx(PermissionPicker, { value: value("permissionPreset"), onEdit: edit("permissionPreset"), disabled }) }),
+          jsx("div", { className: "cl-triple", children: [
+            jsx(ModelPicker, { state, value, edit, t, disabled }),
+            jsx(EffortPicker, { state, value, edit, t, disabled }),
+            jsx(PermissionPicker, { value: value("permissionPreset"), onEdit: edit("permissionPreset"), disabled }),
+          ] }),
         ] }, "workspace"),
       ],
     }),

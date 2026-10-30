@@ -13,6 +13,28 @@ export interface DirectoryUser {
   isManager: boolean;
   /** 邮箱（可选，便于同名区分） */
   email?: string;
+  /** 头像 URL（可选） */
+  avatar?: string;
+}
+
+export interface DirectoryChat {
+  /** 群名 */
+  name: string;
+  /** chat_id（授权时写进配置的 id） */
+  chatId: string;
+  /** 头像 URL（可选） */
+  avatar?: string;
+}
+
+/** 通讯录 + 群聊：配置页用同一个搜索框找人和群。 */
+export interface Directory {
+  ok: boolean;
+  users: DirectoryUser[];
+  chats: DirectoryChat[];
+  /** 第一个租户管理员（没有则为 undefined） */
+  manager?: DirectoryUser;
+  /** 失败原因（权限不足、超时等） */
+  reason?: string;
 }
 
 export interface DirectoryResult {
@@ -68,11 +90,16 @@ export async function listDirectoryUsers(
     const users: DirectoryUser[] = [];
     for (const item of parsed?.data?.items ?? []) {
       if (!item?.open_id) continue;
+      const avatar = item.avatar;
+      const avatarUrl = typeof avatar === "object" && avatar !== null
+        ? String((avatar as Record<string, unknown>).avatar_240 ?? (avatar as Record<string, unknown>).avatar_640 ?? "")
+        : typeof avatar === "string" ? avatar : "";
       users.push({
         name: String(item.name ?? item.en_name ?? item.open_id),
         openId: String(item.open_id),
         isManager: item.is_tenant_manager === true,
         ...(item.email ? { email: String(item.email) } : {}),
+        ...(avatarUrl ? { avatar: avatarUrl } : {}),
       });
     }
     const manager = users.find((user) => user.isManager);
@@ -82,22 +109,6 @@ export async function listDirectoryUsers(
   }
 }
 
-/** 飞书 SDK 客户端里我们用到的最小形状（便于测试与解耦）。 */
-export interface DirectoryClient {
-  contact: {
-    v3: {
-      user: {
-        findByDepartment(payload: {
-          params: { user_id_type: string; department_id: string; page_size: number };
-        }): Promise<{
-          code?: number;
-          msg?: string;
-          data?: { items?: Array<Record<string, unknown>>; has_more?: boolean; page_token?: string };
-        }>;
-      };
-    };
-  };
-}
 
 /**
  * 通过飞书 SDK 拉取可授权用户（SDK 自带 token 缓存，调用方无需持密钥）。
@@ -150,4 +161,82 @@ export async function fetchDirectoryUsers(client: DirectoryClient): Promise<Dire
   } catch (error) {
     return { ok: false, users: [], reason: (error as Error)?.message || "directory request failed" };
   }
+}
+
+/** 飞书 SDK 客户端里我们用到的最小形状（通讯录 + 群聊）。 */
+export interface DirectoryClient {
+  contact: {
+    v3: {
+      user: {
+        findByDepartment(payload: {
+          params: { user_id_type: string; department_id: string; page_size: number; page_token?: string };
+        }): Promise<{
+          code?: number;
+          msg?: string;
+          data?: { items?: Array<Record<string, unknown>>; has_more?: boolean; page_token?: string };
+        }>;
+      };
+    };
+  };
+  im?: {
+    v1?: {
+      chat?: {
+        list(payload?: { params?: { page_size?: number; page_token?: string } }): Promise<{
+          code?: number;
+          msg?: string;
+          data?: { items?: Array<Record<string, unknown>>; has_more?: boolean; page_token?: string };
+        }>;
+      };
+    };
+  };
+}
+
+/**
+ * 列出机器人所在的群（im/v1/chats）。机器人没被拉进任何群时返回空数组，
+ * 这不是错误：群目录只是给配置页多一个「按群名搜索」的入口。
+ */
+export async function fetchDirectoryChats(client: DirectoryClient): Promise<DirectoryChat[]> {
+  const list = client.im?.v1?.chat?.list;
+  if (typeof list !== "function") return [];
+  try {
+    const response = await list.call(client.im?.v1?.chat, { params: { page_size: 50 } });
+    if (response?.code !== 0) return [];
+    const chats: DirectoryChat[] = [];
+    for (const item of response?.data?.items ?? []) {
+      const chatId = item.chat_id;
+      if (!chatId) continue;
+      const avatar = item.avatar;
+      const avatarUrl = typeof avatar === "object" && avatar !== null
+        ? String((avatar as Record<string, unknown>).avatar_240 ?? (avatar as Record<string, unknown>).avatar_640 ?? "")
+        : typeof avatar === "string" ? avatar : "";
+      chats.push({
+        name: String(item.name ?? chatId),
+        chatId: String(chatId),
+        ...(avatarUrl ? { avatar: avatarUrl } : {}),
+      });
+    }
+    return chats;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 一次拿到人和群：配置页用同一个搜索框找人、找群。
+ *
+ * @param client - 飞书 SDK 客户端（通常是 channel.rawClient）
+ * @returns 通讯录 + 群聊目录；失败时 ok=false 且带原因
+ */
+export async function fetchDirectory(client: DirectoryClient): Promise<Directory> {
+  const users = await fetchDirectoryUsers(client);
+  if (!users.ok) {
+    return { ok: false, users: [], chats: [], reason: users.reason };
+  }
+  const chats = await fetchDirectoryChats(client);
+  return {
+    ok: true,
+    users: users.users,
+    chats,
+    ...(users.manager ? { manager: users.manager } : {}),
+  };
 }

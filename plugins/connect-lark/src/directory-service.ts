@@ -17,10 +17,10 @@ export const DIRECTORY_PORT = 9092;
  */
 
 export interface DirectoryServiceOptions {
-  /** 取飞书 tenant token / 调通讯录的能力（由 channel.rawClient 提供） */
-  listUsers: () => Promise<{ ok: boolean; users: DirectoryUser[]; manager?: DirectoryUser; reason?: string }>;
-  /** 允许的页面来源；"null" 覆盖本地 file:// 与本地开发页 */
-  allowedOrigins?: string[];
+  /** 通讯录 + 群聊目录（服务端代查，浏览器不直接带密钥） */
+  directory: () => Promise<import("./users.js").Directory>;
+  /** 允许读取的页面来源（DSH 自己的地址 + 回环） */
+  allowedOrigins?: Set<string>;
   port?: number;
 }
 
@@ -49,20 +49,20 @@ export interface DirectoryService {
  * @returns 已监听的目录服务
  */
 export async function startDirectoryService(options: DirectoryServiceOptions): Promise<DirectoryService> {
-  const origins = new Set(options.allowedOrigins ?? DEFAULT_ORIGINS);
   const port = options.port ?? DIRECTORY_PORT;
-  return listen(options, origins, port);
+  return listen(options, port);
 }
 
-async function listen(options: DirectoryServiceOptions, origins: Set<string>, port: number): Promise<DirectoryService> {
+async function listen(options: DirectoryServiceOptions, port: number): Promise<DirectoryService> {
+  const origins = options.allowedOrigins ?? new Set<string>();
 
   const server: Server = createServer((req, res) => {
-    // 浏览器里的任意网页都能连到 127.0.0.1，所以 CORS 不能放开：
-    // 只有本机 DSH 自己的页面才允许读通讯录。
+    // CORS 白名单由调用方按「这个 DSH 实例自己的地址」算好（广告 URL + 回环）。
+    // 之前用固定清单，Cloudflare 隧道域名一换就 403，选择器直接失效。
     const requestOrigin = String(req.headers.origin ?? "");
     if (requestOrigin && !origins.has(requestOrigin)) {
       res.writeHead(403, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: false, users: [], reason: "origin not allowed" }));
+      res.end(JSON.stringify({ ok: false, users: [], chats: [], reason: "origin not allowed" }));
       return;
     }
     if (requestOrigin) {
@@ -76,12 +76,12 @@ async function listen(options: DirectoryServiceOptions, origins: Set<string>, po
       res.end();
       return;
     }
-    if (req.method !== "GET" || !req.url?.startsWith("/lark-api/users")) {
+    if (req.method !== "GET" || !req.url?.startsWith("/lark-api/directory")) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: false, users: [], reason: "not found" }));
       return;
     }
-    options.listUsers().then((result) => {
+    options.directory().then((result) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
     }).catch((error) => {

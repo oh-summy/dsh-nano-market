@@ -259,11 +259,11 @@ test("listDirectoryUsers: rejects a non-zero Feishu code", async () => {
 
 test("directory service serves the user list over loopback", async () => {
   const service = await startDirectoryService({
-    listUsers: async () => ({ ok: true, users: [{ name: "陈鑫", openId: "ou_owner", isManager: true }], manager: { name: "陈鑫", openId: "ou_owner", isManager: true } }),
+    directory: async () => ({ ok: true, users: [{ name: "陈鑫", openId: "ou_owner", isManager: true }], chats: [], manager: { name: "陈鑫", openId: "ou_owner", isManager: true } }),
     port: 0,
   });
   try {
-    const response = await fetch("http://127.0.0.1:" + service.port + "/lark-api/users");
+    const response = await fetch("http://127.0.0.1:" + service.port + "/lark-api/directory");
     const body = await response.json();
     assert.equal(response.status, 200);
     assert.equal(body.ok, true);
@@ -274,7 +274,7 @@ test("directory service serves the user list over loopback", async () => {
 });
 
 test("directory service rejects unknown paths", async () => {
-  const service = await startDirectoryService({ listUsers: async () => ({ ok: true, users: [] }), port: 0 });
+  const service = await startDirectoryService({ directory: async () => ({ ok: true, users: [], chats: [] }), port: 0 });
   try {
     const response = await fetch("http://127.0.0.1:" + service.port + "/other");
     assert.equal(response.status, 404);
@@ -289,12 +289,13 @@ test("directory service rejects unknown paths", async () => {
 
 test("directory service refuses a foreign origin and allows a local one", async () => {
   const service = await startDirectoryService({
-    listUsers: async () => ({ ok: true, users: [{ name: "Owner", openId: "ou_owner", isManager: true }] }),
+    directory: async () => ({ ok: true, users: [{ name: "Owner", openId: "ou_owner", isManager: true }], chats: [] }),
+    allowedOrigins: new Set(["http://127.0.0.1:3080"]),
     port: 0,
   });
   try {
     // A page on any other site must not be able to read the tenant directory.
-    const foreign = await fetch("http://127.0.0.1:" + service.port + "/lark-api/users", {
+    const foreign = await fetch("http://127.0.0.1:" + service.port + "/lark-api/directory", {
       headers: { Origin: "https://evil.example" },
     });
     assert.equal(foreign.status, 403);
@@ -303,7 +304,7 @@ test("directory service refuses a foreign origin and allows a local one", async 
     assert.equal(foreignBody.users.length, 0);
 
     // The DSH page itself may read it.
-    const local = await fetch("http://127.0.0.1:" + service.port + "/lark-api/users", {
+    const local = await fetch("http://127.0.0.1:" + service.port + "/lark-api/directory", {
       headers: { Origin: "http://127.0.0.1:3080" },
     });
     assert.equal(local.status, 200);
