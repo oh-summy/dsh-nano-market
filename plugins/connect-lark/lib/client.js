@@ -231,6 +231,12 @@ const styles = `
 .cl-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .cl-guide-link{border:0;background:transparent;color:var(--cl-blue);font:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:2px 0;white-space:nowrap}
 .cl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+.cl-grid-two{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.cl-segment-inline{display:inline-grid;grid-auto-flow:column;grid-auto-columns:max-content;gap:2px;background:#f2f3f5;border:1px solid #eef0f3;border-radius:9px;padding:3px}
+.cl-segment-inline button{border:0;border-radius:7px;background:transparent;padding:7px 18px;font:inherit;font-size:12.5px;font-weight:500;color:#6b7280;cursor:pointer;transition:background .12s,color .12s,box-shadow .12s;white-space:nowrap}
+.cl-segment-inline button:hover:not(:disabled){color:#1f2329}
+.cl-segment-inline button[aria-checked="true"]{background:#fff;color:#1f2329;font-weight:600;box-shadow:0 1px 3px rgba(31,35,41,.08)}
+.cl-segment-inline button:disabled{opacity:.5;cursor:not-allowed}
 .cl-field{min-width:0;margin-bottom:16px}
 .cl-field:last-child{margin-bottom:0}
 .cl-label{display:block;font-size:12px;font-weight:600;margin-bottom:7px;color:#30343b}
@@ -243,20 +249,22 @@ const styles = `
 .cl-segment button{border:1px solid transparent;border-radius:7px;background:transparent;color:#5f6672;padding:8px 12px;font:inherit;font-size:12px;cursor:pointer}
 .cl-segment button[aria-checked="true"]{background:#fff;color:var(--cl-blue);border-color:#cfdcff;box-shadow:0 1px 4px rgba(31,35,41,.06);font-weight:600}
 .cl-workspace-field{margin-bottom:18px}
-.cl-users{border:1px solid #e8eaed;border-radius:10px;padding:12px;background:#fafbfc}
-.cl-users-head{display:flex;gap:8px;align-items:center;margin-bottom:8px}
-.cl-users-search{flex:1;min-width:0;border:1px solid #d8dde5;border-radius:8px;padding:6px 10px;font:inherit;font-size:13px;background:#fff;color:#374151}
+.cl-users{border:1px solid #e9ecf1;border-radius:12px;padding:14px 16px;background:#fcfdfe;transition:border-color .15s}
+.cl-users:hover{border-color:#dfe4ec}
+.cl-users-label{font-size:12px;font-weight:600;color:#30343b;margin-bottom:9px;display:block}
+.cl-users-head{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.cl-users-search{flex:1;min-width:0;border:1px solid #dde1e8;border-radius:8px;padding:8px 11px;font:inherit;font-size:13px;background:#fff;color:#1f2329;transition:border-color .12s,box-shadow .12s}
 .cl-users-search:focus{outline:none;border-color:#3370ff;box-shadow:0 0 0 3px rgba(51,112,255,.12)}
 .cl-users-list{max-height:190px;overflow:auto;display:flex;flex-direction:column;gap:2px}
-.cl-user{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;border-radius:7px;padding:7px 9px;font:inherit;font-size:13px;cursor:pointer;color:#374151;text-align:left}
-.cl-user:hover:not(:disabled){background:#eef3ff}
+.cl-user{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;border-radius:8px;padding:9px 10px;font:inherit;font-size:13px;cursor:pointer;color:#1f2329;text-align:left;transition:background .12s}
+.cl-user:hover:not(:disabled){background:#f2f6ff}
 .cl-user:disabled{opacity:.6;cursor:not-allowed}
-.cl-user-name{font-weight:500}
+.cl-user-name{font-weight:550}
 .cl-user-id{font-size:11px;color:#9ca3af;font-family:ui-monospace,monospace}
-.cl-user-badge{font-size:10px;background:#eef2ff;color:#4f46e5;border-radius:999px;padding:1px 7px;font-weight:600}
-.cl-user-picked{margin-left:auto;font-size:11px;color:#16a34a;font-weight:600}
-.cl-users-note{font-size:11.5px;color:#8b949e;line-height:1.6;margin:8px 0 0}
-.cl-users-note.warn{color:#a16207}
+.cl-user-badge{font-size:10px;background:#eef2ff;color:#4f46e5;border-radius:999px;padding:2px 7px;font-weight:600;flex-shrink:0}
+.cl-user-picked{margin-left:auto;font-size:11px;color:#16a34a;font-weight:600;flex-shrink:0}
+.cl-users-note{font-size:11.5px;color:#8b949e;line-height:1.65;margin:9px 0 0}
+.cl-users-note.warn{color:#8a5a00;background:#fff8e8;border-radius:7px;padding:8px 10px;margin-top:10px}
 .cl-workspace-field-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px}
 .cl-workspace-field-head .cl-label{margin-bottom:0}
 .cl-workspace-edit{display:inline-flex;align-items:center;gap:5px;border:0;border-radius:6px;background:transparent;color:#526174;padding:3px 6px;font:inherit;font-size:11px;font-weight:550;cursor:pointer}
@@ -693,33 +701,51 @@ function UserPicker({ value, onEdit, t, disabled }) {
   return jsx("div", {
     className: "cl-users",
     children: [
+      jsx("span", { className: "cl-users-label", children: t("pickUser") }),
       head,
       body,
       jsx("p", { className: "cl-users-note", children: t("pickUserHint") }),
+      jsx("div", {
+        style: { marginTop: 12 },
+        children: jsx(TextField, {
+          id: "connect-lark-openId",
+          label: t("openId"),
+          hint: t("openIdHint"),
+          value: value("openId"),
+          placeholder: "ou_xxx",
+          disabled,
+          onEdit: onEdit("openId"),
+        }),
+      }),
     ],
   });
 }
 function AccessPicker({ value, onEdit, t, disabled }) {
-  const [open, setOpen] = React.useState(null);
   const mode = value("accessMode").text || "restricted";
   const modes = [
     { id: "restricted", label: t("accessRestricted"), desc: t("accessRestrictedHint") },
     { id: "open", label: t("accessOpen"), desc: t("accessOpenHint") },
   ];
-  return jsxs("div", { className: "cl-picker", children: [
-    jsxs("div", { className: "cl-segment", role: "radiogroup", "aria-label": t("access"), children: modes.map((modeItem) => jsx("button", {
-      type: "button", role: "radio", "aria-checked": mode === modeItem.id,
-      disabled, onClick: () => { onEdit("accessMode")(modeItem.id); }, children: modeItem.label,
-    }, modeItem.id)) }),
-    jsx(UserPicker, { value, onEdit, t, disabled }),
-    jsxs("div", { className: "cl-grid", children: [
-      jsx(TextField, { id: "connect-lark-openId", label: t("openId"), hint: t("openIdHint"), value: value("openId"), placeholder: "ou_xxx", disabled, onEdit: onEdit("openId") }),
-      jsx(ListField, { id: "connect-lark-senderAllowlist", label: t("senderAllowlist"), hint: t("senderAllowlistHint"), value: value("senderAllowlist"), placeholder: "ou_xxx", disabled, onEdit: onEdit("senderAllowlist") }),
-      jsx(ListField, { id: "connect-lark-groupAllowlist", label: t("groupAllowlist"), hint: t("groupAllowlistHint"), value: value("groupAllowlist"), placeholder: "oc_xxx", disabled, onEdit: onEdit("groupAllowlist") }),
-    ] }),
-  ] });
+  const current = modes.find((item) => item.id === mode) || modes[0];
+  return jsx("div", {
+    children: [
+      jsx("div", { className: "cl-segment-inline", role: "radiogroup", "aria-label": t("access"), children: modes.map((modeItem) => jsx("button", {
+        type: "button",
+        role: "radio",
+        "aria-checked": mode === modeItem.id,
+        disabled,
+        onClick: () => { onEdit("accessMode")(modeItem.id); },
+        children: modeItem.label,
+      }, modeItem.id)) }),
+      jsx("p", { className: "cl-hint", children: current.desc }),
+      jsx(UserPicker, { value, onEdit, t, disabled }),
+      jsx("div", { className: "cl-grid cl-grid-two", style: { marginTop: 18 }, children: [
+        jsx(ListField, { id: "connect-lark-senderAllowlist", label: t("senderAllowlist"), hint: t("senderAllowlistHint"), value: value("senderAllowlist"), placeholder: "ou_xxx", disabled, onEdit: onEdit("senderAllowlist") }),
+        jsx(ListField, { id: "connect-lark-groupAllowlist", label: t("groupAllowlist"), hint: t("groupAllowlistHint"), value: value("groupAllowlist"), placeholder: "oc_xxx", disabled, onEdit: onEdit("groupAllowlist") }),
+      ] }),
+    ],
+  });
 }
-
 function LarkConfigCard(props) {
   const state = props.useLarkSettings((snapshot) => snapshot);
   const [guideOpen, setGuideOpen] = React.useState(false);
