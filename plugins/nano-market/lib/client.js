@@ -29,6 +29,23 @@ const MARKET_INDEX = "https://oh-summy.github.io/dsh-nano-market/index.json";
 let marketCache = null;
 let marketFetchedAt = 0;
 const MARKET_CACHE_MS = 5 * 60 * 1000;
+const CACHE_KEY = "dsh.nano-market.entries";
+
+// The tab is slow when it waits on the network for the index. The index only
+// changes when the market is republished, so keep the last list in
+// sessionStorage and paint it immediately; refresh behind it.
+function readStoredCache() {
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.entries) ? parsed : null;
+  } catch { return null; }
+}
+
+function writeStoredCache(entries) {
+  try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({ entries, at: Date.now() })); } catch { /* private mode */ }
+}
 
 
 const zh = {
@@ -167,12 +184,25 @@ function NanoMarketTab(props) {
   const [message, setMessage] = useState("");
 
   const reload = useCallback(async () => {
-    setListing((s) => ({ ...s, status: "loading", error: "" }));
+    const stored = readStoredCache();
+    if (stored && marketCache === null) {
+      marketCache = stored.entries;
+      marketFetchedAt = stored.at ?? 0;
+    }
+    if (marketCache !== null) {
+      // Paint what we know, then refresh in the background.
+      setListing({ status: "ready", entries: marketCache, error: "" });
+    } else {
+      setListing((s) => ({ ...s, status: "loading", error: "" }));
+    }
     try {
       const indexAnswer = await props.ctx.remote.pluginMarket.listIndexes();
       const indexes = indexAnswer?.value ?? indexAnswer ?? [];
       if (!indexes.find((item) => item?.url === MARKET_INDEX)) {
-        setListing({ status: "failed", entries: [], error: t("indexMissing", { url: MARKET_INDEX }) });
+        if (marketCache === null) {
+          setListing({ status: "failed", entries: [], error: t("indexMissing", { url: MARKET_INDEX }) });
+          return;
+        }
         return;
       }
       // Installation state is local and always current.
@@ -184,7 +214,6 @@ function NanoMarketTab(props) {
 
       const cacheFresh = marketCache !== null && Date.now() - marketFetchedAt < MARKET_CACHE_MS;
       if (marketCache !== null) {
-        // Warm: render the last known market now, refresh quietly behind it.
         setListing({ status: "ready", entries: marketCache, error: "" });
         if (!cacheFresh) {
           try {
@@ -192,6 +221,7 @@ function NanoMarketTab(props) {
             if (answer && answer.ok) {
               marketCache = answer.value?.entries ?? marketCache;
               marketFetchedAt = Date.now();
+              writeStoredCache(marketCache);
               setListing({ status: "ready", entries: marketCache, error: "" });
             }
           } catch {
@@ -305,17 +335,15 @@ function NanoMarketTab(props) {
                     h("div", { className: "nmk-main" },
                       h("div", { className: "nmk-name" },
                         h("span", null, titleOf(entry)),
-                        version ? h("span", { className: "nmk-ver" }, version.version) : null,
+                        shownVersion ? h("span", { className: "nmk-ver" }, shownVersion) : null,
                         h("span", { className: "nmk-badge " + badge.cls }, badge.text),
+                        canUpdate ? h("span", { className: "nmk-badge warn" }, t("stateUpdate")) : null,
                         compatible ? null : h("span", { className: "nmk-badge off" }, t("incompatible")),
                       ),
                       h("p", { className: "nmk-desc" }, descriptionOf(entry)),
                     ),
-                  ),
-                  h("div", { className: "nmk-actions" },
-                    state === "not-installed"
-                      ? h("button", { type: "button", className: "nmk-btn primary", disabled: working || !compatible, onClick: (event) => { event.stopPropagation(); install(entry); } }, t("install"))
-                      : h("button", {
+                    state !== "not-installed"
+                      ? h("button", {
                           type: "button",
                           role: "switch",
                           className: "nmk-switch",
@@ -327,14 +355,20 @@ function NanoMarketTab(props) {
                             const next = state !== "enabled";
                             void run(entry.name, () => props.ctx.remote.pluginManager.setBundleEnabled(entry.name, next), next ? "enableFailed" : "disableFailed");
                           },
-                        }),
+                        })
+                      : null,
+                  ),
+                  h("div", { className: "nmk-actions" },
+                    state === "not-installed"
+                      ? h("button", { type: "button", className: "nmk-btn primary", disabled: working || !compatible, onClick: (event) => { event.stopPropagation(); install(entry); } }, t("install"))
+                      : null,
                     state === "enabled"
                       ? h("span", { className: "nmk-hint" }, t("openHint"))
                       : state === "installed-off"
                         ? h("span", { className: "nmk-hint" }, t("installedHint"))
                         : null,
                   ),
-                  busy === entry.name ? h("div", { className: "nmk-msg" }, t("busy")) : null,
+                                    busy === entry.name ? h("div", { className: "nmk-msg" }, t("busy")) : null,
                 );
               })),
       message ? h("div", { className: "nmk-msg" + (message.includes("失败") ? " err" : "") }, message) : null,

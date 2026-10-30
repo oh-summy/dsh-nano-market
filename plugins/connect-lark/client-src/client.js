@@ -28,6 +28,7 @@ const zh = {
   defaultPathHint: "从 DSH 工作区中选择，或点击「修改」选择其他目录。",
   editWorkspace: "修改",
   addWorkspace: "添加工作区",
+  customPath: "自定义目录",
   addingWorkspace: "正在选择目录…",
   workspaceFailed: "未能添加工作区，请重试。",
   model: "模型",
@@ -296,8 +297,11 @@ const styles = `
 .cl-users-note.warn{color:#8a5a00;background:#fff8e8;border-radius:7px;padding:8px 10px;margin-top:10px}
 .cl-workspace-field-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px}
 .cl-workspace-field-head .cl-label{margin-bottom:0}
-.cl-workspace-add{display:inline-flex;align-items:center;gap:5px;border:1px solid #dde1e8;border-radius:8px;background:#fff;color:#414957;font:inherit;font-size:12px;font-weight:500;padding:5px 10px;cursor:pointer;transition:background .12s,border-color .12s}
-.cl-workspace-add:hover:not(:disabled){background:#f5f7fa;border-color:#c9d2e0}
+.cl-path-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:stretch}
+.cl-path-row .cl-picker-trigger{height:100%}
+.cl-workspace-add{display:inline-flex;align-items:center;justify-content:center;width:38px;border:1px solid #d8dde5;border-radius:8px;background:#fff;color:#5b6472;font:inherit;cursor:pointer;transition:background .12s,border-color .12s,color .12s}
+.cl-workspace-add:hover:not(:disabled){background:#f5f7fa;border-color:#c9d2e0;color:var(--cl-blue)}
+
 .cl-workspace-add:disabled{opacity:.45;cursor:not-allowed}
 .cl-workspace-edit{display:inline-flex;align-items:center;gap:5px;border:0;border-radius:6px;background:transparent;color:#526174;padding:3px 6px;font:inherit;font-size:11px;font-weight:550;cursor:pointer}
 .cl-workspace-edit:hover{background:#f0f4fa;color:var(--cl-blue)}
@@ -607,36 +611,55 @@ function WorkspaceDialog({ listDirectory, createDirectory, onPick, onClose, t })
 
 function WorkspacePicker({ state, value, onEdit, onBrowse, onCreateDirectory, t, disabled }) {
   const [open, setOpen] = React.useState(false);
+  const [menu, setMenu] = React.useState(false);
   const items = state.workspaces?.items || [];
   const current = value.text;
   const currentItem = items.find((item) => item.path === current);
   const currentTitle = currentItem ? currentItem.title : current || t("followDsh");
   const AddIcon = P.IconAppsAddOutlineRegular;
+  const options = [
+    { path: "", title: t("followDsh"), sub: t("defaultPathHint") },
+  ].concat(
+    current && !items.some((item) => item.path === current)
+      ? [{ path: current, title: current, sub: t("customPath") }]
+      : [],
+    items.map((item) => ({ path: item.path, title: item.title, sub: item.path })),
+  );
+  const optionRows = options.map((option) => jsx("button", {
+    className: "cl-option",
+    role: "option",
+    "aria-selected": option.path === current,
+    key: option.path || "__follow",
+    onClick: () => { onEdit(option.path); setMenu(false); },
+    children: jsxs("span", { className: "cl-option-text", children: [
+      jsx("span", { className: "cl-option-name", children: option.title }),
+      option.sub ? jsx("span", { className: "cl-option-desc", children: option.sub }) : null,
+    ] }),
+  }, option.path || "__follow"));
+  const trigger = jsxs("button", { type: "button", className: "cl-picker-trigger", disabled, onClick: () => setMenu(!menu), children: [
+    jsxs("span", { className: "cl-picker-text", children: [
+      jsx("span", { className: "cl-picker-title", children: currentTitle }),
+      jsx("span", { className: "cl-picker-sub", children: current || t("followDsh") }),
+    ] }),
+    jsx("span", { className: "cl-chevron", children: menu ? "▲" : "▼" }),
+  ] });
+  const menuBox = menu ? jsx("div", { className: "cl-menu", role: "listbox", children: optionRows }) : null;
+  const shield = menu ? jsx("div", { className: "cl-menu-shield", onClick: () => setMenu(false) }) : null;
   return jsxs("div", { children: [
     jsxs("div", { className: "cl-workspace-field", children: [
-      jsxs("div", { className: "cl-workspace-field-head", children: [
-        jsx("span", { className: "cl-label", children: t("defaultPath") }),
+      jsx("span", { className: "cl-label", children: t("defaultPath") }),
+      jsxs("div", { className: "cl-path-row", children: [
+        jsx("div", { className: "cl-picker", children: [trigger, shield, menuBox] }),
         jsx("button", {
           type: "button",
           className: "cl-workspace-add",
           disabled,
+          title: t("addWorkspace"),
+          "aria-label": t("addWorkspace"),
           onClick: () => setOpen(true),
-          children: [
-            jsx(AddIcon, { size: 14 }),
-            jsx("span", { children: t("addWorkspace") }),
-          ],
+          children: jsx(AddIcon, { size: 15 }),
         }),
       ] }),
-      jsxs("div", { className: "cl-picker", children: [
-        jsxs("button", { type: "button", className: "cl-picker-trigger", disabled, onClick: () => setOpen(true), children: [
-          jsxs("span", { className: "cl-picker-text", children: [
-            jsx("span", { className: "cl-picker-title", children: currentTitle }),
-            jsx("span", { className: "cl-picker-sub", children: current || t("followDsh") }),
-          ] }),
-          jsx("span", { className: "cl-chevron", children: "▼" }),
-        ]}),
-      ] }),
-      jsx("p", { className: "cl-hint", children: t("defaultPathHint") }),
     ] }),
     open ? jsx(WorkspaceDialog, {
       listDirectory: onBrowse,
