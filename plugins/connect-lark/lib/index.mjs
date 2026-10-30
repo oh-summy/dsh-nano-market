@@ -3,6 +3,7 @@ import { credentialRef, isCredentialRefName } from "@deepseek-ai/dsh-credentials
 import { isVolatile } from "@deepseek-ai/cosmokit";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel } from "@larksuite/channel";
+import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -375,6 +376,179 @@ var RunManager = class {
 		return [...this.slots.values()];
 	}
 };
+// src/users.ts
+/** 飞书该接口的 page_size 上限是 50，超过就 400。 */
+const PAGE_SIZE = 50;
+/** 最多翻几页：通讯录很大时不至于把整本拉下来。 */
+const MAX_PAGES = 4;
+/**
+* 拉取可授权用户列表。
+*
+* @param token - 飞书 tenant_access_token
+* @param fetchImpl - 注入的 fetch，便于测试
+* @param timeoutMs - 单次请求超时
+* @returns 用户列表与管理员；失败时 ok=false 且带原因
+*/
+async function listDirectoryUsers(token, fetchImpl = fetch, timeoutMs = 8e3) {
+	const url = "https://open.feishu.cn/open-apis/contact/v3/users/find_by_department?user_id_type=open_id&department_id=0&page_size=" + String(PAGE_SIZE);
+	try {
+		const response = await fetchImpl(url, {
+			method: "GET",
+			headers: { Authorization: "Bearer " + token }
+		});
+		const body = await response.text();
+		let parsed;
+		try {
+			parsed = JSON.parse(body);
+		} catch {
+			parsed = void 0;
+		}
+		if (!response.ok || !parsed || parsed.code !== 0) return {
+			ok: false,
+			users: [],
+			reason: parsed?.msg || "HTTP " + String(response.status)
+		};
+		const users = [];
+		for (const item of parsed?.data?.items ?? []) {
+			if (!item?.open_id) continue;
+			users.push({
+				name: String(item.name ?? item.en_name ?? item.open_id),
+				openId: String(item.open_id),
+				isManager: item.is_tenant_manager === true,
+				...item.email ? { email: String(item.email) } : {}
+			});
+		}
+		const manager = users.find((user) => user.isManager);
+		return {
+			ok: true,
+			users,
+			...manager ? { manager } : {}
+		};
+	} catch (error) {
+		return {
+			ok: false,
+			users: [],
+			reason: error?.message || "directory request failed"
+		};
+	}
+}
+/**
+* 通过飞书 SDK 拉取可授权用户（SDK 自带 token 缓存，调用方无需持密钥）。
+*
+* @param client - 飞书 SDK 客户端（通常是 channel.rawClient）
+* @returns 用户列表与租户管理员；失败时 ok=false 且带原因
+*/
+async function fetchDirectoryUsers(client) {
+	const users = [];
+	let manager;
+	let lastReason = "directory unavailable";
+	try {
+		for (let page = 0; page < MAX_PAGES; page++) {
+			const response = await client.contact.v3.user.findByDepartment({ params: {
+				user_id_type: "open_id",
+				department_id: "0",
+				page_size: PAGE_SIZE
+			} });
+			if (response?.code !== 0) {
+				lastReason = response?.msg || lastReason;
+				break;
+			}
+			const items = response?.data?.items ?? [];
+			for (const item of items) {
+				if (!item?.open_id) continue;
+				const user = {
+					name: String(item.name ?? item.en_name ?? item.open_id),
+					openId: String(item.open_id),
+					isManager: item.is_tenant_manager === true,
+					...item.email ? { email: String(item.email) } : {}
+				};
+				users.push(user);
+				if (user.isManager && !manager) manager = user;
+			}
+			if (!response?.data?.has_more) break;
+		}
+		if (users.length === 0 && !manager) return {
+			ok: false,
+			users: [],
+			reason: lastReason
+		};
+		return {
+			ok: true,
+			users,
+			...manager ? { manager } : {}
+		};
+	} catch (error) {
+		return {
+			ok: false,
+			users: [],
+			reason: error?.message || "directory request failed"
+		};
+	}
+}
+// src/directory-service.ts
+/** 本机端口。dsh-remote 占用 9091，这里错开。 */
+const DIRECTORY_PORT = 9092;
+/** 允许本地开发页与本机 DSH 页面跨域读取。 */
+const DEFAULT_ORIGINS = [
+	"null",
+	"http://127.0.0.1:3080",
+	"http://localhost:3080",
+	"http://127.0.0.1:8080",
+	"http://localhost:8080"
+];
+/**
+* 起一个只读的本机 HTTP 面，给配置页提供「可授权用户」列表。
+*
+* @param options - 目录来源与跨域白名单
+* @returns 已监听的目录服务
+*/
+async function startDirectoryService(options) {
+	new Set(options.allowedOrigins ?? DEFAULT_ORIGINS);
+	const port = options.port ?? 9092;
+	const server = createServer((req, res) => {
+		res.setHeader("Access-Control-Allow-Origin", "*");
+		res.setHeader("Vary", "Origin");
+		if (req.method === "OPTIONS") {
+			res.setHeader("Access-Control-Allow-Methods", "GET");
+			res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+			res.writeHead(204);
+			res.end();
+			return;
+		}
+		if (req.method !== "GET" || !req.url?.startsWith("/lark-api/users")) {
+			res.writeHead(404, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({
+				ok: false,
+				users: [],
+				reason: "not found"
+			}));
+			return;
+		}
+		options.listUsers().then((result) => {
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify(result));
+		}).catch((error) => {
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({
+				ok: false,
+				users: [],
+				reason: error?.message || "directory failed"
+			}));
+		});
+	});
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(port, "127.0.0.1", () => resolve());
+	});
+	const address = server.address();
+	return {
+		port: typeof address === "object" && address !== null ? address.port : port,
+		close: () => new Promise((resolve) => {
+			server.close(() => resolve());
+			server.closeAllConnections?.();
+		})
+	};
+}
 // src/images.ts
 /** Maximum image bytes to admit (20 MiB default, same as dsh-acp). */
 const MAX_IMAGE_BYTES = 20971520;
@@ -753,6 +927,7 @@ function apply(ctx, config = {}) {
 	let channel = null;
 	let runManager = null;
 	let unsubMessage = null;
+	let directoryService = null;
 	let unsubEvents = [];
 	let generation = 0;
 	let transition = Promise.resolve();
@@ -791,6 +966,18 @@ function apply(ctx, config = {}) {
 				return;
 			}
 			ctx.logger?.info?.("[connect-lark] channel connected");
+			try {
+				directoryService = await startDirectoryService({ listUsers: () => fetchDirectoryUsers(chan.rawClient) });
+				ctx.logger?.info?.("[connect-lark] user directory on 127.0.0.1:" + directoryService.port);
+			} catch (e) {
+				ctx.logger?.warn?.("[connect-lark] user directory unavailable: " + e.message);
+			}
+			if (!currentAlive()) {
+				try {
+					await directoryService?.close();
+				} catch {}
+				return;
+			}
 			runManager = new RunManager({
 				resolveAgent: async (chatId, title) => {
 					const existing = runManager?.getSlot(chatId);
@@ -1024,7 +1211,13 @@ function apply(ctx, config = {}) {
 			const manager = runManager;
 			runManager = null;
 			await Promise.resolve(manager?.drain(3e3)).catch(() => {});
-			await Promise.allSettled([chan ? Promise.resolve(chan.disconnect()) : Promise.resolve(), manager ? Promise.resolve(manager.disposeAll()) : Promise.resolve()]);
+			const directory = directoryService;
+			directoryService = null;
+			await Promise.allSettled([
+				chan ? Promise.resolve(chan.disconnect()) : Promise.resolve(),
+				manager ? Promise.resolve(manager.disposeAll()) : Promise.resolve(),
+				directory ? Promise.resolve(directory.close()) : Promise.resolve()
+			]);
 		};
 		const queueBoot = () => {
 			transition = transition.then(async () => {
@@ -1071,4 +1264,4 @@ const CONTRACT_NOTES = {
 	whitelistFailClosed: "accessMode=restricted (default) + empty senderAllowlist/groupAllowlist = deny all messages; openId always restricts DMs when set",
 	streaming: "channel.stream(to, { markdown: async (c) => { c.append(delta) } }) — SDK-owned CardKit"
 };
-export { CONTRACT_NOTES, Config, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildImageContent, buildUserMessage, createOrResumeAgent, downloadImageBounded, downloadInboundImage, inject, passesWhitelist, plainConfig, resolveAgentModelOptions, resolveAppSecret, richCard, streamMarkdown };
+export { CONTRACT_NOTES, Config, DIRECTORY_PORT, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildImageContent, buildUserMessage, createOrResumeAgent, downloadImageBounded, downloadInboundImage, fetchDirectoryUsers, inject, listDirectoryUsers, passesWhitelist, plainConfig, resolveAgentModelOptions, resolveAppSecret, richCard, startDirectoryService, streamMarkdown };

@@ -22,6 +22,8 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel, type LarkChannel } from "@larksuite/channel";
 import { richCard, streamMarkdown } from "./cards.js";
 import { RunManager, type RunSlot } from "./run.js";
+import { fetchDirectoryUsers } from "./users.js";
+import { startDirectoryService, type DirectoryService } from "./directory-service.js";
 import { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage, MAX_IMAGES_PER_MESSAGE } from "./images.js";
 
 // ---- Config schema (schemastery, not plain zod — ARCHITECTURE §10.6) ----
@@ -279,6 +281,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   let channel: LarkChannel | null = null;
   let runManager: RunManager | null = null;
   let unsubMessage: (() => void) | null = null;
+  let directoryService: DirectoryService | null = null;
   let unsubEvents: Array<() => void> = [];
   let generation = 0;
   let transition: Promise<void> = Promise.resolve();
@@ -319,6 +322,17 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       }
       if (!currentAlive()) { try { await chan.disconnect(); } catch { /* gone */ } return; }
       ctx.logger?.info?.("[connect-lark] channel connected");
+
+      // 3) 授权用户目录（本机只读 HTTP 面）：配置页按姓名挑人、默认选管理员。
+      try {
+        directoryService = await startDirectoryService({
+          listUsers: () => fetchDirectoryUsers((chan as any).rawClient),
+        });
+        ctx.logger?.info?.("[connect-lark] user directory on 127.0.0.1:" + directoryService.port);
+      } catch (e) {
+        ctx.logger?.warn?.("[connect-lark] user directory unavailable: " + (e as Error).message);
+      }
+      if (!currentAlive()) { try { await directoryService?.close(); } catch { /* gone */ } return; }
 
       // 4) Create run manager.
       runManager = new RunManager({
@@ -561,9 +575,12 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       // cancel a reply mid-flight. Drain has a bounded timeout; what remains
       // is then cancelled and disposed.
       await Promise.resolve(manager?.drain(3000)).catch(() => {});
+      const directory = directoryService;
+      directoryService = null;
       await Promise.allSettled([
         chan ? Promise.resolve(chan.disconnect()) : Promise.resolve(),
         manager ? Promise.resolve(manager.disposeAll()) : Promise.resolve(),
+        directory ? Promise.resolve(directory.close()) : Promise.resolve(),
       ]);
     };
 
@@ -618,6 +635,10 @@ function extractImages(msg: any): Array<{ fileKey: string }> {
 export { richCard, streamMarkdown } from "./cards.js";
 export { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage, MAX_IMAGE_BYTES, FEISHU_CDN_HOSTS } from "./images.js";
 export { RunManager } from "./run.js";
+export { fetchDirectoryUsers, listDirectoryUsers } from "./users.js";
+export type { DirectoryUser, DirectoryResult } from "./users.js";
+export { startDirectoryService, DIRECTORY_PORT } from "./directory-service.js";
+export type { DirectoryService } from "./directory-service.js";
 export type { RunSlot, RunState, RunManagerOptions } from "./run.js";
 
 // ---- Contract notes ----

@@ -70,6 +70,15 @@ const zh = {
   accessOpenHint: "任何能私聊该机器人的人都可以驱动本机 Agent。仅用于个人私有场景。",
   openId: "我的 open_id",
   openIdHint: "设置后只有你能私聊驱动机器人。可在飞书开放平台或发送消息后查看。",
+  pickUser: "按姓名找人",
+  pickUserHint: "输入姓名搜索飞书通讯录，点一下就填好 open_id。",
+  searchPlaceholder: "输入姓名…",
+  loadingUsers: "正在读取通讯录…",
+  noUsers: "通讯录里没有匹配的人",
+  directoryUnavailable: "读不到通讯录（应用可能没有通讯录权限）——请手动填写 open_id。",
+  useManager: "用管理员",
+  managerPrefix: "管理员",
+  selectedUser: "已选",
   senderAllowlist: "私聊用户授权",
   senderAllowlistHint: "每行一个 open_id；留空则只有设置了 open_id 的用户可私聊。",
   groupAllowlist: "群聊授权",
@@ -227,6 +236,20 @@ const styles = `
 .cl-segment button{border:1px solid transparent;border-radius:7px;background:transparent;color:#5f6672;padding:8px 12px;font:inherit;font-size:12px;cursor:pointer}
 .cl-segment button[aria-checked="true"]{background:#fff;color:var(--cl-blue);border-color:#cfdcff;box-shadow:0 1px 4px rgba(31,35,41,.06);font-weight:600}
 .cl-workspace-field{margin-bottom:18px}
+.cl-users{border:1px solid #e8eaed;border-radius:10px;padding:12px;background:#fafbfc}
+.cl-users-head{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.cl-users-search{flex:1;min-width:0;border:1px solid #d8dde5;border-radius:8px;padding:6px 10px;font:inherit;font-size:13px;background:#fff;color:#374151}
+.cl-users-search:focus{outline:none;border-color:#3370ff;box-shadow:0 0 0 3px rgba(51,112,255,.12)}
+.cl-users-list{max-height:190px;overflow:auto;display:flex;flex-direction:column;gap:2px}
+.cl-user{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;border-radius:7px;padding:7px 9px;font:inherit;font-size:13px;cursor:pointer;color:#374151;text-align:left}
+.cl-user:hover:not(:disabled){background:#eef3ff}
+.cl-user:disabled{opacity:.6;cursor:not-allowed}
+.cl-user-name{font-weight:500}
+.cl-user-id{font-size:11px;color:#9ca3af;font-family:ui-monospace,monospace}
+.cl-user-badge{font-size:10px;background:#eef2ff;color:#4f46e5;border-radius:999px;padding:1px 7px;font-weight:600}
+.cl-user-picked{margin-left:auto;font-size:11px;color:#16a34a;font-weight:600}
+.cl-users-note{font-size:11.5px;color:#8b949e;line-height:1.6;margin:8px 0 0}
+.cl-users-note.warn{color:#a16207}
 .cl-workspace-field-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px}
 .cl-workspace-field-head .cl-label{margin-bottom:0}
 .cl-workspace-edit{display:inline-flex;align-items:center;gap:5px;border:0;border-radius:6px;background:transparent;color:#526174;padding:3px 6px;font:inherit;font-size:11px;font-weight:550;cursor:pointer}
@@ -588,6 +611,87 @@ function GuideDialog({ onClose, t }) {
   }) });
 }
 
+/** 通讯录用户选择器：有权限时按姓名挑人并自动填 open_id；没有权限时降级为手填。 */
+function UserPicker({ value, onEdit, t, disabled }) {
+  const [state, setState] = React.useState({ status: "idle", users: [], manager: null, reason: "" });
+  const [query, setQuery] = React.useState("");
+
+  const load = React.useCallback(async () => {
+    setState((s) => ({ ...s, status: "loading" }));
+    try {
+      const response = await fetch("http://127.0.0.1:9092/lark-api/users", { headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      const body = await response.json();
+      if (body && body.ok) {
+        setState({ status: "ready", users: body.users || [], manager: body.manager || null, reason: "" });
+        return;
+      }
+      setState({ status: "unavailable", users: [], manager: null, reason: (body && body.reason) || "directory unavailable" });
+    } catch (error) {
+      setState({ status: "unavailable", users: [], manager: null, reason: (error && error.message) || "directory unavailable" });
+    }
+  }, []);
+
+  React.useEffect(() => { void load(); }, [load]);
+
+  const select = (user) => { onEdit("openId")(user.openId); };
+
+  const current = value("openId").text || "";
+  const needle = query.trim().toLowerCase();
+  const matched = state.users.filter((user) =>
+    !needle || user.name.toLowerCase().includes(needle) || user.openId.toLowerCase().includes(needle));
+
+  const head = jsx("div", {
+    className: "cl-users-head",
+    children: [
+      jsx("input", {
+        className: "cl-users-search",
+        value: query,
+        placeholder: t("searchPlaceholder"),
+        disabled: disabled || state.status !== "ready",
+        onChange: (event) => setQuery(event.target.value),
+      }),
+      state.manager
+        ? jsx("button", {
+            type: "button",
+            className: "cl-btn",
+            disabled,
+            onClick: () => select(state.manager),
+            children: t("useManager"),
+          })
+        : null,
+    ],
+  });
+
+  const body = state.status === "loading"
+    ? jsx("div", { className: "cl-users-note", children: t("loadingUsers") })
+    : state.status === "unavailable"
+      ? jsx("div", { className: "cl-users-note warn", children: t("directoryUnavailable") })
+      : matched.length === 0
+        ? jsx("div", { className: "cl-users-note", children: t("noUsers") })
+        : jsx("div", { className: "cl-users-list", children: matched.map((user) => jsx("button", {
+            type: "button",
+            className: "cl-user",
+            key: user.openId,
+            disabled,
+            onClick: () => select(user),
+            children: [
+              jsx("span", { className: "cl-user-name", children: user.name }),
+              jsx("span", { className: "cl-user-id", children: user.openId }),
+              user.isManager ? jsx("span", { className: "cl-user-badge", children: t("managerPrefix") }) : null,
+              current === user.openId ? jsx("span", { className: "cl-user-picked", children: t("selectedUser") }) : null,
+            ],
+          }, user.openId)) });
+
+  return jsx("div", {
+    className: "cl-users",
+    children: [
+      head,
+      body,
+      jsx("p", { className: "cl-users-note", children: t("pickUserHint") }),
+    ],
+  });
+}
 function AccessPicker({ value, onEdit, t, disabled }) {
   const [open, setOpen] = React.useState(null);
   const mode = value("accessMode").text || "restricted";
@@ -600,6 +704,7 @@ function AccessPicker({ value, onEdit, t, disabled }) {
       type: "button", role: "radio", "aria-checked": mode === modeItem.id,
       disabled, onClick: () => { onEdit("accessMode")(modeItem.id); }, children: modeItem.label,
     }, modeItem.id)) }),
+    jsx(UserPicker, { value, onEdit, t, disabled }),
     jsxs("div", { className: "cl-grid", children: [
       jsx(TextField, { id: "connect-lark-openId", label: t("openId"), hint: t("openIdHint"), value: value("openId"), placeholder: "ou_xxx", disabled, onEdit: onEdit("openId") }),
       jsx(ListField, { id: "connect-lark-senderAllowlist", label: t("senderAllowlist"), hint: t("senderAllowlistHint"), value: value("senderAllowlist"), placeholder: "ou_xxx", disabled, onEdit: onEdit("senderAllowlist") }),

@@ -77,7 +77,7 @@ function loadClient() {
     console,
     require(name) {
       if (name === "react") return {
-        createElement: (type, props, ...children) => ({ type, props: { ...(props || {}), children } }),
+        createElement: (type, props, ...children) => ({ type, props: { ...(props || {}), children: children.length ? children : (props && props.children) } }),
         useId: () => "test",
         useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}],
         useMemo: (fn) => fn(),

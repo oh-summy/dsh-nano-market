@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { passesWhitelist, downloadInboundImage, MAX_IMAGE_BYTES, RunManager, resolveAgentModelOptions, createOrResumeAgent } from "../lib/index.mjs";
+import { passesWhitelist, downloadInboundImage, MAX_IMAGE_BYTES, RunManager, resolveAgentModelOptions, createOrResumeAgent, fetchDirectoryUsers, listDirectoryUsers, startDirectoryService } from "../lib/index.mjs";
+
 
 // ---- passesWhitelist ----
 
@@ -224,4 +225,77 @@ test("createOrResumeAgent: creates a fresh session when writer stays held", asyn
   assert.equal(result.handle, created);
   assert.notEqual(result.sessionId, "session-live");
   assert.ok(result.sessionId.startsWith("session-live:"));
+});
+
+
+// ---- 授权用户目录 ----
+
+test("fetchDirectoryUsers: marks the tenant manager and lists users", async () => {
+  const client = {
+    contact: { v3: { user: { findByDepartment: async () => ({
+      code: 0,
+      data: { items: [
+        { name: "陈鑫", open_id: "ou_owner", is_tenant_manager: true, email: "a@b.c" },
+        { name: "李四", open_id: "ou_other", is_tenant_manager: false },
+      ] },
+    }) } } },
+  };
+  const result = await fetchDirectoryUsers(client);
+  assert.equal(result.ok, true);
+  assert.equal(result.users.length, 2);
+  assert.equal(result.manager.openId, "ou_owner");
+  assert.equal(result.manager.isManager, true);
+  assert.equal(result.users[1].isManager, false);
+});
+
+test("fetchDirectoryUsers: reports permission failures without throwing", async () => {
+  const client = {
+    contact: { v3: { user: { findByDepartment: async () => ({ code: 99992402, msg: "field validation failed" }) } } },
+  };
+  const result = await fetchDirectoryUsers(client);
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /field validation/);
+  assert.equal(result.users.length, 0);
+});
+
+test("fetchDirectoryUsers: survives a thrown SDK error", async () => {
+  const client = {
+    contact: { v3: { user: { findByDepartment: async () => { throw new Error("network down"); } } } },
+  };
+  const result = await fetchDirectoryUsers(client);
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /network down/);
+});
+
+test("listDirectoryUsers: rejects a non-zero Feishu code", async () => {
+  const fetchImpl = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ code: 99992402, msg: "no permission" }) });
+  const result = await listDirectoryUsers("token", fetchImpl);
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /no permission/);
+});
+
+test("directory service serves the user list over loopback", async () => {
+  const service = await startDirectoryService({
+    listUsers: async () => ({ ok: true, users: [{ name: "陈鑫", openId: "ou_owner", isManager: true }], manager: { name: "陈鑫", openId: "ou_owner", isManager: true } }),
+    port: 0,
+  });
+  try {
+    const response = await fetch("http://127.0.0.1:" + service.port + "/lark-api/users");
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.manager.openId, "ou_owner");
+  } finally {
+    await service.close();
+  }
+});
+
+test("directory service rejects unknown paths", async () => {
+  const service = await startDirectoryService({ listUsers: async () => ({ ok: true, users: [] }), port: 0 });
+  try {
+    const response = await fetch("http://127.0.0.1:" + service.port + "/other");
+    assert.equal(response.status, 404);
+  } finally {
+    await service.close();
+  }
 });
