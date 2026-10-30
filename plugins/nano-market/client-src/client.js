@@ -36,7 +36,17 @@ const zh = {
   incompatible: "与当前 DSH 版本不兼容",
   busy: "处理中…",
   confirmUninstall: "卸载 {name}？该插件提供的功能会随之消失。",
+  confirmInstall: "安装 {name} {version}？插件代码会在本机运行。",
   uninstallFailed: "卸载失败",
+  enableFailed: "启用失败",
+  disableFailed: "停用失败",
+  cancelled: "操作已取消。",
+  restartRequired: "已保存，重启 DSH 后生效。",
+  errorNotRemovable: "这个插件不能直接卸载，请到「已安装」页处理。",
+  errorStopProfile: "当前 profile 不支持热更新，请先停掉 DSH 再卸载。",
+  errorBundleInUse: "插件正在被使用，先停用再卸载。",
+  errorUnknown: "操作没有完成，请到「已安装」页查看详情。",
+  indexMissing: "还没有添加本市场的索引源。请到「发现 → 索引源」添加 {url}，然后回到这里刷新。",
   enableFailed: "启用失败",
   disableFailed: "停用失败",
   done: "完成",
@@ -110,6 +120,14 @@ function stateOf(entry, bundle) {
   return enabled ? "enabled" : "installed-off";
 }
 
+/** Map a host management error code to something the person can act on. */
+function errorKey(code) {
+  if (code === "not-removable") return "errorNotRemovable";
+  if (code === "stop-profile") return "errorStopProfile";
+  if (code === "bundle-in-use") return "errorBundleInUse";
+  return "errorUnknown";
+}
+
 function NanoMarketTab(props) {
   const t = props.t;
   const [listing, setListing] = useState({ status: "loading", entries: [], error: "" });
@@ -120,6 +138,19 @@ function NanoMarketTab(props) {
   const reload = useCallback(async () => {
     setListing((s) => ({ ...s, status: "loading", error: "" }));
     try {
+      // The host only searches index sources the person configured, so look the
+      // market up there first and say what to do when it is missing.
+      const indexAnswer = await props.ctx.remote.pluginMarket.listIndexes();
+      const indexes = indexAnswer?.value ?? indexAnswer ?? [];
+      const source = indexes.find((item) => item?.url === MARKET_INDEX);
+      if (!source) {
+        setListing({
+          status: "failed",
+          entries: [],
+          error: t("indexMissing", { url: MARKET_INDEX }),
+        });
+        return;
+      }
       const [answer, bundleAnswer] = await Promise.all([
         props.ctx.remote.pluginMarket.search(MARKET_INDEX, { sort: { kind: "index" }, offset: 0, limit: 100 }),
         props.ctx.remote.pluginManager.listBundles(),
@@ -138,15 +169,31 @@ function NanoMarketTab(props) {
 
   useEffect(() => { void reload(); }, [reload]);
 
-  async function run(name, task) {
+  async function run(name, task, failKey) {
     setBusy(name);
     setMessage("");
     try {
       const result = await task();
-      if (result && result.ok === false) throw new Error(result.error?.message || "操作失败");
+      if (result && result.ok === false) throw new Error(result.error?.message || t(failKey));
+      // The host folds business failures into ok:true and reports the outcome in
+      // application, so a failed change must not read as success.
+      const outcome = result?.value?.application;
+      if (outcome === "failed") {
+        const code = result.value.error?.code;
+        setMessage(t(failKey) + "：" + t(errorKey(code)));
+        await reload();
+        return;
+      }
+      if (outcome === "cancelled") {
+        setMessage(t("cancelled"));
+        return;
+      }
+      if (outcome === "restart-required") {
+        setMessage(t("restartRequired"));
+      }
       await reload();
     } catch (error) {
-      setMessage(t("uninstallFailed") + "：" + (error?.message || error));
+      setMessage(t(failKey) + "：" + (error?.message || error));
     } finally {
       setBusy("");
     }
@@ -155,6 +202,9 @@ function NanoMarketTab(props) {
   function install(entry) {
     const version = defaultVersionOf(entry);
     if (!version) return;
+    // Installing runs third-party code on this machine, so confirm first.
+    // The host contract expects the caller to have confirmed.
+    if (!confirm(t("confirmInstall", { name: titleOf(entry), version: version.version }))) return;
     props.install({ ...(version.install || {}), title: titleOf(entry), version: version.version });
   }
 
@@ -181,6 +231,10 @@ function NanoMarketTab(props) {
                 const version = defaultVersionOf(entry);
                 const bundle = bundles[entry.name];
                 const state = stateOf(entry, bundle);
+                const installation = entry.installation || {};
+                const installedVersion = installation.installedVersion;
+                const shownVersion = (state === "not-installed" ? version?.version : installedVersion) || version?.version;
+                const canUpdate = installation.status === "update-available" && installation.version;
                 const compatible = compatibleOf(version);
                 const working = busy === entry.name;
                 const badge = state === "enabled"
@@ -208,19 +262,19 @@ function NanoMarketTab(props) {
                       ? h("button", { type: "button", className: "nmk-btn primary", disabled: working || !compatible, onClick: () => install(entry) }, t("install"))
                       : null,
                     state === "installed-off"
-                      ? h("button", { type: "button", className: "nmk-btn primary", disabled: working, onClick: () => void run(entry.name, () => props.ctx.remote.pluginManager.setBundleEnabled(entry.name, true)) }, t("enable"))
+                      ? h("button", { type: "button", className: "nmk-btn primary", disabled: working, onClick: () => void run(entry.name, () => props.ctx.remote.pluginManager.setBundleEnabled(entry.name, true), "enableFailed") }, t("enable"))
                       : null,
                     state === "enabled"
                       ? h("button", { type: "button", className: "nmk-btn primary", disabled: working, onClick: () => props.openPackage(entry.name) }, t("configure"))
                       : null,
                     state === "enabled"
-                      ? h("button", { type: "button", className: "nmk-btn", disabled: working, onClick: () => void run(entry.name, () => props.ctx.remote.pluginManager.setBundleEnabled(entry.name, false)) }, t("disable"))
+                      ? h("button", { type: "button", className: "nmk-btn", disabled: working, onClick: () => void run(entry.name, () => props.ctx.remote.pluginManager.setBundleEnabled(entry.name, false), "disableFailed") }, t("disable"))
                       : null,
                     state !== "not-installed" ? h("span", { className: "nmk-spacer" }) : null,
                     state !== "not-installed"
-                      ? h("button", { type: "button", className: "nmk-btn danger", disabled: working, onClick: () => {
+                      ? h("button", { type: "button", className: "nmk-btn danger", disabled: working || bundle?.removable === false || bundle?.readOnlyReason !== undefined, onClick: () => {
                           if (!confirm(t("confirmUninstall", { name: titleOf(entry) }))) return;
-                          void run(entry.name, () => props.ctx.remote.pluginManager.removeBundle(entry.name));
+                          void run(entry.name, () => props.ctx.remote.pluginManager.removeBundle(entry.name), "uninstallFailed");
                         } }, t("uninstall"))
                       : null,
                   ),

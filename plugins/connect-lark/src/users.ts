@@ -92,7 +92,7 @@ export interface DirectoryClient {
         }): Promise<{
           code?: number;
           msg?: string;
-          data?: { items?: Array<Record<string, unknown>>; has_more?: boolean };
+          data?: { items?: Array<Record<string, unknown>>; has_more?: boolean; page_token?: string };
         }>;
       };
     };
@@ -110,9 +110,17 @@ export async function fetchDirectoryUsers(client: DirectoryClient): Promise<Dire
   let manager: DirectoryUser | undefined;
   let lastReason = "directory unavailable";
   try {
+    let pageToken = "";
     for (let page = 0; page < MAX_PAGES; page++) {
       const response = await client.contact.v3.user.findByDepartment({
-        params: { user_id_type: "open_id", department_id: "0", page_size: PAGE_SIZE },
+        params: {
+          user_id_type: "open_id",
+          department_id: "0",
+          page_size: PAGE_SIZE,
+          // Without the token every round re-reads page one, so people repeat
+          // and anyone past the first page is never seen.
+          ...(pageToken ? { page_token: pageToken } : {}),
+        },
       });
       if (response?.code !== 0) {
         lastReason = response?.msg || lastReason;
@@ -131,6 +139,8 @@ export async function fetchDirectoryUsers(client: DirectoryClient): Promise<Dire
         if (user.isManager && !manager) manager = user;
       }
       if (!response?.data?.has_more) break;
+      pageToken = String(response?.data?.page_token ?? "");
+      if (!pageToken) break;
     }
     if (users.length === 0 && !manager) {
       // 可能是权限范围问题（99992402 等），也可能是真的没有可见用户。

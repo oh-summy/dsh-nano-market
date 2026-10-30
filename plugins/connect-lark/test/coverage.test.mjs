@@ -285,3 +285,55 @@ test("directory service rejects unknown paths", async () => {
 
 
 
+
+
+test("directory service refuses a foreign origin and allows a local one", async () => {
+  const service = await startDirectoryService({
+    listUsers: async () => ({ ok: true, users: [{ name: "Owner", openId: "ou_owner", isManager: true }] }),
+    port: 0,
+  });
+  try {
+    // A page on any other site must not be able to read the tenant directory.
+    const foreign = await fetch("http://127.0.0.1:" + service.port + "/lark-api/users", {
+      headers: { Origin: "https://evil.example" },
+    });
+    assert.equal(foreign.status, 403);
+    const foreignBody = await foreign.json();
+    assert.equal(foreignBody.ok, false);
+    assert.equal(foreignBody.users.length, 0);
+
+    // The DSH page itself may read it.
+    const local = await fetch("http://127.0.0.1:" + service.port + "/lark-api/users", {
+      headers: { Origin: "http://127.0.0.1:3080" },
+    });
+    assert.equal(local.status, 200);
+    assert.equal(local.headers.get("access-control-allow-origin"), "http://127.0.0.1:3080");
+  } finally {
+    await service.close();
+  }
+});
+
+test("fetchDirectoryUsers follows page_token so pages do not repeat", async () => {
+  const seen = [];
+  const client = {
+    contact: { v3: { user: { findByDepartment: async ({ params }) => {
+      seen.push(params.page_token ?? "");
+      if (!params.page_token) {
+        return { code: 0, data: {
+          has_more: true,
+          page_token: "p2",
+          items: [{ name: "A", open_id: "ou_a", is_tenant_manager: false }],
+        } };
+      }
+      return { code: 0, data: {
+        has_more: false,
+        items: [{ name: "B", open_id: "ou_b", is_tenant_manager: true }],
+      } };
+    } } } },
+  };
+  const result = await fetchDirectoryUsers(client);
+  assert.equal(result.ok, true);
+  assert.deepEqual(seen, ["", "p2"], "the second round must carry the page token");
+  assert.equal(result.users.length, 2);
+  assert.equal(result.manager.openId, "ou_b");
+});

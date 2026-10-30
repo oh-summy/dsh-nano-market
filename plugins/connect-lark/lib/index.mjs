@@ -443,11 +443,13 @@ async function fetchDirectoryUsers(client) {
 	let manager;
 	let lastReason = "directory unavailable";
 	try {
+		let pageToken = "";
 		for (let page = 0; page < MAX_PAGES; page++) {
 			const response = await client.contact.v3.user.findByDepartment({ params: {
 				user_id_type: "open_id",
 				department_id: "0",
-				page_size: PAGE_SIZE
+				page_size: PAGE_SIZE,
+				...pageToken ? { page_token: pageToken } : {}
 			} });
 			if (response?.code !== 0) {
 				lastReason = response?.msg || lastReason;
@@ -466,6 +468,8 @@ async function fetchDirectoryUsers(client) {
 				if (user.isManager && !manager) manager = user;
 			}
 			if (!response?.data?.has_more) break;
+			pageToken = String(response?.data?.page_token ?? "");
+			if (!pageToken) break;
 		}
 		if (users.length === 0 && !manager) return {
 			ok: false,
@@ -494,7 +498,11 @@ const DEFAULT_ORIGINS = [
 	"http://127.0.0.1:3080",
 	"http://localhost:3080",
 	"http://127.0.0.1:8080",
-	"http://localhost:8080"
+	"http://localhost:8080",
+	"http://127.0.0.1:8083",
+	"http://localhost:8083",
+	"http://127.0.0.1:8084",
+	"http://localhost:8084"
 ];
 /**
 * 起一个只读的本机 HTTP 面，给配置页提供「可授权用户」列表。
@@ -507,8 +515,20 @@ async function startDirectoryService(options) {
 }
 async function listen(options, origins, port) {
 	const server = createServer((req, res) => {
-		res.setHeader("Access-Control-Allow-Origin", "*");
-		res.setHeader("Vary", "Origin");
+		const requestOrigin = String(req.headers.origin ?? "");
+		if (requestOrigin && !origins.has(requestOrigin)) {
+			res.writeHead(403, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({
+				ok: false,
+				users: [],
+				reason: "origin not allowed"
+			}));
+			return;
+		}
+		if (requestOrigin) {
+			res.setHeader("Access-Control-Allow-Origin", requestOrigin);
+			res.setHeader("Vary", "Origin");
+		}
 		if (req.method === "OPTIONS") {
 			res.setHeader("Access-Control-Allow-Methods", "GET");
 			res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -755,14 +775,17 @@ const Config = z.object({
 	reasoningEffort: z.string().default("").volatile().comment("思考强度；留空跟随 DSH 当前模型默认配置"),
 	permissionPreset: z.string().default("").volatile().comment("权限模式；留空跟随 DSH 默认，支持 read-only/workspace-write/danger-full-access/auto")
 });
-/** Run a promise with a deadline. Returns undefined when the deadline passed. */
+/** Send a reply with a deadline so a hung request cannot stall the chat. */
+async function sendBounded(chan, chatId, markdown) {
+	if (!(await withTimeout(chan.send(chatId, { markdown }), 15e3)).ok) throw new Error("send timed out");
+}
 function withTimeout(promise, ms) {
 	return new Promise((resolve) => {
 		let settled = false;
 		const timer = setTimeout(() => {
 			if (!settled) {
 				settled = true;
-				resolve(void 0);
+				resolve({ ok: false });
 			}
 		}, ms);
 		timer.unref?.();
@@ -770,13 +793,16 @@ function withTimeout(promise, ms) {
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
-				resolve(value);
+				resolve({
+					ok: true,
+					value
+				});
 			}
-		}, (error) => {
+		}, () => {
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
-				resolve(void 0);
+				resolve({ ok: false });
 			}
 		});
 	});
@@ -801,7 +827,12 @@ function buildUserMessage(content, source) {
 	});
 }
 function passesWhitelist(plain, chatId, senderId, chatType = "p2p", managerOpenId = "") {
-	if (plain.accessMode === "app" || plain.accessMode === "open") return true;
+	if (plain.accessMode === "app") return true;
+	if (plain.accessMode === "open") {
+		if (chatType === "group") return plain.groupAllowlist.length === 0 || plain.groupAllowlist.includes(chatId);
+		if (plain.openId) return plain.openId === senderId;
+		return true;
+	}
 	if (chatType === "group") return plain.groupAllowlist.includes(chatId);
 	if (plain.senderAllowlist.includes(senderId)) return true;
 	if (plain.openId && plain.openId === senderId) return true;
@@ -968,16 +999,6 @@ function apply(ctx, config = {}) {
 				return;
 			}
 			ctx.logger?.info?.("[connect-lark] channel connected");
-			managerOpenId = "";
-			try {
-				const directory = await withTimeout(fetchDirectoryUsers(chan.rawClient), 5e3);
-				if (directory && directory.ok && directory.manager) {
-					managerOpenId = directory.manager.openId;
-					ctx.logger?.info?.("[connect-lark] tenant manager detected");
-				}
-			} catch (e) {
-				ctx.logger?.warn?.("[connect-lark] manager lookup failed: " + e.message);
-			}
 			try {
 				directoryService = await startDirectoryService({ listUsers: () => fetchDirectoryUsers(chan.rawClient) });
 				ctx.logger?.info?.("[connect-lark] user directory on 127.0.0.1:" + directoryService.port);
@@ -1123,18 +1144,18 @@ function apply(ctx, config = {}) {
 				onComplete: async (slot) => {
 					try {
 						if (!slot.streamController && !slot.streamFailed) {
-							if (!await withTimeout(slot.streamReady ?? Promise.resolve(), streamReadyTimeoutMs())) slot.streamFailed = /* @__PURE__ */ new Error("stream producer did not start within " + streamReadyTimeoutMs() + "ms");
+							if (!(await withTimeout(slot.streamReady ?? Promise.resolve(), streamReadyTimeoutMs())).ok) slot.streamFailed = /* @__PURE__ */ new Error("stream producer did not start within " + streamReadyTimeoutMs() + "ms");
 						}
 						if (slot.streamFailed || !slot.streamController) {
 							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
-							await chan.send(slot.chatId, { markdown: reply });
+							await sendBounded(chan, slot.chatId, reply);
 							return;
 						}
 						try {
 							await updateRunCard(slot, plain.thinkingPolicy);
 						} catch (e) {
 							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
-							await chan.send(slot.chatId, { markdown: reply });
+							await sendBounded(chan, slot.chatId, reply);
 						}
 					} finally {
 						slot.streamDone?.();
@@ -1142,6 +1163,17 @@ function apply(ctx, config = {}) {
 				}
 			});
 			unsubMessage = chan.on("message", async (msg) => {
+				managerOpenId = "";
+				try {
+					const probe = await withTimeout(fetchDirectoryUsers(chan.rawClient), 5e3);
+					const directory = probe.ok ? probe.value : void 0;
+					if (directory && directory.ok && directory.manager) {
+						managerOpenId = directory.manager.openId;
+						ctx.logger?.info?.("[connect-lark] tenant manager detected");
+					}
+				} catch (e) {
+					ctx.logger?.warn?.("[connect-lark] manager lookup failed: " + e.message);
+				}
 				if (!currentAlive()) return;
 				if (!passesWhitelist(plain, msg.chatId, msg.senderId, msg.chatType, managerOpenId)) return;
 				const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);

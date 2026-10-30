@@ -109,15 +109,28 @@ export const Config = z.object({
 
 type AnyCtx = any;
 
-/** Run a promise with a deadline. Returns undefined when the deadline passed. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
-  return new Promise<T | undefined>((resolve) => {
+/**
+ * Run a promise with a deadline.
+ *
+ * The result is a tagged outcome rather than the bare value: a resolved
+ * Promise&lt;void&gt; carries undefined, so undefined cannot double as "timed out".
+ */
+type Timed<T> = { ok: true; value: T } | { ok: false };
+
+/** Send a reply with a deadline so a hung request cannot stall the chat. */
+async function sendBounded(chan: LarkChannel, chatId: string, markdown: string): Promise<void> {
+  const sent = await withTimeout(chan.send(chatId, { markdown }), 15000);
+  if (!sent.ok) throw new Error("send timed out");
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<Timed<T>> {
+  return new Promise<Timed<T>>((resolve) => {
     let settled = false;
-    const timer = setTimeout(() => { if (!settled) { settled = true; resolve(undefined); } }, ms);
+    const timer = setTimeout(() => { if (!settled) { settled = true; resolve({ ok: false }); } }, ms);
     timer.unref?.();
     Promise.resolve(promise).then(
-      (value) => { if (!settled) { settled = true; clearTimeout(timer); resolve(value); } },
-      (error) => { if (!settled) { settled = true; clearTimeout(timer); resolve(undefined); } },
+      (value) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ ok: true, value }); } },
+      () => { if (!settled) { settled = true; clearTimeout(timer); resolve({ ok: false }); } },
     );
   });
 }
@@ -165,10 +178,18 @@ export function passesWhitelist(
   chatType: "p2p" | "group" = "p2p",
   managerOpenId = "",
 ): boolean {
-  // "app" (and the legacy "open") defers entirely to the Feishu app's own
-  // 可用范围: whoever can already DM the bot is the audience, so the plugin
-  // adds no second gate and asks for no ids.
-  if (plain.accessMode === "app" || plain.accessMode === "open") return true;
+  // "app" defers entirely to the Feishu app's own 可用范围: whoever can
+  // already DM the bot is the audience, so the plugin adds no second gate.
+  if (plain.accessMode === "app") return true;
+  // The legacy "open" meant "unrestricted DMs" while groups and openId still
+  // applied. Keep that narrowing so an upgrade does not widen access.
+  if (plain.accessMode === "open") {
+    if (chatType === "group") {
+      return plain.groupAllowlist.length === 0 || plain.groupAllowlist.includes(chatId);
+    }
+    if (plain.openId) return plain.openId === senderId;
+    return true;
+  }
   // "list" (and the legacy "restricted") narrows to the explicit grants.
   if (chatType === "group") return plain.groupAllowlist.includes(chatId);
   if (plain.senderAllowlist.includes(senderId)) return true;
@@ -324,23 +345,6 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       if (!currentAlive()) { try { await chan.disconnect(); } catch { /* gone */ } return; }
       ctx.logger?.info?.("[connect-lark] channel connected");
 
-      // 2.5) 探测租户管理员：可用范围里的 owner 默认可用。
-      // 先清空，避免上一个应用的授权残留到新连接。
-      managerOpenId = "";
-      try {
-        // 探测不能拖慢启动：飞书不可达时按「没有管理员」继续，而不是卡住。
-        const directory = await withTimeout(
-          fetchDirectoryUsers((chan as any).rawClient),
-          5000,
-        );
-        if (directory && directory.ok && directory.manager) {
-          managerOpenId = directory.manager.openId;
-          ctx.logger?.info?.("[connect-lark] tenant manager detected");
-        }
-      } catch (e) {
-        ctx.logger?.warn?.("[connect-lark] manager lookup failed: " + (e as Error).message);
-      }
-
       // 3) 授权用户目录（本机只读 HTTP 面）：配置页按姓名挑人、默认选管理员。
       try {
         directoryService = await startDirectoryService({
@@ -488,20 +492,22 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               // Bound the wait so a channel that never starts the producer cannot
               // leave this chat stuck in "finishing" forever.
               const ready = await withTimeout(slot.streamReady ?? Promise.resolve(), streamReadyTimeoutMs());
-              if (!ready) {
+              if (!ready.ok) {
                 slot.streamFailed = new Error("stream producer did not start within " + streamReadyTimeoutMs() + "ms");
               }
             }
             if (slot.streamFailed || !slot.streamController) {
               const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
-              await chan.send(slot.chatId, { markdown: reply });
+              // Bound the send: a hung Feishu request would otherwise keep the
+              // slot in "finishing" and stall every later message in this chat.
+              await sendBounded(chan, slot.chatId, reply);
               return;
             }
             try {
               await updateRunCard(slot, plain.thinkingPolicy);
             } catch (e) {
               const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
-              await chan.send(slot.chatId, { markdown: reply });
+              await sendBounded(chan, slot.chatId, reply);
             }
           } finally {
             slot.streamDone?.();
@@ -511,6 +517,25 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
 
       // 5) Subscribe to messages.
       unsubMessage = chan.on("message", async (msg: any) => {
+      // 2.5) 探测租户管理员：可用范围里的 owner 默认可用。
+      // 先清空，避免上一个应用的授权残留到新连接。
+      managerOpenId = "";
+      try {
+        // 探测不能拖慢启动：飞书不可达时按「没有管理员」继续，而不是卡住。
+        const probe = await withTimeout(
+          fetchDirectoryUsers((chan as any).rawClient),
+          5000,
+        );
+        const directory = probe.ok ? probe.value : undefined;
+        if (directory && directory.ok && directory.manager) {
+          managerOpenId = directory.manager.openId;
+          ctx.logger?.info?.("[connect-lark] tenant manager detected");
+        }
+      } catch (e) {
+        ctx.logger?.warn?.("[connect-lark] manager lookup failed: " + (e as Error).message);
+      }
+
+
         if (!currentAlive()) return;
         if (!passesWhitelist(plain, msg.chatId, msg.senderId, msg.chatType, managerOpenId)) return;
 

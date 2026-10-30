@@ -31,6 +31,10 @@ const DEFAULT_ORIGINS = [
   "http://localhost:3080",
   "http://127.0.0.1:8080",
   "http://localhost:8080",
+  "http://127.0.0.1:8083",
+  "http://localhost:8083",
+  "http://127.0.0.1:8084",
+  "http://localhost:8084",
 ];
 
 export interface DirectoryService {
@@ -53,10 +57,18 @@ export async function startDirectoryService(options: DirectoryServiceOptions): P
 async function listen(options: DirectoryServiceOptions, origins: Set<string>, port: number): Promise<DirectoryService> {
 
   const server: Server = createServer((req, res) => {
-    // 这个服务只监听 127.0.0.1、只读通讯录、不带凭据，所以对任意来源开放 CORS 是安全的：
-    // 外部攻击者无法连到本机回环端口。
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Vary", "Origin");
+    // 浏览器里的任意网页都能连到 127.0.0.1，所以 CORS 不能放开：
+    // 只有本机 DSH 自己的页面才允许读通讯录。
+    const requestOrigin = String(req.headers.origin ?? "");
+    if (requestOrigin && !origins.has(requestOrigin)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, users: [], reason: "origin not allowed" }));
+      return;
+    }
+    if (requestOrigin) {
+      res.setHeader("Access-Control-Allow-Origin", requestOrigin);
+      res.setHeader("Vary", "Origin");
+    }
     if (req.method === "OPTIONS") {
       res.setHeader("Access-Control-Allow-Methods", "GET");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type");

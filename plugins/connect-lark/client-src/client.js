@@ -60,6 +60,7 @@ const zh = {
   guideCopy: "复制配置清单",
   guideCopied: "已复制",
   guideClose: "关闭",
+  guideJsonLabel: "最小权限清单",
   guideNote: "这是一份最小配置清单，不是密钥；可以复制给应用管理员核对。",
   fixedTrigger: "群里 @ 机器人即可触发，无需额外设置。",
   access: "访问控制",
@@ -67,13 +68,13 @@ const zh = {
   accessApp: "跟随应用权限",
   accessAppHint: "谁能私聊机器人由飞书应用的「可用范围」决定，插件不再额外限制，也无需填任何 id。群聊仍需 @ 机器人，群成员不受此限制——要收紧群请改用「指定人员可用」。",
   accessList: "指定人员可用",
-  accessListHint: "只允许名单里的人和租户管理员；其他人发消息会被忽略。",
+  accessListHint: "只允许名单里的人私聊、名单里的群发消息，租户管理员始终可用。",
   accessRestricted: "仅授权用户",
   accessRestrictedHint: "只接受显式授权的聊天；未授权的消息会被忽略。推荐使用。",
   accessOpen: "允许所有聊天",
   accessOpenHint: "任何能私聊该机器人的人都可以驱动本机 Agent。仅用于个人私有场景。",
   openId: "我的 open_id",
-  openIdHint: "设置后只有你能私聊驱动机器人。可在飞书开放平台或发送消息后查看。",
+  openIdHint: "指定唯一的私聊用户；不填就按上面的模式判断。在飞书开放平台或发送消息后可以查到自己的 open_id。",
   pickUser: "按姓名或 open_id 找人",
   pickUserHint: "搜索飞书通讯录里的全部可见人员，点一下就加入授权名单。",
   searchPlaceholder: "输入姓名…",
@@ -285,9 +286,9 @@ const styles = `
 .cl-workspace-edit:focus-visible{outline:2px solid var(--cl-blue);outline-offset:2px}
 .cl-browser-modal{width:min(680px,100%)}
 .cl-browser-path{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin:18px 0 12px}
-.cl-browser-list{height:340px;overflow:auto;border:1px solid #eceff3;border-radius:10px;padding:6px}
+.cl-browser-list{height:340px;overflow:auto;border:1px solid #e9ecf2;border-radius:12px;padding:6px;background:#fcfdfe}
 .cl-browser-entry{display:block;width:100%;border:0;border-radius:7px;background:transparent;color:#374151;text-align:left;padding:8px 10px;font:inherit;font-size:12px;cursor:pointer}
-.cl-browser-entry:hover{background:#f2f5fa}
+
 .cl-browser-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px}
 .cl-browser-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .cl-browser-create{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin-top:14px}
@@ -313,22 +314,32 @@ const styles = `
 .cl-empty{padding:18px;text-align:center;color:var(--cl-muted);font-size:12px}
 .cl-catalog-error{display:flex;align-items:center;gap:10px;color:#8a5a00;background:#fff8e8;border-radius:8px;padding:8px 10px;font-size:11px;margin-bottom:12px}
 .cl-retry{border:0;background:transparent;color:var(--cl-blue);font:inherit;font-weight:600;cursor:pointer;padding:2px}
-.cl-modal-backdrop{position:fixed;inset:0;z-index:1000;background:rgba(20,26,36,.38);display:flex;align-items:center;justify-content:center;padding:22px;backdrop-filter:blur(3px)}
-.cl-modal{width:min(600px,100%);max-height:min(760px,90vh);overflow:auto;background:#fff;border-radius:18px;box-shadow:0 24px 80px rgba(20,26,36,.25);padding:26px}
+.cl-modal-backdrop{position:fixed;inset:0;z-index:1000;background:rgba(14,18,26,.44);display:flex;align-items:center;justify-content:center;padding:24px;backdrop-filter:blur(3px) saturate(120%)}
+.cl-modal{width:min(600px,100%);max-height:min(760px,90vh);overflow:auto;background:#fff;border:1px solid #e7eaf0;border-radius:18px;box-shadow:0 1px 2px rgba(16,24,40,.04),0 12px 32px -8px rgba(16,24,40,.14),0 40px 80px -24px rgba(16,24,40,.24);padding:26px}
 .cl-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
-.cl-modal h3{margin:0;font-size:20px;letter-spacing:-.02em}
+.cl-modal h3{margin:0;font-size:17px;font-weight:650;letter-spacing:-.01em}
 .cl-modal-intro{margin:8px 0 20px;color:var(--cl-muted);font-size:12px;line-height:1.65}
-.cl-close{border:0;background:#f2f3f5;color:#59616d;border-radius:8px;width:30px;height:30px;font:inherit;cursor:pointer;flex-shrink:0}
-.cl-step{display:flex;gap:13px;margin:18px 0}
-.cl-step-number{display:inline-flex;align-items:center;justify-content:center;width:25px;height:25px;border-radius:50%;background:#edf3ff;color:var(--cl-blue);font-size:11px;font-weight:700;flex-shrink:0}
-.cl-step h4{margin:1px 0 5px;font-size:13px}
-.cl-step p{margin:0;color:var(--cl-muted);font-size:12px;line-height:1.65}
-.cl-code{position:relative;background:#161b26;color:#dce6f5;border-radius:12px;padding:16px;font:11px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow:auto}
+.cl-close{border:0;background:transparent;color:#8a929e;border-radius:50%;width:30px;height:30px;font-size:17px;line-height:1;font:inherit;cursor:pointer;flex-shrink:0;transition:background .12s,color .12s}
+.cl-close:hover{background:#f2f3f5;color:#1f2329}
+.cl-steps{position:relative;margin:20px 0 22px;padding-left:2px}
+.cl-step{position:relative;display:flex;gap:14px;padding:0 0 18px 0}
+.cl-step:last-child{padding-bottom:0}
+.cl-step::before{content:"";position:absolute;left:7px;top:22px;bottom:0;width:2px;background:linear-gradient(180deg,#d9e3fb,#eaeff8);border-radius:2px}
+.cl-step:last-child::before{display:none}
+.cl-step-node{position:relative;z-index:1;display:block;flex:0 0 auto;width:16px;height:16px;margin-top:3px;border-radius:5px;background:#fff;border:2px solid var(--cl-blue);box-shadow:0 1px 2px rgba(51,112,255,.18)}
+.cl-step-node::after{content:"";position:absolute;inset:3px;border-radius:2px;background:var(--cl-blue)}
+.cl-step:first-child .cl-step-node{border-color:#1f6bff}
+.cl-step-body{min-width:0}
+.cl-step h4{margin:0 0 4px;font-size:13.5px;font-weight:600;letter-spacing:-.005em}
+.cl-step p{margin:0;color:var(--cl-muted);font-size:12px;line-height:1.7}
+.cl-code-label{display:block;margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8a929e}
+.cl-code{position:relative;background:#111826;color:#c9d6ea;border:1px solid #1d2942;border-left:3px solid var(--cl-blue);border-radius:12px;padding:16px 18px;font:11.5px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow:auto;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
 .cl-modal-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:20px;flex-wrap:wrap}
 .cl-primary,.cl-secondary{display:inline-flex;align-items:center;justify-content:center;border-radius:8px;padding:9px 13px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none}
 .cl-primary{border:1px solid var(--cl-blue);background:var(--cl-blue);color:#fff}
 .cl-secondary{border:1px solid #d8dde5;background:#fff;color:#374151}
-.cl-modal-note{color:var(--cl-muted);font-size:10px;margin-top:12px;line-height:1.5}
+.cl-modal-note{color:#4a5568;font-size:11.5px;margin:14px 0 0;line-height:1.65;padding:9px 12px;border-radius:9px;background:#f4f7fd;border:1px solid #e3ebfa;display:flex;gap:8px}
+.cl-modal-note::before{content:"";flex:0 0 auto;width:5px;height:5px;margin-top:6px;border-radius:50%;background:var(--cl-blue);opacity:.55}
 .cl-footer{color:var(--cl-muted);font-size:10px;line-height:1.5;margin-top:8px}
 @media(max-width:560px){.cl-hero{padding:18px}.cl-hero-top{align-items:flex-start;flex-direction:column}.cl-card{padding:17px}.cl-status{white-space:normal}.cl-modal{padding:20px}.cl-section-head{flex-direction:column}.cl-guide-link{align-self:flex-start}}
 @media(prefers-reduced-motion:reduce){.cl-input,.cl-select,.cl-picker-trigger{transition:none}.cl-modal-backdrop{backdrop-filter:none}}
@@ -552,7 +563,7 @@ function WorkspaceDialog({ listDirectory, createDirectory, onPick, onClose, t })
       ] }),
       error ? jsx("p", { className: "cl-hint", role: "alert", children: error }) : null,
       jsx("div", { className: "cl-browser-list", children: loading ? jsx("div", { className: "cl-empty", children: "正在读取目录…" }) : (listing?.entries || []).filter((entry) => showHidden || !entry.hidden).map((entry) => jsx("button", {
-        type: "button", className: "cl-browser-entry", onClick: () => load(entry.path), children: jsxs("span", { children: ["▸ ", entry.name] }),
+        type: "button", className: "cl-browser-entry", onClick: () => load(entry.path), children: jsxs("span", { children: [jsx("span", { className: "cl-browser-entry-mark", children: "▸" }), jsx("span", { children: entry.name })] }),
       }, entry.path)) }),
       listing?.truncated ? jsx("p", { className: "cl-hint", children: "文件夹过多，仅显示开头部分。" }) : null,
       jsxs("div", { className: "cl-browser-footer", children: [
@@ -621,14 +632,17 @@ function GuideDialog({ onClose, t }) {
         jsx("button", { className: "cl-close", type: "button", "aria-label": t("guideClose"), onClick: onClose, children: "×" }),
       ] }),
       jsx("p", { className: "cl-modal-intro", children: t("guideIntro") }),
-      [
-        [t("guideStep1"), t("guideStep1Text")],
-        [t("guideStep2"), t("guideStep2Text")],
-        [t("guideStep3"), t("guideStep3Text")],
-      ].map(([title, text], index) => jsxs("div", { className: "cl-step", children: [
-        jsx("span", { className: "cl-step-number", children: String(index + 1).padStart(2, "0") }),
-        jsxs("div", { children: [jsx("h4", { children: title }), jsx("p", { children: text })] }),
-      ] }, title)),
+      jsx("div", { className: "cl-steps", children: [
+        [
+          [t("guideStep1"), t("guideStep1Text")],
+          [t("guideStep2"), t("guideStep2Text")],
+          [t("guideStep3"), t("guideStep3Text")],
+        ].map(([title, text]) => jsxs("div", { className: "cl-step", children: [
+          jsx("span", { className: "cl-step-node", "aria-hidden": "true" }),
+          jsxs("div", { className: "cl-step-body", children: [jsx("h4", { children: title }), jsx("p", { children: text })] }),
+        ] }, title)),
+      ] }),
+      jsx("span", { className: "cl-code-label", children: t("guideJsonLabel") }),
       jsx("pre", { className: "cl-code", children: GUIDE_JSON }),
       jsxs("div", { className: "cl-modal-actions", children: [
         jsx("a", { className: "cl-primary", href: "https://open.feishu.cn/app", target: "_blank", rel: "noreferrer", children: t("guideOpen") + " ↗" }),
