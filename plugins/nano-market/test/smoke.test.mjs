@@ -27,7 +27,7 @@ test("client registers the Nano Market tab with the host-provided props", () => 
   assert.match(source, /props\.openPackage\(/);
   // lifecycle actions go through the host pluginManager
   assert.match(source, /pluginManager\.setBundleEnabled/);
-  assert.match(source, /pluginManager\.removeBundle/);
+  assert.match(source, /pluginManager\.setBundleEnabled/);
   // the market index is this market's own published index
   assert.match(source, /oh-summy\.github\.io\/dsh-nano-market\/index\.json/);
 });

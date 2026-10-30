@@ -1,6 +1,7 @@
 {
   "name": "@oh-summy/nano-market",
   "version": "0.1.0-beta.1",
+  "icon": "./icon.svg",
   "private": true,
   "description": "Nano Market — the DSH plugin market page: browse, install, enable, disable, and uninstall every plugin registered in this market.",
   "license": "MIT",
@@ -8,7 +9,8 @@
   "main": "./lib/index.mjs",
   "exports": {
     ".": "./lib/index.mjs",
-    "./client": "./lib/client.js"
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
   },
   "engines": {
     "node": ">=24",

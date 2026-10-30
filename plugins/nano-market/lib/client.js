@@ -8,10 +8,11 @@ window.__ModuleLoader__.load({
 		// Nano Market — Plugins 页的专属页签（plugins.tab，与官方 Discover 同机制）。
 // 一级页面：列出本市场注册的插件，按「未安装 → 已安装未启用 → 已启用」三态给出对应操作：
 //   未安装        → 安装
-//   已安装未启用  → 启用 / 卸载
-//   已启用        → 配置 / 停用 / 卸载
-// 二级页面：点「配置」交给宿主（openPackage）打开官方插件详情页——
+//   已安装未启用  → 启用
+//   已启用        → 停用（点整张卡片进入插件页面）
+// 二级页面：整卡点击交给宿主（openPackage）打开官方插件详情页——
 //   那里由宿主渲染 plugins.bundle.config 配置表单与各插件自己的 detail 区段。
+// 卸载不在这里做：官方插件页用同样的方式管理启停与卸载，重复一份只会让人多点一次。
 //
 // 宿主提供的 ownerProps（见 client-ui-plugin-manager 的 PluginTabProps）：
 //   install(target)    安装一个确切版本（自带确认弹窗与安装流程）
@@ -25,7 +26,7 @@ const MARKET_INDEX = "https://oh-summy.github.io/dsh-nano-market/index.json";
 
 const zh = {
   title: "Nano Market",
-  subtitle: "本市场注册的插件——安装、启用、卸载都在这里。",
+  subtitle: "本市场注册的插件——安装、启用都在这里，点开卡片进配置。",
   loading: "正在读取市场索引…",
   failed: "读取市场索引失败",
   retry: "重试",
@@ -34,6 +35,7 @@ const zh = {
   enable: "启用",
   disable: "停用",
   uninstall: "卸载",
+  openHint: "点击卡片进入配置",
   stateNotInstalled: "未安装",
   stateInstalledOff: "已安装 · 未启用",
   stateEnabled: "已启用",
@@ -68,9 +70,14 @@ const CSS = `
 .nmk-list{display:flex;flex-direction:column;gap:12px}
 .nmk-card{border:1px solid #e9ecf1;border-radius:14px;background:#fff;padding:16px 18px;transition:border-color .15s,box-shadow .15s}
 .nmk-card:hover{border-color:#d8e0ee;box-shadow:0 1px 3px rgba(31,35,41,.05)}
+.nmk-card.nmk-open{cursor:pointer;transition:border-color .15s,box-shadow .15s,transform .15s}
+.nmk-card.nmk-open:hover{border-color:#b9cdf5;box-shadow:0 4px 14px rgba(31,35,41,.08);transform:translateY(-1px)}
+.nmk-card.nmk-open:focus-visible{outline:2px solid #3370ff;outline-offset:2px}
+.nmk-card.nmk-open:active{transform:translateY(0)}
 .nmk-top{display:flex;align-items:flex-start;gap:13px}
-.nmk-icon{width:40px;height:40px;border-radius:11px;flex-shrink:0;background:linear-gradient(135deg,#eef3ff,#f7f9ff);border:1px solid #e6ebf5;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:600;color:#3370ff;overflow:hidden}
-.nmk-icon img{width:100%;height:100%;object-fit:cover}
+.nmk-icon{width:42px;height:42px;border-radius:12px;flex-shrink:0;background:linear-gradient(135deg,#eef3ff,#f7f9ff);border:1px solid #e6ebf5;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:600;color:#3370ff;overflow:hidden}
+.nmk-icon img{width:100%;height:100%;object-fit:cover;display:block}
+.nmk-hint{font-size:11.5px;color:#9aa3af;margin-left:2px}
 .nmk-main{min-width:0;flex:1}
 .nmk-name{font-size:14.5px;font-weight:600;display:flex;align-items:center;gap:9px;flex-wrap:wrap;line-height:1.4}
 .nmk-ver{font-size:12px;color:#9aa3af;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:500}
@@ -249,10 +256,22 @@ function NanoMarketTab(props) {
                   : state === "installed-off"
                     ? { cls: "warn", text: t("stateInstalledOff") }
                     : { cls: "off", text: t("stateNotInstalled") };
-                return h("div", { className: "nmk-card", key: entry.name },
+                const openable = state === "enabled";
+                return h("div", {
+                  className: "nmk-card" + (openable ? " nmk-open" : ""),
+                  key: entry.name,
+                  role: openable ? "button" : undefined,
+                  tabIndex: openable ? 0 : undefined,
+                  onClick: openable ? () => props.openPackage(entry.name) : undefined,
+                  onKeyDown: openable ? (event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    props.openPackage(entry.name);
+                  } : undefined,
+                },
                   h("div", { className: "nmk-top" },
-                    h("div", { className: "nmk-icon" }, entry.icon
-                      ? h("img", { src: entry.icon, alt: "" })
+                    h("div", { className: "nmk-icon" }, (bundle?.meta?.icon || entry.icon)
+                      ? h("img", { src: bundle?.meta?.icon || entry.icon, alt: "" })
                       : h("span", null, titleOf(entry).slice(0, 1))),
                     h("div", { className: "nmk-main" },
                       h("div", { className: "nmk-name" },
@@ -266,23 +285,22 @@ function NanoMarketTab(props) {
                   ),
                   h("div", { className: "nmk-actions" },
                     state === "not-installed"
-                      ? h("button", { type: "button", className: "nmk-btn primary", disabled: working || !compatible, onClick: () => install(entry) }, t("install"))
+                      ? h("button", { type: "button", className: "nmk-btn primary", disabled: working || !compatible, onClick: (event) => { event.stopPropagation(); install(entry); } }, t("install"))
                       : null,
-                    state === "installed-off"
-                      ? h("button", { type: "button", className: "nmk-btn primary", disabled: working, onClick: () => void run(entry.name, () => props.ctx.remote.pluginManager.setBundleEnabled(entry.name, true), "enableFailed") }, t("enable"))
-                      : null,
-                    state === "enabled"
-                      ? h("button", { type: "button", className: "nmk-btn primary", disabled: working, onClick: () => props.openPackage(entry.name) }, t("configure"))
-                      : null,
-                    state === "enabled"
-                      ? h("button", { type: "button", className: "nmk-btn", disabled: working, onClick: () => void run(entry.name, () => props.ctx.remote.pluginManager.setBundleEnabled(entry.name, false), "disableFailed") }, t("disable"))
-                      : null,
-                    state !== "not-installed" ? h("span", { className: "nmk-spacer" }) : null,
                     state !== "not-installed"
-                      ? h("button", { type: "button", className: "nmk-btn danger", disabled: working || bundle?.removable === false || bundle?.readOnlyReason !== undefined, onClick: () => {
-                          if (!confirm(t("confirmUninstall", { name: titleOf(entry) }))) return;
-                          void run(entry.name, () => props.ctx.remote.pluginManager.removeBundle(entry.name), "uninstallFailed");
-                        } }, t("uninstall"))
+                      ? h("button", {
+                          type: "button",
+                          className: "nmk-btn " + (state === "enabled" ? "" : "primary"),
+                          disabled: working,
+                          onClick: (event) => {
+                            event.stopPropagation();
+                            const next = state !== "enabled";
+                            void run(entry.name, () => props.ctx.remote.pluginManager.setBundleEnabled(entry.name, next), next ? "enableFailed" : "disableFailed");
+                          },
+                        }, state === "enabled" ? t("disable") : t("enable"))
+                      : null,
+                    state === "enabled"
+                      ? h("span", { className: "nmk-hint" }, t("openHint"))
                       : null,
                   ),
                   busy === entry.name ? h("div", { className: "nmk-msg" }, t("busy")) : null,
