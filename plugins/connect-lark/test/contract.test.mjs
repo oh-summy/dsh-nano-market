@@ -37,7 +37,7 @@ test("parsed config has every field and the right defaults", () => {
   assert.equal(parsed.domain.get(), "feishu");
   assert.equal(parsed.requireMention.get(), true);
   assert.equal(parsed.agentOwnership.get(), "owned-per-chat");
-  assert.equal(parsed.accessMode.get(), "restricted");
+  assert.equal(parsed.accessMode.get(), "app");
   assert.equal(parsed.thinkingPolicy.get(), "cot-visible");
   assert.equal(parsed.reasoningEffort.get(), "");
   assert.deepEqual(parsed.senderAllowlist.get(), []);
@@ -74,7 +74,7 @@ test("plainConfig unwraps every volatile field to plain values", () => {
   assert.equal(plain.appId, "");
   assert.equal(plain.appSecretRef, "CONNECT_LARK_APP_SECRET");
   assert.equal(plain.domain, "feishu");
-  assert.equal(plain.accessMode, "restricted");
+  assert.equal(plain.accessMode, "app");
   assert.deepEqual(plain.senderAllowlist, []);
 });
 

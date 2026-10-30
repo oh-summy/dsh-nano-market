@@ -64,18 +64,22 @@ const zh = {
   fixedTrigger: "群里 @ 机器人即可触发，无需额外设置。",
   access: "访问控制",
   accessHint: "谁可以给这个机器人发消息。默认只允许你授权的用户，避免其他人驱动本机 Agent。",
+  accessApp: "跟随应用权限",
+  accessAppHint: "谁能私聊机器人由飞书应用的「可用范围」决定，插件不再额外限制，也无需填任何 id。",
+  accessList: "指定人员可用",
+  accessListHint: "只允许名单里的人和租户管理员；其他人发消息会被忽略。",
   accessRestricted: "仅授权用户",
   accessRestrictedHint: "只接受显式授权的聊天；未授权的消息会被忽略。推荐使用。",
   accessOpen: "允许所有聊天",
   accessOpenHint: "任何能私聊该机器人的人都可以驱动本机 Agent。仅用于个人私有场景。",
   openId: "我的 open_id",
   openIdHint: "设置后只有你能私聊驱动机器人。可在飞书开放平台或发送消息后查看。",
-  pickUser: "按姓名找人",
-  pickUserHint: "输入姓名搜索飞书通讯录，点一下就填好 open_id。",
+  pickUser: "按姓名或 open_id 找人",
+  pickUserHint: "搜索飞书通讯录里的全部可见人员，点一下就加入授权名单。",
   searchPlaceholder: "输入姓名…",
   loadingUsers: "正在读取通讯录…",
   noUsers: "通讯录里没有匹配的人",
-  directoryUnavailable: "读不到通讯录（应用可能没有通讯录权限）——请手动填写 open_id。",
+  directoryUnavailable: "读不到通讯录——直接手填 open_id 也一样能用。",
   useManager: "用管理员",
   managerPrefix: "管理员",
   selectedUser: "已选",
@@ -642,9 +646,16 @@ function UserPicker({ value, onEdit, t, disabled }) {
 
   React.useEffect(() => { void load(); }, [load]);
 
-  const select = (user) => { onEdit("openId")(user.openId); };
+  const select = (user) => {
+    // 加入私聊授权名单；同时填上 open_id，两个入口都能用。
+    const current = Array.isArray(value("senderAllowlist").text) ? value("senderAllowlist").text : [];
+    const list = current.includes(user.openId) ? current : [...current, user.openId];
+    onEdit("senderAllowlist")(list);
+    if (!value("openId").text) onEdit("openId")(user.openId);
+  };
 
   const current = value("openId").text || "";
+  const granted = Array.isArray(value("senderAllowlist").text) ? value("senderAllowlist").text : [];
   const needle = query.trim().toLowerCase();
   const matched = state.users.filter((user) =>
     !needle || user.name.toLowerCase().includes(needle) || user.openId.toLowerCase().includes(needle));
@@ -687,7 +698,7 @@ function UserPicker({ value, onEdit, t, disabled }) {
               jsx("span", { className: "cl-user-name", children: user.name }),
               jsx("span", { className: "cl-user-id", children: user.openId }),
               user.isManager ? jsx("span", { className: "cl-user-badge", children: t("managerPrefix") }) : null,
-              current === user.openId ? jsx("span", { className: "cl-user-picked", children: t("selectedUser") }) : null,
+              granted.includes(user.openId) ? jsx("span", { className: "cl-user-picked", children: t("selectedUser") }) : null,
             ],
           }, user.openId)) });
 
@@ -714,28 +725,33 @@ function UserPicker({ value, onEdit, t, disabled }) {
   });
 }
 function AccessPicker({ value, onEdit, t, disabled }) {
-  const mode = value("accessMode").text || "restricted";
+  const mode = value("accessMode").text || "app";
+  // "app" and the legacy "open" both mean: defer to the Feishu app scope.
+  const isAppScope = mode === "app" || mode === "open";
   const modes = [
-    { id: "restricted", label: t("accessRestricted"), desc: t("accessRestrictedHint") },
-    { id: "open", label: t("accessOpen"), desc: t("accessOpenHint") },
+    { id: "app", label: t("accessApp") },
+    { id: "list", label: t("accessList") },
   ];
-  const current = modes.find((item) => item.id === mode) || modes[0];
   return jsx("div", {
     children: [
       jsx("div", { className: "cl-segment-inline", role: "radiogroup", "aria-label": t("access"), children: modes.map((modeItem) => jsx("button", {
         type: "button",
         role: "radio",
-        "aria-checked": mode === modeItem.id,
+        "aria-checked": (mode === "app" && modeItem.id === "app") || (mode === "restricted" && modeItem.id === "list") || mode === modeItem.id,
         disabled,
         onClick: () => { onEdit("accessMode")(modeItem.id); },
         children: modeItem.label,
       }, modeItem.id)) }),
-      jsx("p", { className: "cl-hint", children: current.desc }),
-      jsx(UserPicker, { value, onEdit, t, disabled }),
-      jsx("div", { className: "cl-grid cl-grid-two", style: { marginTop: 18 }, children: [
-        jsx(ListField, { id: "connect-lark-senderAllowlist", label: t("senderAllowlist"), hint: t("senderAllowlistHint"), value: value("senderAllowlist"), placeholder: "ou_xxx", disabled, onEdit: onEdit("senderAllowlist") }),
-        jsx(ListField, { id: "connect-lark-groupAllowlist", label: t("groupAllowlist"), hint: t("groupAllowlistHint"), value: value("groupAllowlist"), placeholder: "oc_xxx", disabled, onEdit: onEdit("groupAllowlist") }),
-      ] }),
+      jsx("p", { className: "cl-hint", children: isAppScope ? t("accessAppHint") : t("accessListHint") }),
+      isAppScope
+        ? null
+        : jsxs("div", { children: [
+            jsx(UserPicker, { value, onEdit, t, disabled }),
+            jsx("div", { className: "cl-grid cl-grid-two", style: { marginTop: 18 }, children: [
+              jsx(ListField, { id: "connect-lark-senderAllowlist", label: t("senderAllowlist"), hint: t("senderAllowlistHint"), value: value("senderAllowlist"), placeholder: "ou_xxx", disabled, onEdit: onEdit("senderAllowlist") }),
+              jsx(ListField, { id: "connect-lark-groupAllowlist", label: t("groupAllowlist"), hint: t("groupAllowlistHint"), value: value("groupAllowlist"), placeholder: "oc_xxx", disabled, onEdit: onEdit("groupAllowlist") }),
+            ] }),
+          ] }),
     ],
   });
 }

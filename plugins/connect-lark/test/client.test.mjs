@@ -242,18 +242,20 @@ test("client renders the access control section with mode and openId controls", 
     t: (key) => key,
   }));
   const text = collectText(tree).join(" ");
-  assert.match(text, /accessRestricted/);
-  assert.match(text, /accessOpen/);
-  assert.match(text, /openId/);
+  assert.match(text, /accessApp/);
+  assert.match(text, /accessList/);
+  assert.match(text, /accessAppHint/);
+  assert.match(text, /accessAppHint/);
   // restricted mode should be the default selected
-  const restrictedBtn = collectButtons(tree).find((b) =>
-    b.props.role === "radio" && collectText(b).includes("accessRestricted"));
-  assert.ok(restrictedBtn, "restricted radio should render");
-  assert.equal(restrictedBtn.props["aria-checked"], true);
-  // Switching to open mode triggers an edit
-  const openBtn = collectButtons(tree).find((b) =>
-    b.props.role === "radio" && collectText(b).includes("accessOpen"));
-  openBtn.props.onClick();
+  const appBtn = collectButtons(tree).find((b) =>
+    b.props.role === "radio" && collectText(b).includes("accessApp"));
+  const listBtn = collectButtons(tree).find((b) =>
+    b.props.role === "radio" && collectText(b).includes("accessList"));
+  assert.ok(appBtn, "app-scope radio should render");
+  assert.ok(listBtn, "explicit-list radio should render");
+  assert.equal(appBtn.props["aria-checked"], true, "app scope is the default");
+  // Switching to the explicit-list mode triggers an edit
+  listBtn.props.onClick();
 });
 
 
@@ -269,7 +271,7 @@ test("client list fields render existing array values as text", () => {
     workspaces: { list: { getSnapshot: () => ({ items: [] }), subscribe: () => () => {} } },
     locale: { bind: () => (key) => key, register: () => () => {} },
     configForms: {
-      get: () => ({ getSnapshot: () => ({ value: { senderAllowlist: ["ou_a", "ou_b"], groupAllowlist: ["oc_x"] } }) }),
+      get: () => ({ getSnapshot: () => ({ value: { accessMode: "list", senderAllowlist: ["ou_a", "ou_b"], groupAllowlist: ["oc_x"] } }) }),
       whileServed: (ids, register) => register(new Set(ids)),
     },
     slots: {
@@ -287,6 +289,7 @@ test("client list fields render existing array values as text", () => {
     useLarkSettings: (selector) => selector(state),
     t: (key) => key,
   }));
+  // In list mode the allowlist textareas render; in app scope they do not.
   const textareas = [];
   (function collectTextareas(node) {
     if (!node || typeof node !== "object") return;
@@ -294,7 +297,7 @@ test("client list fields render existing array values as text", () => {
     if (node.type === "textarea") { textareas.push(node); return; }
     collectTextareas(node.props?.children);
   })(tree);
-  assert.ok(textareas.length >= 2, "should render sender and group allowlist textareas");
+  assert.ok(textareas.length >= 2, "list mode should render the allowlist editors");
   const senderText = textareas[0].props?.value || "";
   const groupText = textareas[1].props?.value || "";
   assert.ok(senderText.includes("ou_a"), "sender allowlist should show existing values");

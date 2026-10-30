@@ -5,57 +5,40 @@ import { passesWhitelist, downloadInboundImage, MAX_IMAGE_BYTES, RunManager, res
 
 // ---- passesWhitelist ----
 
-test("passesWhitelist: open mode allows everyone by default", () => {
-  const plain = { accessMode: "open", senderAllowlist: [], groupAllowlist: [] };
+test("passesWhitelist: app scope defers to the Feishu app availability scope", () => {
+  const plain = { accessMode: "app", openId: "", senderAllowlist: [], groupAllowlist: [] };
   assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "p2p"), true);
   assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "group"), true);
 });
 
-test("passesWhitelist: restricted mode denies empty lists (fail-closed)", () => {
-  const plain = { accessMode: "restricted", senderAllowlist: [], groupAllowlist: [] };
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "p2p"), false);
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "group"), false);
+test("passesWhitelist: legacy open mode keeps the permissive behaviour", () => {
+  const plain = { accessMode: "open", openId: "", senderAllowlist: [], groupAllowlist: [] };
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "p2p"), true);
 });
 
-test("passesWhitelist: restricted mode requires explicit grants", () => {
-  const plain = { accessMode: "restricted", senderAllowlist: ["ou_a"], groupAllowlist: ["oc_a"] };
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_a", "p2p"), true);
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_b", "p2p"), false);
-  assert.equal(passesWhitelist(plain, "oc_a", "ou_1", "group"), true);
-  assert.equal(passesWhitelist(plain, "oc_b", "ou_1", "group"), false);
-});
-
-test("passesWhitelist: openId hard-restricts DMs even in open mode", () => {
-  const plain = { accessMode: "open", openId: "ou_owner", senderAllowlist: [], groupAllowlist: [] };
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_owner", "p2p"), true);
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p"), false);
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "group"), true);
-});
-
-test("passesWhitelist: openId alone authorizes the owner in restricted mode", () => {
-  const plain = { accessMode: "restricted", openId: "ou_owner", senderAllowlist: [], groupAllowlist: [] };
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_owner", "p2p"), true, "owner must pass with openId alone");
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p"), false);
-});
-
-test("passesWhitelist: default restricted config denies everything", () => {
-  const plain = { accessMode: "restricted", openId: "", senderAllowlist: [], groupAllowlist: [] };
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_any", "p2p"), false);
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_any", "group"), false);
-});
-
-test("passesWhitelist: sender list optionally restricts only private chats", () => {
-  const plain = { accessMode: "open", senderAllowlist: ["ou_allowed"], groupAllowlist: [] };
+test("passesWhitelist: list mode denies anyone not granted", () => {
+  const plain = { accessMode: "list", openId: "", senderAllowlist: ["ou_allowed"], groupAllowlist: [] };
   assert.equal(passesWhitelist(plain, "chat-1", "ou_allowed", "p2p"), true);
   assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p"), false);
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "group"), true);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "group"), false);
 });
 
-test("passesWhitelist: group list optionally restricts only group chats", () => {
-  const plain = { accessMode: "open", senderAllowlist: [], groupAllowlist: ["oc_allowed"] };
+test("passesWhitelist: list mode always allows the tenant manager", () => {
+  const plain = { accessMode: "list", openId: "", senderAllowlist: [], groupAllowlist: [] };
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_manager", "p2p", "ou_manager"), true);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p", "ou_manager"), false);
+});
+
+test("passesWhitelist: list mode honours the openId field", () => {
+  const plain = { accessMode: "list", openId: "ou_owner", senderAllowlist: [], groupAllowlist: [] };
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_owner", "p2p"), true);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p"), false);
+});
+
+test("passesWhitelist: list mode gates groups by the group allowlist", () => {
+  const plain = { accessMode: "list", openId: "", senderAllowlist: [], groupAllowlist: ["oc_allowed"] };
   assert.equal(passesWhitelist(plain, "oc_allowed", "ou_1", "group"), true);
   assert.equal(passesWhitelist(plain, "oc_other", "ou_1", "group"), false);
-  assert.equal(passesWhitelist(plain, "oc_other", "ou_1", "p2p"), true);
 });
 
 // ---- downloadInboundImage SSRF ----

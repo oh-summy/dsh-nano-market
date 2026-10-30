@@ -41,7 +41,7 @@ export interface Config {
   attachSessionId?: string;
   provider?: string;
   model?: string;
-  accessMode?: "open" | "restricted";
+  accessMode?: "app" | "list" | "open" | "restricted";
   senderAllowlist?: string[];
   groupAllowlist?: string[];
   thinkingPolicy?: "cot-visible" | "cot-discard" | "stream-only";
@@ -68,7 +68,7 @@ export type ResolvedConfig = {
   attachSessionId: string;
   provider: string;
   model: string;
-  accessMode: "open" | "restricted";
+  accessMode: "app" | "list" | "open" | "restricted";
   senderAllowlist: readonly string[];
   groupAllowlist: readonly string[];
   thinkingPolicy: "cot-visible" | "cot-discard" | "stream-only";
@@ -99,7 +99,7 @@ export const Config = z.object({
   attachSessionId: z.string().default("").volatile().comment("attach-gui 时的目标 session id（无全局 current agent 可读）"),
   provider: z.string().default("").volatile().comment("owned-per-chat 时必填；默认空串是占位"),
   model: z.string().default("").volatile().comment("owned-per-chat 时必填"),
-  accessMode: z.union(["open", "restricted"]).default("restricted").volatile().comment("访问模式：restricted=只允许显式授权的聊天（推荐，空列表拒绝）；open=允许所有聊天（个人自用）"),
+  accessMode: z.union(["app", "list", "open", "restricted"]).default("app").volatile().comment("访问模式：app=跟随飞书应用的可用范围（默认，插件不额外限制）；list=只允许授权名单与租户管理员"),
   senderAllowlist: z.array(z.string()).default([]).volatile().comment("私聊用户限制；restricted 模式下为空则拒绝所有私聊"),
   groupAllowlist: z.array(z.string()).default([]).volatile().comment("群聊限制；restricted 模式下为空则拒绝所有群聊"),
   thinkingPolicy: z.union(["cot-visible", "cot-discard", "stream-only"]).default("cot-visible").volatile().comment("思考展示：cot-visible=在卡片中显示思考过程；cot-discard/stream-only=不显示"),
@@ -160,23 +160,24 @@ export function buildUserMessage(
 
 // ---- Optional per-chat-kind access restrictions ----
 
-export function passesWhitelist(plain: ResolvedConfig, chatId: string, senderId: string, chatType: "p2p" | "group" = "p2p"): boolean {
-  // openId is a hard DM restriction: the owner always passes, anyone else never does.
-  if (chatType !== "group" && plain.openId) {
-    if (plain.openId !== senderId) return false;
-    return true;
-  }
-  if (plain.accessMode === "restricted") {
-    // Fail-closed: an empty list denies, so a bot reachable by others must be
-    // explicitly granted access instead of defaulting to everyone.
-    if (chatType === "group") return plain.groupAllowlist.includes(chatId);
-    return plain.senderAllowlist.includes(senderId);
-  }
-  // Explicit opt-in to the permissive default for personal/private use.
-  if (chatType === "group") {
-    return plain.groupAllowlist.length === 0 || plain.groupAllowlist.includes(chatId);
-  }
-  return plain.senderAllowlist.length === 0 || plain.senderAllowlist.includes(senderId);
+export function passesWhitelist(
+  plain: ResolvedConfig,
+  chatId: string,
+  senderId: string,
+  chatType: "p2p" | "group" = "p2p",
+  managerOpenId = "",
+): boolean {
+  // "app" (and the legacy "open") defers entirely to the Feishu app's own
+  // 可用范围: whoever can already DM the bot is the audience, so the plugin
+  // adds no second gate and asks for no ids.
+  if (plain.accessMode === "app" || plain.accessMode === "open") return true;
+  // "list" (and the legacy "restricted") narrows to the explicit grants.
+  if (chatType === "group") return plain.groupAllowlist.includes(chatId);
+  if (plain.senderAllowlist.includes(senderId)) return true;
+  if (plain.openId && plain.openId === senderId) return true;
+  // The tenant manager is always allowed: the app administrator must not be
+  // locked out of the bot they administer.
+  return Boolean(managerOpenId) && managerOpenId === senderId;
 }
 
 /** Resolve model and effort from explicit overrides or the DSH new-session default. */
@@ -282,6 +283,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   let runManager: RunManager | null = null;
   let unsubMessage: (() => void) | null = null;
   let directoryService: DirectoryService | null = null;
+  // 租户管理员（应用的可用范围里的 owner）自动放行，不必手填 open_id。
+  let managerOpenId = "";
   let unsubEvents: Array<() => void> = [];
   let generation = 0;
   let transition: Promise<void> = Promise.resolve();
@@ -322,6 +325,17 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       }
       if (!currentAlive()) { try { await chan.disconnect(); } catch { /* gone */ } return; }
       ctx.logger?.info?.("[connect-lark] channel connected");
+
+      // 2.5) 探测租户管理员：可用范围里的 owner 默认可用。
+      try {
+        const directory = await fetchDirectoryUsers((chan as any).rawClient);
+        if (directory.ok && directory.manager) {
+          managerOpenId = directory.manager.openId;
+          ctx.logger?.info?.("[connect-lark] tenant manager detected");
+        }
+      } catch (e) {
+        ctx.logger?.warn?.("[connect-lark] manager lookup failed: " + (e as Error).message);
+      }
 
       // 3) 授权用户目录（本机只读 HTTP 面）：配置页按姓名挑人、默认选管理员。
       try {
@@ -494,7 +508,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       // 5) Subscribe to messages.
       unsubMessage = chan.on("message", async (msg: any) => {
         if (!currentAlive()) return;
-        if (!passesWhitelist(plain, msg.chatId, msg.senderId, msg.chatType)) return;
+        if (!passesWhitelist(plain, msg.chatId, msg.senderId, msg.chatType, managerOpenId)) return;
 
         const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
         if (!text) return;
@@ -652,6 +666,6 @@ export const CONTRACT_NOTES = {
   credentialField: "z.string().role(\"credential-ref\").default(...).volatile(), then credentialRef(...)",
   parsedUnwrap: "plainConfig(parsed) before reading any field — volatile fields are wrapper objects",
   failClosed: "throw on unusable ref name / blank resolved value; never return an empty secret",
-  whitelistFailClosed: "accessMode=restricted (default) + empty senderAllowlist/groupAllowlist = deny all messages; openId always restricts DMs when set",
+  whitelistFailClosed: "accessMode=app (default) defers to the Feishu app scope; accessMode=list allows only the grants plus the tenant manager",
   streaming: "channel.stream(to, { markdown: async (c) => { c.append(delta) } }) — SDK-owned CardKit",
 };
