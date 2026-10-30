@@ -36,3 +36,15 @@ test("dsh-remote cordis.patch.yml has correct bundle id", () => {
   assert.match(text, /id:\s*dsh-remote/);
   assert.match(text, /name:\s*"?@oh-summy\/dsh-remote"?/);
 });
+test("dsh-remote no longer claims a Plugins page tab", () => {
+  const source = readFileSync(join(pkgDir, "client-src/client.js"), "utf8");
+  assert.doesNotMatch(source, /slots\.inject\("plugins\.tab"/);
+  assert.match(source, /slots\.inject\("plugins\.detail\.section"/);
+  assert.match(source, /id: "dsh-remote"/);
+});
+
+test("dsh-remote detail section only draws on its own package page", () => {
+  const source = readFileSync(join(pkgDir, "client-src/client.js"), "utf8");
+  assert.match(source, /subject\.pkg\?\.name === PACKAGE/);
+  assert.match(source, /subject\.kind === "bundle"/);
+});

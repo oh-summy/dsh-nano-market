@@ -5,11 +5,11 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		const React = require("react");
-		// Nano Market — Plugins 页的专属页签（plugins.tab，与官方 Discover 同机制）。
-// 层级：列表（已安装插件 + 真启用开关，市场插件标注状态）→ 点行进入插件详情（本插件 = 远程访问完整管理页）。
-// 实现注意：plugins.tab 的组件由 plugin-manager 以普通函数方式调用——不能用 React hooks，
-// 采用"挂载点 + vanilla DOM 应用"模式；pm 经闭包传递（props 保持可序列化）。
-// listBundles/setBundleEnabled 已实测可用（官方 remote.pluginManager 服务）。
+		// dsh-remote — 远程访问（Cloudflare 临时隧道 + 密码门 + 飞书通知）。
+// 市场页（Plugins → Nano Market）由 @oh-summy/nano-market 提供；本插件不再占页签，
+// 而是在自己的详情页里给出远程访问的完整管理面（隧道、密码、飞书通知）。
+// 实现：宿主在插件详情页渲染 plugins.detail.section 区段，本插件用 React 挂载点
+// + vanilla DOM 应用绘制管理面；离开页面时清理轮询与定时器。
 const { createElement: h } = React;
 
 // 本机页面（3080）直连常驻管理面 9091（隧道停了也能操作）；远端页面（经隧道进来）同源走 Caddy。
@@ -373,15 +373,19 @@ function renderRemoteDetail(container, initialMsg) {
   return () => { clearInterval(poll); if (cleanupRemotePoll) cleanupRemotePoll(); };
 }
 
-// ---------- 本插件专属页签：直接就是远程访问管理页 ----------
-// 浏览/安装归官方「发现」，启停归官方「已安装」；这里只放 dsh-remote 自己的管理。
+// ---------- 详情页区段：远程访问管理页 ----------
+// 市场页（Plugins → Nano Market）由 @oh-summy/nano-market 提供；本插件不再占页签，
+// 而是在自己的详情页里给出远程访问的完整管理面（隧道、密码、飞书通知）。
 
-function mountNanoMarket(container) {
+const PACKAGE = "@oh-summy/dsh-remote";
+
+function mountRemoteManager(container) {
   const shell = nmShell(container);
   try {
-    renderRemoteDetail(shell, "");
+    return renderRemoteDetail(shell, "");
   } catch (e) {
     shell.innerHTML = `<div style="padding:20px;color:#dc2626;font-size:13px">dsh-remote 管理页挂载失败：${nmEsc((e && e.message) || e)}</div>`;
+    return undefined;
   }
 }
 
@@ -391,27 +395,30 @@ const inject = ["slots"];
 
 function apply(ctx) {
   if (!ctx.slots) return;
-  ctx.slots.inject("plugins.tab", () => ctx.slots.register({
-    name: "plugins.tab",
+  ctx.slots.inject("plugins.detail.section", () => ctx.slots.register({
+    name: "plugins.detail.section",
     id: "dsh-remote",
-    label: () => "dsh-remote",
-  }, function DshRemoteTab(mountArg) {
-    if (mountArg instanceof Element) { try { mountNanoMarket(mountArg); } catch (e) { mountArg.innerHTML = "dsh-remote 挂载失败：" + nmEsc((e && e.message) || e); } return null; }
-    return h("div", { style: { display: "contents" }, ref: nmTabRef });
+    order: 10,
+    label: () => "远程访问",
+  }, function DshRemoteDetailSection(props) {
+    const subject = props.subject;
+    // 宿主详情页的 subject 形状：{ kind: "bundle", pkg: { name, version, ... } }。
+    const mine = Boolean(subject) && subject.kind === "bundle" && subject.pkg?.name === PACKAGE;
+    const [node, setNode] = React.useState(null);
+    React.useEffect(() => {
+      if (!mine || !node) return undefined;
+      let cleanup;
+      try { cleanup = mountRemoteManager(node); }
+      catch (e) {
+        node.innerHTML = `<div style="padding:20px;color:#dc2626;font-size:13px;white-space:pre-wrap">dsh-remote 挂载失败：${nmEsc((e && e.stack) || e)}</div>`;
+      }
+      // 离开详情页时停掉轮询与定时器，避免后台空转。
+      return () => { if (typeof cleanup === "function") cleanup(); };
+    }, [mine, node]);
+    // 只在自己的详情页里画；别人的页面返回 null（宿主按 list 语义逐条渲染）。
+    if (!mine) return null;
+    return h("div", { style: { display: "contents" }, ref: setNode });
   }));
-}
-
-// 稳定的具名 ref：内联箭头 ref 会在父组件每次重渲染时重新触发挂载（死循环卡死页面，第 4 轮实测）。
-// dataset 守卫保证每个节点只挂载一次；挂载全程 try/catch，错误显示在页面里。
-function nmTabRef(node) {
-  if (!node || node.dataset.nmMounted) return;
-  node.dataset.nmMounted = "1";
-  setTimeout(() => {
-    try { mountNanoMarket(node); }
-    catch (e) {
-      node.innerHTML = `<div style="padding:20px;color:#dc2626;font-size:13px;white-space:pre-wrap">dsh-remote 挂载失败：${nmEsc((e && e.stack) || e)}</div>`;
-    }
-  }, 0);
 }
 
 		exports.apply = apply;

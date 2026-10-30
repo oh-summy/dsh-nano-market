@@ -1,8 +1,8 @@
 {
   "name": "@oh-summy/dsh-remote",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Remote access for DSH via a Cloudflare quick tunnel with a password gate. M2+M3: gate, login page, notify, client page.",
+  "description": "Remote access for DSH via a Cloudflare quick tunnel with a password gate. The management page now lives in the plugin's own detail page (Plugins → Nano Market → configure).",
   "license": "MIT",
   "type": "module",
   "main": "./lib/index.mjs",
@@ -12,7 +12,7 @@
   },
   "engines": {
     "node": ">=24",
-    "dsh": ">=0.2.1-rc.2 || >=0.2.2-0"
+    "dsh": ">=0.2.1-rc.4 || >=0.2.2-0"
   },
   "keywords": [
     "dsh",
