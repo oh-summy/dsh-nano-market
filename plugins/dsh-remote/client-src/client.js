@@ -102,6 +102,17 @@ function nmShell(root) {
   return root.querySelector(".nm");
 }
 
+// 管理面连不上时给一句人话，而不是把「HTTP 404」这种原始错误甩给用户。
+// 404/网络层失败 = 本实例没提供管理 API（如测试实例的 9091 端口被主实例占着），
+// 这种是常驻状态，不该谎称「数秒内自动恢复」。
+function managerUnreachableMsg(message) {
+  const s = String(message || "");
+  if (/404|failed to fetch|networkerror|econnrefused/i.test(s)) {
+    return "管理面未连接——本实例未开放管理 API，远程访问需在 3080 主实例操作。";
+  }
+  return "管理面连接中…（" + nmEsc(s) + "，数秒内自动恢复）";
+}
+
 
 // ---------- 远程访问详情（本插件专属管理页） ----------
 
@@ -142,7 +153,7 @@ function renderRemoteDetail(container, initialMsg) {
     try { st = await rcApi("/rc-api/state"); }
     catch (e) {
       // 条目重启窗口（改代码/装插件才会发生，设置不再触发）：轮询会自动恢复，这里给手动重试
-      q("#rc-runrow").innerHTML = `<span class="nm-dot-off">○ 管理面连接中…（${nmEsc(e.message)}，数秒内自动恢复）</span><button class="nm-btn" id="rc-retry">立即重试</button>`;
+      q("#rc-runrow").innerHTML = `<span class="nm-dot-off">○ ${managerUnreachableMsg(e.message)}</span><button class="nm-btn" id="rc-retry">重试</button>`;
       const rb = q("#rc-retry");
       if (rb) rb.onclick = () => refresh();
       return;
@@ -359,7 +370,7 @@ function renderRemoteDetail(container, initialMsg) {
       row2("Cloudflare 账号", e.cfAccount, "临时隧道免配置，无需注册") +
       (e.tunnelLink ? row2("隧道链路自检", e.tunnelLink.ok, e.tunnelLink.ok ? "HTTP " + e.tunnelLink.status + "，登录页可达" : String(e.tunnelLink.status)) : "") +
       row2("DSH 会话密钥（远程登录免二次校验）", e.dshSecret, e.dshSecret ? "" : "未读取到");
-  }).catch((e) => { q("#rc-env").innerHTML = "环境检查失败：" + nmEsc(e.message); });
+  }).catch(() => { q("#rc-env").innerHTML = "管理面未连接，暂无法执行环境检查。"; });
 
   refresh();
   const poll = setInterval(refresh, 5000);
