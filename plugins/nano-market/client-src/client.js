@@ -17,6 +17,13 @@ const NS = "nanoMarket";
 // 本市场自己的索引。市场条目由 catalog/entries.jsonl 生成，install spec 已由宿主算好。
 const MARKET_INDEX = "https://oh-summy.github.io/dsh-nano-market/index.json";
 
+// 市场索引只在重新发布时变化，页签切换不该每次都等它：
+// 模块级缓存 5 分钟，之后静默刷新。安装状态始终即时读取。
+let marketCache = null;
+let marketFetchedAt = 0;
+const MARKET_CACHE_MS = 5 * 60 * 1000;
+
+
 const zh = {
   title: "Nano Market",
   subtitle: "本市场注册的插件——安装、启用都在这里，点开卡片进配置。",
@@ -29,6 +36,10 @@ const zh = {
   disable: "停用",
   uninstall: "卸载",
   openHint: "点击卡片进入配置",
+  switchAria: "{name} 的启用状态",
+  switchOn: "已启用",
+  switchOff: "已停用",
+  installedHint: "安装后即可在这里管理",
   stateNotInstalled: "未安装",
   stateInstalledOff: "已安装 · 未启用",
   stateEnabled: "已启用",
@@ -71,6 +82,12 @@ const CSS = `
 .nmk-icon{width:42px;height:42px;border-radius:12px;flex-shrink:0;background:linear-gradient(135deg,#eef3ff,#f7f9ff);border:1px solid #e6ebf5;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:600;color:#3370ff;overflow:hidden}
 .nmk-icon img{width:100%;height:100%;object-fit:cover;display:block}
 .nmk-hint{font-size:11.5px;color:#9aa3af;margin-left:2px}
+.nmk-switch{position:relative;flex:0 0 auto;width:38px;height:22px;border-radius:999px;background:#d8dde6;border:0;padding:0;cursor:pointer;transition:background .15s}
+.nmk-switch::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(16,24,40,.25);transition:transform .15s}
+.nmk-switch[aria-checked="true"]{background:#3370ff}
+.nmk-switch[aria-checked="true"]::after{transform:translateX(16px)}
+.nmk-switch:disabled{opacity:.5;cursor:not-allowed}
+.nmk-switch:focus-visible{outline:2px solid #3370ff;outline-offset:2px}
 .nmk-main{min-width:0;flex:1}
 .nmk-name{font-size:14.5px;font-weight:600;display:flex;align-items:center;gap:9px;flex-wrap:wrap;line-height:1.4}
 .nmk-ver{font-size:12px;color:#9aa3af;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:500}
@@ -145,35 +162,47 @@ function NanoMarketTab(props) {
   const reload = useCallback(async () => {
     setListing((s) => ({ ...s, status: "loading", error: "" }));
     try {
-      // The host only searches index sources the person configured, so look the
-      // market up there first and say what to do when it is missing.
       const indexAnswer = await props.ctx.remote.pluginMarket.listIndexes();
       const indexes = indexAnswer?.value ?? indexAnswer ?? [];
-      const source = indexes.find((item) => item?.url === MARKET_INDEX);
-      if (!source) {
-        setListing({
-          status: "failed",
-          entries: [],
-          error: t("indexMissing", { url: MARKET_INDEX }),
-        });
+      if (!indexes.find((item) => item?.url === MARKET_INDEX)) {
+        setListing({ status: "failed", entries: [], error: t("indexMissing", { url: MARKET_INDEX }) });
         return;
       }
-      const [answer, bundleAnswer] = await Promise.all([
-        props.ctx.remote.pluginMarket.search(MARKET_INDEX, { sort: { kind: "index" }, offset: 0, limit: 100 }),
-        props.ctx.remote.pluginManager.listBundles(),
-      ]);
-      if (!answer || answer.ok === false) throw new Error(answer?.error?.message || "market search failed");
-      // 宿主的 remote 调用统一返回 { ok, value | error }。
+      // Installation state is local and always current.
+      const bundleAnswer = await props.ctx.remote.pluginManager.listBundles();
       if (!bundleAnswer || bundleAnswer.ok === false) throw new Error(bundleAnswer?.error?.message || "listBundles failed");
       const byName = {};
       for (const bundle of bundleAnswer.value || []) byName[bundle.name] = bundle;
       setBundles(byName);
-      setListing({ status: "ready", entries: answer.value?.entries || [], error: "" });
+
+      const cacheFresh = marketCache !== null && Date.now() - marketFetchedAt < MARKET_CACHE_MS;
+      if (marketCache !== null) {
+        // Warm: render the last known market now, refresh quietly behind it.
+        setListing({ status: "ready", entries: marketCache, error: "" });
+        if (!cacheFresh) {
+          try {
+            const answer = await props.ctx.remote.pluginMarket.search(MARKET_INDEX, { sort: { kind: "index" }, offset: 0, limit: 100 });
+            if (answer && answer.ok) {
+              marketCache = answer.value?.entries ?? marketCache;
+              marketFetchedAt = Date.now();
+              setListing({ status: "ready", entries: marketCache, error: "" });
+            }
+          } catch {
+            // The stale list stays on screen; a refresh failure is not an error.
+          }
+        }
+        return;
+      }
+      // Cold: the list genuinely has to wait for the network once.
+      const answer = await props.ctx.remote.pluginMarket.search(MARKET_INDEX, { sort: { kind: "index" }, offset: 0, limit: 100 });
+      if (!answer || answer.ok === false) throw new Error(answer?.error?.message || "market search failed");
+      marketCache = answer.value?.entries ?? [];
+      marketFetchedAt = Date.now();
+      setListing({ status: "ready", entries: marketCache, error: "" });
     } catch (error) {
       setListing({ status: "failed", entries: [], error: error?.message || String(error) });
     }
   }, [props.ctx]);
-
   useEffect(() => { void reload(); }, [reload]);
 
   async function run(name, task, failKey) {
@@ -279,22 +308,24 @@ function NanoMarketTab(props) {
                   h("div", { className: "nmk-actions" },
                     state === "not-installed"
                       ? h("button", { type: "button", className: "nmk-btn primary", disabled: working || !compatible, onClick: (event) => { event.stopPropagation(); install(entry); } }, t("install"))
-                      : null,
-                    state !== "not-installed"
-                      ? h("button", {
+                      : h("button", {
                           type: "button",
-                          className: "nmk-btn " + (state === "enabled" ? "" : "primary"),
+                          role: "switch",
+                          className: "nmk-switch",
+                          "aria-checked": state === "enabled",
+                          "aria-label": t("switchAria", { name: titleOf(entry) }),
                           disabled: working,
                           onClick: (event) => {
                             event.stopPropagation();
                             const next = state !== "enabled";
                             void run(entry.name, () => props.ctx.remote.pluginManager.setBundleEnabled(entry.name, next), next ? "enableFailed" : "disableFailed");
                           },
-                        }, state === "enabled" ? t("disable") : t("enable"))
-                      : null,
+                        }),
                     state === "enabled"
                       ? h("span", { className: "nmk-hint" }, t("openHint"))
-                      : null,
+                      : state === "installed-off"
+                        ? h("span", { className: "nmk-hint" }, t("installedHint"))
+                        : null,
                   ),
                   busy === entry.name ? h("div", { className: "nmk-msg" }, t("busy")) : null,
                 );
