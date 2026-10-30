@@ -107,6 +107,9 @@ const CSS = `
 .nmk-switch:focus-visible{outline:2px solid #3370ff;outline-offset:2px}
 .nmk-main{min-width:0;flex:1}
 .nmk-name{font-size:14.5px;font-weight:600;display:flex;align-items:center;gap:9px;flex-wrap:wrap;line-height:1.4}
+.nmk-title{border:0;background:transparent;padding:0;font:inherit;font-size:inherit;font-weight:inherit;color:inherit;cursor:pointer;text-align:left;border-radius:5px}
+.nmk-title:hover{color:var(--cl-blue,#3370ff);text-decoration:underline;text-underline-offset:3px}
+.nmk-title:focus-visible{outline:2px solid #3370ff;outline-offset:2px}
 .nmk-ver{font-size:12px;color:#9aa3af;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:500}
 .nmk-desc{margin:7px 0 0;font-size:12.5px;color:#6b7280;line-height:1.7}
 .nmk-badge{font-size:11px;border-radius:999px;padding:2px 9px;font-weight:600;white-space:nowrap;line-height:1.6}
@@ -125,6 +128,7 @@ const CSS = `
 .nmk-btn.danger{color:#c2413b;border-color:#f0d8d6;background:#fff}
 .nmk-btn.danger:hover:not(:disabled){background:#fdf3f2;border-color:#e5b7b3;color:#a3342e}
 .nmk-msg{font-size:12.5px;color:#3370ff;margin-top:11px;min-height:17px;line-height:1.5}
+.nmk-notice{margin:0 0 14px;padding:9px 12px;border-radius:10px;background:#fff8e8;border:1px solid #f0e2c0;color:#8a5a00;font-size:12.5px;line-height:1.6}
 .nmk-msg.err{color:#c2413b}
 .nmk-empty{text-align:center;color:#9aa3af;font-size:13px;padding:44px 20px;border:1px dashed #e3e7ee;border-radius:14px;background:#fcfdfe}
 .nmk-skel{height:92px;border-radius:14px;background:linear-gradient(90deg,#f2f4f7 25%,#e9ecef 50%,#f2f4f7 75%);background-size:200% 100%;animation:nmk 1.15s infinite linear}
@@ -175,63 +179,59 @@ function NanoMarketTab(props) {
   const [bundles, setBundles] = useState({});
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
+  const [notice, setNotice] = useState("");
 
   const reload = useCallback(async () => {
+    setNotice("");
+    // 1) Paint the last known list right away; the network can follow.
     const stored = readStoredCache();
     if (stored && marketCache === null) {
       marketCache = stored.entries;
       marketFetchedAt = stored.at ?? 0;
     }
-    if (marketCache !== null) {
-      // Paint what we know, then refresh in the background.
-      setListing({ status: "ready", entries: marketCache, error: "" });
-    } else {
-      setListing((s) => ({ ...s, status: "loading", error: "" }));
-    }
+    if (marketCache !== null) setListing({ status: "ready", entries: marketCache, error: "" });
+    else setListing((s) => ({ ...s, status: "loading", error: "" }));
+
+    // 2) Is this market even indexed here? Without it the host cannot search,
+    //    so say so instead of showing a list that cannot be installed from.
+    let indexed = false;
     try {
       const indexAnswer = await props.ctx.remote.pluginMarket.listIndexes();
-      const indexes = indexAnswer?.value ?? indexAnswer ?? [];
-      if (!indexes.find((item) => item?.url === MARKET_INDEX)) {
-        if (marketCache === null) {
-          setListing({ status: "failed", entries: [], error: t("indexMissing", { url: MARKET_INDEX }) });
-          return;
-        }
-        return;
-      }
-      // Installation state is local and always current.
+      if (!indexAnswer || indexAnswer.ok === false) throw new Error(indexAnswer?.error?.message || "listIndexes failed");
+      indexed = (indexAnswer.value ?? []).some((item) => item?.url === MARKET_INDEX);
+      if (!indexed) setNotice(t("indexMissing", { url: MARKET_INDEX }));
+    } catch (error) {
+      setNotice(error?.message || String(error));
+    }
+
+    // 3) Installation state is local and always current.
+    try {
       const bundleAnswer = await props.ctx.remote.pluginManager.listBundles();
       if (!bundleAnswer || bundleAnswer.ok === false) throw new Error(bundleAnswer?.error?.message || "listBundles failed");
       const byName = {};
       for (const bundle of bundleAnswer.value || []) byName[bundle.name] = bundle;
       setBundles(byName);
-
-      const cacheFresh = marketCache !== null && Date.now() - marketFetchedAt < MARKET_CACHE_MS;
-      if (marketCache !== null) {
-        setListing({ status: "ready", entries: marketCache, error: "" });
-        if (!cacheFresh) {
-          try {
-            const answer = await props.ctx.remote.pluginMarket.search(MARKET_INDEX, { sort: { kind: "index" }, offset: 0, limit: 100 });
-            if (answer && answer.ok) {
-              marketCache = answer.value?.entries ?? marketCache;
-              marketFetchedAt = Date.now();
-              writeStoredCache(marketCache);
-              setListing({ status: "ready", entries: marketCache, error: "" });
-            }
-          } catch {
-            // The stale list stays on screen; a refresh failure is not an error.
-          }
-        }
-        return;
-      }
-      // Cold: the list genuinely has to wait for the network once.
-      const answer = await props.ctx.remote.pluginMarket.search(MARKET_INDEX, { sort: { kind: "index" }, offset: 0, limit: 100 });
-      if (!answer || answer.ok === false) throw new Error(answer?.error?.message || "market search failed");
-      marketCache = answer.value?.entries ?? [];
-      marketFetchedAt = Date.now();
-      setListing({ status: "ready", entries: marketCache, error: "" });
     } catch (error) {
-      setListing({ status: "failed", entries: [], error: error?.message || String(error) });
+      // A broken profile inventory must not wipe the market list.
+      setNotice(error?.message || String(error));
     }
+
+    // 4) Refresh the market when it is indexed; keep the cached list otherwise.
+    if (indexed) {
+      try {
+        const answer = await props.ctx.remote.pluginMarket.search(MARKET_INDEX, { sort: { kind: "index" }, offset: 0, limit: 100 });
+        if (answer && answer.ok) {
+          marketCache = answer.value?.entries ?? marketCache;
+          marketFetchedAt = Date.now();
+          writeStoredCache(marketCache);
+          setListing({ status: "ready", entries: marketCache, error: "" });
+          return;
+        }
+      } catch {
+        // The cached list stays on screen; a refresh failure is not an error.
+      }
+    }
+    if (marketCache === null) setListing({ status: "failed", entries: [], error: t("failed") });
   }, [props.ctx]);
   useEffect(() => { void reload(); }, [reload]);
 
@@ -298,28 +298,35 @@ function NanoMarketTab(props) {
                 const bundle = bundles[entry.name];
                 const state = stateOf(entry, bundle);
                 const installation = entry.installation || {};
-                const installedVersion = installation.installedVersion;
-                const shownVersion = (state === "not-installed" ? version?.version : installedVersion) || version?.version;
-                const canUpdate = installation.status === "update-available" && installation.version;
+                // 宿主给的 installation 只有 {status, installedVersion?}；版本以本机为准。
+                const shownVersion = (state === "not-installed" ? version?.version : bundle?.version || installation.installedVersion) || version?.version;
+                const canUpdate = installation.status === "update-available";
+                const provided = installation.status === "provided";
                 const compatible = compatibleOf(version);
                 const working = busy === entry.name;
+                // 宿主保护或读不出的 bundle 不给开关（宿主自己的 EnableSwitch 同样如此）。
+                const locked = bundle?.readOnlyReason !== undefined || (bundle?.error !== undefined && state !== "enabled");
                 const badge = state === "enabled"
                   ? { cls: "on", text: t("stateEnabled") }
                   : state === "installed-off"
                     ? { cls: "warn", text: t("stateInstalledOff") }
-                    : { cls: "off", text: t("stateNotInstalled") };
+                    : provided
+                      ? { cls: "off", text: t("stateProvided") }
+                      : { cls: "off", text: t("stateNotInstalled") };
                 const openable = state === "enabled";
+                const open = () => props.openPackage(entry.name);
+                const toggle = (next) => {
+                  void run(entry.name, () => props.ctx.remote.pluginManager.setBundleEnabled(entry.name, next), next ? "enableFailed" : "disableFailed");
+                };
                 return h("div", {
                   className: "nmk-card" + (openable ? " nmk-open" : ""),
                   key: entry.name,
-                  role: openable ? "button" : undefined,
-                  tabIndex: openable ? 0 : undefined,
-                  onClick: openable ? () => props.openPackage(entry.name) : undefined,
-                  onKeyDown: openable ? (event) => {
-                    if (event.key !== "Enter" && event.key !== " ") return;
-                    event.preventDefault();
-                    props.openPackage(entry.name);
-                  } : undefined,
+                  // 整张卡片可点（鼠标）；键盘用户走标题上的真实按钮，
+                  // 这样开关不会被卡片的 role=button 吞掉按键。
+                  onClick: (event) => {
+                    if (event.target.closest("button, a, input, [role=\"switch\"]")) return;
+                    if (openable) open();
+                  },
                 },
                   h("div", { className: "nmk-top" },
                     h("div", { className: "nmk-icon" }, (bundle?.meta?.icon || entry.icon)
@@ -327,7 +334,9 @@ function NanoMarketTab(props) {
                       : h("span", null, titleOf(entry).slice(0, 1))),
                     h("div", { className: "nmk-main" },
                       h("div", { className: "nmk-name" },
-                        h("span", null, titleOf(entry)),
+                        openable
+                          ? h("button", { type: "button", className: "nmk-title", onClick: (event) => { event.stopPropagation(); open(); }, children: titleOf(entry) })
+                          : h("span", null, titleOf(entry)),
                         shownVersion ? h("span", { className: "nmk-ver" }, shownVersion) : null,
                         h("span", { className: "nmk-badge " + badge.cls }, badge.text),
                         canUpdate ? h("span", { className: "nmk-badge warn" }, t("stateUpdate")) : null,
@@ -342,32 +351,37 @@ function NanoMarketTab(props) {
                           className: "nmk-switch",
                           "aria-checked": state === "enabled",
                           "aria-label": t("switchAria", { name: titleOf(entry) }),
-                          disabled: working,
+                          disabled: working || locked,
+                          ...(bundle?.readOnlyReason === undefined ? {} : { title: String(bundle.readOnlyReason) }),
                           onClick: (event) => {
                             event.stopPropagation();
-                            const next = state !== "enabled";
-                            void run(entry.name, () => props.ctx.remote.pluginManager.setBundleEnabled(entry.name, next), next ? "enableFailed" : "disableFailed");
+                            toggle(state !== "enabled");
                           },
                         })
                       : null,
                   ),
                   h("div", { className: "nmk-actions" },
-                    state === "not-installed"
+                    state === "not-installed" && !provided
                       ? h("button", { type: "button", className: "nmk-btn primary", disabled: working || !compatible, onClick: (event) => { event.stopPropagation(); install(entry); } }, t("install"))
                       : null,
                     state === "enabled"
                       ? h("span", { className: "nmk-hint" }, t("openHint"))
                       : state === "installed-off"
                         ? h("span", { className: "nmk-hint" }, t("installedHint"))
-                        : null,
+                        : provided
+                          ? h("span", { className: "nmk-hint" }, t("stateProvided"))
+                          : null,
                   ),
-                                    busy === entry.name ? h("div", { className: "nmk-msg" }, t("busy")) : null,
+                  busy === entry.name ? h("div", { className: "nmk-msg" }, t("busy")) : null,
                 );
               })),
+      notice ? h("div", { className: "nmk-notice" }, notice) : null,
       message ? h("div", { className: "nmk-msg" + (message.includes("失败") ? " err" : "") }, message) : null,
     ),
   );
 }
+
+
 
 const inject = ["slots", "locale", "remote", "remote.pluginMarket", "remote.pluginManager"];
 

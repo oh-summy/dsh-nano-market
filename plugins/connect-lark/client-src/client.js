@@ -25,7 +25,7 @@ const zh = {
   appSecretRef: "App Secret 凭据引用",
   appSecretRefHint: "Secret 保存在 DSH 凭据缝，不进入 Git，也不会在页面显示。",
   defaultPath: "默认工作区",
-  defaultPathHint: "从 DSH 工作区中选择，或点击「修改」选择其他目录。",
+    defaultPathHint: "从 DSH 工作区中选择；右侧按钮可挑其他目录。",
   editWorkspace: "修改",
   addWorkspace: "添加工作区",
   customPath: "自定义目录",
@@ -426,8 +426,17 @@ function modelName(catalog, provider, model) {
   return model;
 }
 
-function ModelPicker({ state, value, edit, t, disabled }) {
-  const [open, setOpen] = React.useState(false);
+/** 模型 / 思考强度 / 权限模式并排一行；前两个共用一个展开状态，避免两个菜单同时打开。 */
+function AgentRow({ state, value, edit, t, disabled }) {
+  const [open, setOpen] = React.useState(null);
+  return jsx("div", { className: "cl-triple", children: [
+    jsx(ModelPicker, { state, value, edit, t, disabled, open, setOpen }),
+    jsx(EffortPicker, { state, value, edit, t, disabled, open, setOpen }),
+    jsx(PermissionPicker, { value: value("permissionPreset"), onEdit: edit("permissionPreset"), disabled, open, setOpen }),
+  ] });
+}
+
+function ModelPicker({ state, value, edit, t, disabled, open, setOpen }) {
   const [query, setQuery] = React.useState("");
   const route = value("provider").text && value("model").text ? value("provider").text + "/" + value("model").text : "";
   const defaultRoute = state.catalog.default;
@@ -437,18 +446,19 @@ function ModelPicker({ state, value, edit, t, disabled }) {
     ...group,
     models: group.models.filter((model) => (group.name + " " + model.name).toLowerCase().includes(query.trim().toLowerCase())),
   })).filter((group) => group.models.length > 0);
-  const close = () => setOpen(false);
+  const close = () => setOpen(null);
+  const isOpen = open === "model";
   return jsx("div", { className: "cl-picker", children: [
     jsx("span", { className: "cl-label", children: t("model") }),
-    jsxs("button", { type: "button", className: "cl-picker-trigger", disabled: disabled || state.catalog.status === "loading", onClick: () => setOpen(!open), children: [
+    jsxs("button", { type: "button", className: "cl-picker-trigger", disabled: disabled || state.catalog.status === "loading", onClick: () => setOpen(isOpen ? null : "model"), children: [
       jsxs("span", { className: "cl-picker-text", children: [
         jsx("span", { className: "cl-picker-title", children: currentName }),
         jsx("span", { className: "cl-picker-sub", children: route ? value("provider").text : defaultName ? "DSH 默认 · " + defaultName : t("followDsh") }),
       ] }),
-      jsx("span", { className: "cl-chevron", children: open ? "▲" : "▼" }),
+      jsx("span", { className: "cl-chevron", children: isOpen ? "▲" : "▼" }),
     ] }),
     jsx("p", { className: "cl-hint", children: t("modelHint") }),
-    open ? jsxs(React.Fragment, { children: [
+    isOpen ? jsxs(React.Fragment, { children: [
       jsx("div", { className: "cl-menu-shield", onClick: close }),
       jsxs("div", { className: "cl-menu", role: "listbox", children: [
         jsx("input", { className: "cl-search", value: query, placeholder: t("searchModels"), autoFocus: true, onChange: (event) => setQuery(event.target.value) }),
@@ -473,24 +483,24 @@ function ModelPicker({ state, value, edit, t, disabled }) {
   ] });
 }
 
-function EffortPicker({ state, value, edit, t, disabled }) {
-  const [open, setOpen] = React.useState(false);
+function EffortPicker({ state, value, edit, t, disabled, open, setOpen }) {
   const selectedGroup = (state.catalog.groups || []).find((group) => group.id === value("provider").text);
   const selectedModel = selectedGroup ? selectedGroup.models.find((model) => model.id === value("model").text) : undefined;
   const efforts = (selectedModel && selectedModel.reasoning ? selectedModel.reasoning.efforts : []) || [];
   const currentEffort = value("reasoningEffort").text || t("followModel");
-  const close = () => setOpen(false);
+  const close = () => setOpen(null);
+  const isOpen = open === "effort";
   return jsx("div", { className: "cl-picker", children: [
     jsx("span", { className: "cl-label", children: t("reasoningEffort") }),
-    jsxs("button", { type: "button", className: "cl-picker-trigger", disabled: disabled || !selectedModel || !selectedModel.reasoning, onClick: () => setOpen(!open), children: [
+    jsxs("button", { type: "button", className: "cl-picker-trigger", disabled: disabled || !selectedModel || !selectedModel.reasoning, onClick: () => setOpen(isOpen ? null : "effort"), children: [
       jsxs("span", { className: "cl-picker-text", children: [
         jsx("span", { className: "cl-picker-title", children: currentEffort }),
         jsx("span", { className: "cl-picker-sub", children: selectedModel ? selectedModel.name : t("followDsh") }),
       ] }),
-      jsx("span", { className: "cl-chevron", children: open ? "▲" : "▼" }),
+      jsx("span", { className: "cl-chevron", children: isOpen ? "▲" : "▼" }),
     ] }),
     jsx("p", { className: "cl-hint", children: t("reasoningEffortHint") }),
-    open ? jsxs(React.Fragment, { children: [
+    isOpen ? jsxs(React.Fragment, { children: [
       jsx("div", { className: "cl-menu-shield", onClick: close }),
       jsxs("div", { className: "cl-menu", role: "listbox", children: [
         jsx("button", { className: "cl-option", role: "option", "aria-selected": !value("reasoningEffort").text, onClick: () => { edit("reasoningEffort")(""); close(); }, children: jsx("span", { className: "cl-option-name", children: t("followModel") }) }),
@@ -515,20 +525,21 @@ const PERMISSION_OPTIONS = [
   { value: "auto", label: "自动审查", description: "每次工具调用前由模型审查，可能消耗额外 token。" },
 ];
 
-function PermissionPicker({ value, onEdit, disabled }) {
-  const [open, setOpen] = React.useState(false);
+function PermissionPicker({ value, onEdit, disabled, open, setOpen }) {
   const current = PERMISSION_OPTIONS.find((option) => option.value === value.text) || PERMISSION_OPTIONS[0];
+  const isOpen = open === "permission";
+  const close = () => setOpen(null);
   return jsxs("div", { className: "cl-picker", children: [
     jsx("span", { className: "cl-label", children: "权限模式" }),
-    jsxs("button", { type: "button", className: "cl-picker-trigger", disabled, onClick: () => setOpen(!open), children: [
+    jsxs("button", { type: "button", className: "cl-picker-trigger", disabled, onClick: () => setOpen(isOpen ? null : "permission"), children: [
       jsxs("span", { className: "cl-picker-text", children: [
         jsx("span", { className: "cl-picker-title", children: current.label }),
         jsx("span", { className: "cl-picker-sub", children: current.description }),
       ] }),
-      jsx("span", { className: "cl-chevron", children: open ? "▲" : "▼" }),
+      jsx("span", { className: "cl-chevron", children: isOpen ? "▲" : "▼" }),
     ] }),
     jsx("p", { className: "cl-hint", children: "控制机器人可以读取、修改或执行哪些操作。" }),
-    open ? jsxs(React.Fragment, { children: [
+    isOpen ? jsxs(React.Fragment, { children: [
       jsx("div", { className: "cl-menu-shield", onClick: () => setOpen(false) }),
       jsx("div", { className: "cl-menu", role: "listbox", children: PERMISSION_OPTIONS.map((option) => jsx("button", {
         type: "button", className: "cl-option", role: "option", "aria-selected": option.value === current.value,
@@ -889,11 +900,7 @@ function LarkConfigCard(props) {
         jsx(Section, { number: "03", title: t("workspace"), hint: t("workspaceHint"), children: [
           jsx(WorkspacePicker, { state, value: value("defaultPath"), onEdit: edit("defaultPath"), onBrowse: props.listDirectory, onCreateDirectory: props.createDirectory, t, disabled }),
           state.catalog.status === "error" ? jsxs("div", { className: "cl-catalog-error", children: [t("catalogError"), jsx("button", { className: "cl-retry", type: "button", onClick: props.refreshCatalog, children: t("retry") })] }) : null,
-          jsx("div", { className: "cl-triple", children: [
-            jsx(ModelPicker, { state, value, edit, t, disabled }),
-            jsx(EffortPicker, { state, value, edit, t, disabled }),
-            jsx(PermissionPicker, { value: value("permissionPreset"), onEdit: edit("permissionPreset"), disabled }),
-          ] }),
+          jsx(AgentRow, { state, value, edit, t, disabled }),
         ] }, "workspace"),
       ],
     }),
