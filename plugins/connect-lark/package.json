@@ -2,7 +2,7 @@
   "name": "@oh-summy/connect-lark",
   "version": "0.1.0",
   "private": true,
-  "description": "Feishu/Lark long-connection channel for DSH: chats drive the local agent, replies stream as rich cards. Not yet registered in the market.",
+  "description": "Feishu/Lark long-connection channel for DSH: chats drive the local agent, replies stream as rich cards. Registered in the dsh-nano-market.",
   "license": "MIT",
   "type": "module",
   "main": "./lib/index.mjs",
