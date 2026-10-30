@@ -39,12 +39,18 @@ test("dsh-remote cordis.patch.yml has correct bundle id", () => {
 test("dsh-remote no longer claims a Plugins page tab", () => {
   const source = readFileSync(join(pkgDir, "client-src/client.js"), "utf8");
   assert.doesNotMatch(source, /slots\.inject\("plugins\.tab"/);
-  assert.match(source, /slots\.inject\("plugins\.detail\.section"/);
-  assert.match(source, /id: "dsh-remote"/);
+  // config lives in the keyed plugins.bundle.config slot (host places it above the
+  // host's 来源信息 section), not a page tab and not the below-info detail slot.
+  assert.match(source, /slots\.inject\("plugins\.bundle\.config"/);
+  assert.doesNotMatch(source, /slots\.inject\("plugins\.detail\.section"/);
+  assert.match(source, /key: PACKAGE/);
 });
 
-test("dsh-remote detail section only draws on its own package page", () => {
+test("dsh-remote config section only draws on its own package page", () => {
   const source = readFileSync(join(pkgDir, "client-src/client.js"), "utf8");
-  assert.match(source, /subject\.pkg\?\.name === PACKAGE/);
-  assert.match(source, /subject\.kind === "bundle"/);
+  // The keyed slot (key: PACKAGE) means the host renders this card only on
+  // dsh-remote's own detail page.
+  assert.match(source, /key: PACKAGE/);
+  // The manager mounts only in the full page view, never the one-line summary.
+  assert.match(source, /view === "summary"/);
 });

@@ -8,7 +8,7 @@ window.__ModuleLoader__.load({
 		// dsh-remote — 远程访问（Cloudflare 临时隧道 + 密码门 + 飞书通知）。
 // 市场页（Plugins → Nano Market）由 @oh-summy/nano-market 提供；本插件不再占页签，
 // 而是在自己的详情页里给出远程访问的完整管理面（隧道、密码、飞书通知）。
-// 实现：宿主在插件详情页渲染 plugins.detail.section 区段，本插件用 React 挂载点
+// 实现：宿主在插件详情页渲染 plugins.bundle.config 区段（排在「来源信息」之上），本插件用 React 挂载点
 // + vanilla DOM 应用绘制管理面；离开页面时清理轮询与定时器。
 const { createElement: h } = React;
 
@@ -31,7 +31,7 @@ function nmEsc(s) {
 }
 
 const NM_CSS = `
-.nm { font-family: system-ui,-apple-system,sans-serif; color: #1f2328; max-width: 760px; margin: 0 auto; font-size: 14px; }
+.nm { font-family: system-ui,-apple-system,sans-serif; color: #1f2328; width: 100%; font-size: 14px; }
 .nm-sec { font-size: 11px; font-weight: 600; color: #9ca3af; text-transform: uppercase; letter-spacing: .05em; margin: 22px 0 6px; }
 .nm-card { background: #fff; border: 1px solid #eef0f3; border-radius: 14px; padding: 8px 22px; margin-bottom: 14px; }
 .nm-bare { background: #fff; border: 1px solid #eef0f3; border-radius: 14px; padding: 18px 22px; margin-bottom: 14px; }
@@ -395,18 +395,20 @@ const inject = ["slots"];
 
 function apply(ctx) {
   if (!ctx.slots) return;
-  ctx.slots.inject("plugins.detail.section", () => ctx.slots.register({
-    name: "plugins.detail.section",
-    id: "dsh-remote",
-    order: 10,
-    label: () => "远程访问",
-  }, function DshRemoteDetailSection(props) {
-    const subject = props.subject;
-    // 宿主详情页的 subject 形状：{ kind: "bundle", pkg: { name, version, ... } }。
-    const mine = Boolean(subject) && subject.kind === "bundle" && subject.pkg?.name === PACKAGE;
+  // 配置走 plugins.bundle.config：宿主把它排在「来源信息」之上；
+  // 旧用的 plugins.detail.section 会被排在「来源信息」之下——正是用户要纠正的顺序。
+  // 按包名 key 注册，只在 dsh-remote 的详情页渲染本页。
+  ctx.slots.inject("plugins.bundle.config", () => ctx.slots.register({
+    name: "plugins.bundle.config",
+    key: PACKAGE,
+    inject: () => ({}),
+  }, function DshRemoteConfigCard(props) {
+    // 宿主对 keyed 配置槽以 view:"page" 渲染（整块管理页）；
+    // view:"summary"（行内一句话）不画管理面，交给宿主条目描述兜底。
+    const view = props.view;
     const [node, setNode] = React.useState(null);
     React.useEffect(() => {
-      if (!mine || !node) return undefined;
+      if (view === "summary" || !node) return undefined;
       let cleanup;
       try { cleanup = mountRemoteManager(node); }
       catch (e) {
@@ -414,9 +416,8 @@ function apply(ctx) {
       }
       // 离开详情页时停掉轮询与定时器，避免后台空转。
       return () => { if (typeof cleanup === "function") cleanup(); };
-    }, [mine, node]);
-    // 只在自己的详情页里画；别人的页面返回 null（宿主按 list 语义逐条渲染）。
-    if (!mine) return null;
+    }, [view, node]);
+    if (view === "summary") return null;
     return h("div", { style: { display: "contents" }, ref: setNode });
   }));
 }
