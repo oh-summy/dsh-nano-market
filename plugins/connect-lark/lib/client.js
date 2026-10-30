@@ -72,7 +72,7 @@ const zh = {
   access: "访问控制",
   accessHint: "谁可以给这个机器人发消息。默认只允许你授权的用户，避免其他人驱动本机 Agent。",
   accessApp: "跟随应用权限",
-  accessAppHint: "谁能私聊机器人由飞书应用的「可用范围」决定，插件不再额外限制，也无需填任何 id。",
+  accessAppHint: "谁能私聊机器人由飞书应用的「可用范围」决定，插件不再额外限制，也无需填任何 id。群聊仍需 @ 机器人，群成员不受此限制——要收紧群请改用「指定人员可用」。",
   accessList: "指定人员可用",
   accessListHint: "只允许名单里的人和租户管理员；其他人发消息会被忽略。",
   accessRestricted: "仅授权用户",
@@ -108,7 +108,7 @@ const FIELDS = [
   { path: "appId", kind: "text" },
   { path: "appSecretPreview", kind: "text" },
   { path: "domain", kind: "choice", choices: ["feishu", "lark"] },
-  { path: "accessMode", kind: "choice", choices: ["restricted", "open"] },
+  { path: "accessMode", kind: "choice", choices: ["app", "list"] },
   { path: "openId", kind: "text" },
   { path: "senderAllowlist", kind: "list" },
   { path: "groupAllowlist", kind: "list" },
@@ -119,12 +119,28 @@ const FIELDS = [
   { path: "permissionPreset", kind: "text" },
 ];
 
+/**
+ * 把一个人加入授权名单（文本语义：换行分隔）。
+ * 纯函数，便于测试；调用方负责写回表单字段。
+ */
+function grantToList(currentText, openId) {
+  const list = String(currentText || "").split("\n").map((item) => item.trim()).filter(Boolean);
+  return (list.includes(openId) ? list : [...list, openId]).join("\n");
+}
+
 function definition(field) {
   const base = P.settingsTextField(field.path);
   return {
     ...base,
+    // 暴露 choices，让测试能断言 UI 写入的值都在合法集合里。
+    ...(field.choices ? { choices: field.choices } : {}),
     parse(text) {
-      if (field.kind === "choice") return field.choices.includes(text) ? { kind: "set", value: text } : undefined;
+      if (field.kind === "choice") {
+        // 旧值（open / restricted）归一到新的两态，避免历史配置被判为非法。
+        const legacy = { open: "app", restricted: "list" };
+        const value = legacy[text] ?? text;
+        return field.choices.includes(value) ? { kind: "set", value } : undefined;
+      }
       if (field.kind === "list") {
         const value = text.split(/[\n,]/).map((item) => item.trim()).filter(Boolean);
         return value.length === 0 ? { kind: "clear" } : { kind: "set", value };
@@ -637,6 +653,8 @@ function UserPicker({ value, onEdit, t, disabled }) {
 
   const load = React.useCallback(async () => {
     setState((s) => ({ ...s, status: "loading" }));
+    // 只连固定端口：探测邻近端口可能读到另一个实例的通讯录，
+    // 而飞书 open_id 按应用隔离，那样授权会静默失效。
     try {
       const response = await fetch("http://127.0.0.1:9092/lark-api/users", { headers: { Accept: "application/json" } });
       if (!response.ok) throw new Error("HTTP " + response.status);
@@ -654,15 +672,12 @@ function UserPicker({ value, onEdit, t, disabled }) {
   React.useEffect(() => { void load(); }, [load]);
 
   const select = (user) => {
-    // 加入私聊授权名单；同时填上 open_id，两个入口都能用。
-    const current = Array.isArray(value("senderAllowlist").text) ? value("senderAllowlist").text : [];
-    const list = current.includes(user.openId) ? current : [...current, user.openId];
-    onEdit("senderAllowlist")(list);
+    onEdit("senderAllowlist")(grantToList(value("senderAllowlist").text, user.openId));
     if (!value("openId").text) onEdit("openId")(user.openId);
   };
 
   const current = value("openId").text || "";
-  const granted = Array.isArray(value("senderAllowlist").text) ? value("senderAllowlist").text : [];
+  const granted = String(value("senderAllowlist").text || "").split("\n").map((item) => item.trim()).filter(Boolean);
   const needle = query.trim().toLowerCase();
   const matched = state.users.filter((user) =>
     !needle || user.name.toLowerCase().includes(needle) || user.openId.toLowerCase().includes(needle));
@@ -744,7 +759,7 @@ function AccessPicker({ value, onEdit, t, disabled }) {
       jsx("div", { className: "cl-segment-inline", role: "radiogroup", "aria-label": t("access"), children: modes.map((modeItem) => jsx("button", {
         type: "button",
         role: "radio",
-        "aria-checked": (mode === "app" && modeItem.id === "app") || (mode === "restricted" && modeItem.id === "list") || mode === modeItem.id,
+        "aria-checked": (mode === "app" || mode === "open") === (modeItem.id === "app") || (mode === "list" || mode === "restricted") === (modeItem.id === "list"),
         disabled,
         onClick: () => { onEdit("accessMode")(modeItem.id); },
         children: modeItem.label,
@@ -827,6 +842,7 @@ function apply(ctx) {
 
 		exports.apply = apply;
 		exports.inject = inject;
+		exports.grantToList = grantToList;
 		return module.exports;
 	}
 });

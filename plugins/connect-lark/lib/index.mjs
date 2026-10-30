@@ -503,8 +503,9 @@ const DEFAULT_ORIGINS = [
 * @returns 已监听的目录服务
 */
 async function startDirectoryService(options) {
-	new Set(options.allowedOrigins ?? DEFAULT_ORIGINS);
-	const port = options.port ?? 9092;
+	return listen(options, new Set(options.allowedOrigins ?? DEFAULT_ORIGINS), options.port ?? 9092);
+}
+async function listen(options, origins, port) {
 	const server = createServer((req, res) => {
 		res.setHeader("Access-Control-Allow-Origin", "*");
 		res.setHeader("Vary", "Origin");
@@ -754,28 +755,28 @@ const Config = z.object({
 	reasoningEffort: z.string().default("").volatile().comment("思考强度；留空跟随 DSH 当前模型默认配置"),
 	permissionPreset: z.string().default("").volatile().comment("权限模式；留空跟随 DSH 默认，支持 read-only/workspace-write/danger-full-access/auto")
 });
-/** Bound a promise; resolve false when the timer fires instead of hanging. */
+/** Run a promise with a deadline. Returns undefined when the deadline passed. */
 function withTimeout(promise, ms) {
 	return new Promise((resolve) => {
 		let settled = false;
 		const timer = setTimeout(() => {
 			if (!settled) {
 				settled = true;
-				resolve(false);
+				resolve(void 0);
 			}
 		}, ms);
 		timer.unref?.();
-		Promise.resolve(promise).then(() => {
+		Promise.resolve(promise).then((value) => {
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
-				resolve(true);
+				resolve(value);
 			}
-		}, () => {
+		}, (error) => {
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
-				resolve(false);
+				resolve(void 0);
 			}
 		});
 	});
@@ -967,9 +968,10 @@ function apply(ctx, config = {}) {
 				return;
 			}
 			ctx.logger?.info?.("[connect-lark] channel connected");
+			managerOpenId = "";
 			try {
-				const directory = await fetchDirectoryUsers(chan.rawClient);
-				if (directory.ok && directory.manager) {
+				const directory = await withTimeout(fetchDirectoryUsers(chan.rawClient), 5e3);
+				if (directory && directory.ok && directory.manager) {
 					managerOpenId = directory.manager.openId;
 					ctx.logger?.info?.("[connect-lark] tenant manager detected");
 				}

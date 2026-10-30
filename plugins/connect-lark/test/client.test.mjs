@@ -36,6 +36,32 @@ function collectButtons(node, out = []) {
   return out;
 }
 
+function applyMinimal(loaded) {
+  // The field definitions are captured when the settings model is constructed,
+  // so a field lookup needs one apply() on the same client instance.
+  if (loaded.definitions.length > 0) return;
+  const ctx = {
+    remote: {
+      session: { modelCatalog: async () => ({ ok: true, value: { groups: [], failures: [] } }) },
+      directoryPicker: { list: async () => ({ ok: true, value: { path: "/tmp" } }) },
+      credentials: { set: async () => ({ ok: true }) },
+    },
+    workspaces: { list: { getSnapshot: () => ({ items: [] }), subscribe: () => () => {} } },
+    locale: { bind: () => (key) => key, register: () => () => {} },
+    configForms: {
+      get: () => ({ getSnapshot: () => ({ value: {} }) }),
+      whileServed: (ids, register) => register(new Set(ids)),
+    },
+    slots: {
+      inject: () => () => {},
+      register: (options, component) => ({ options, component }),
+    },
+    effect: (fn) => fn(),
+    get(name) { return name === "workspaces" ? this.workspaces : undefined; },
+  };
+  loaded.exports.apply(ctx);
+}
+
 function loadClient() {
   const source = readFileSync(join(pkgDir, "lib/client.js"), "utf8");
   let registration;
@@ -46,23 +72,53 @@ function loadClient() {
   };
   const fields = [];
   const edits = [];
+  const saved = [];
   const capturedDefinitions = [];
+  // Mirror the host semantics: fields are TEXT, parse() validates, and an
+  // unparsable stage marks the shell invalid (the host then disables Save).
   class SettingsFormModel {
     constructor(scope, definitions) {
       this.scope = scope;
       this.definitions = definitions;
+      this.staged = new Map();
       capturedDefinitions.push(...definitions);
       fields.push(...definitions.map((item) => item.path));
     }
     bind(project) { return { getSnapshot: project }; }
     field(path) {
       const def = this.definitions.find((d) => d.path === path);
+      if (this.staged.has(path)) return { path, text: this.staged.get(path) };
       const raw = this.scope?.getSnapshot?.()?.value?.[path];
       const text = def?.format ? def.format(raw) : String(raw ?? "");
       return { path, text };
     }
-    shell() { return { writable: true }; }
-    actions() { return { save() {}, discard() {}, edit(path, text) { edits.push([path, text]); }, resetField() {} }; }
+    plan() {
+      const ops = [];
+      for (const [path, text] of this.staged) {
+        const def = this.definitions.find((d) => d.path === path);
+        const parsed = def?.parse ? def.parse(text) : undefined;
+        if (!parsed) return { ops: [], invalid: true };
+        ops.push({ path, ...parsed });
+      }
+      return { ops, invalid: false };
+    }
+    shell() { return { writable: true, invalid: this.plan().invalid, dirty: this.staged.size > 0 }; }
+    actions() {
+      return {
+        save: () => {
+          const { ops, invalid } = this.plan();
+          if (invalid) return false;
+          this.saved.push(...ops);
+          return true;
+        },
+        discard: () => { this.staged.clear(); },
+        edit: (path, text) => {
+          edits.push([path, text]);
+          this.staged.set(path, text);
+        },
+        resetField: () => {},
+      };
+    }
     dispose() {}
   }
   const primitives = {
@@ -73,6 +129,7 @@ function loadClient() {
   };
   const sandbox = {
     window,
+    fetch: async () => { throw new Error("no directory service in tests"); },
     document: { querySelectorAll: () => globalThis.__dshWorkspaceButtons || [] },
     console,
     require(name) {
@@ -83,7 +140,7 @@ function loadClient() {
         useMemo: (fn) => fn(),
         useCallback: (fn) => fn,
         useRef: (initial) => ({ current: initial }),
-        useEffect: () => {},
+        useEffect: (fn) => { try { fn(); } catch { /* component under test may need a host runtime */ } },
       };
       if (name === "react/jsx-runtime") return {
         jsx: (type, props) => ({ type, props: props || {} }),
@@ -97,7 +154,7 @@ function loadClient() {
   vm.runInNewContext(source, sandbox);
   assert.ok(registration, "client module registration missing");
   const exports = registration.factory(sandbox.require);
-  return { exports, fields, definitions: capturedDefinitions, edits };
+  return { exports, fields, definitions: capturedDefinitions, edits, saved };
 }
 
 test("package exposes a web client configuration page", () => {
@@ -303,3 +360,42 @@ test("client list fields render existing array values as text", () => {
   assert.ok(senderText.includes("ou_a"), "sender allowlist should show existing values");
   assert.ok(groupText.includes("oc_x"), "group allowlist should show existing values");
 });
+
+
+test("client access mode choices accept the values the UI writes", () => {
+  const loaded = loadClient();
+  applyMinimal(loaded);
+  const { definitions } = loaded;
+  const accessMode = definitions.find((item) => item.path === "accessMode");
+  assert.ok(accessMode, "accessMode field missing");
+  assert.deepEqual([...accessMode.choices].sort(), ["app", "list"]);
+  // The values the segmented control writes must parse.
+  assert.equal(accessMode.parse("app").value, "app");
+  assert.equal(accessMode.parse("list").value, "list");
+  // Legacy values map onto the new pair instead of becoming invalid.
+  assert.equal(accessMode.parse("open").value, "app");
+  assert.equal(accessMode.parse("restricted").value, "list");
+});
+
+test("client list fields round-trip arrays through text", () => {
+  const loaded = loadClient();
+  applyMinimal(loaded);
+  const { definitions } = loaded;
+  const sender = definitions.find((item) => item.path === "senderAllowlist");
+  assert.ok(sender, "senderAllowlist field missing");
+  assert.equal(sender.format(["ou_a", "ou_b"]), "ou_a\nou_b");
+  const parsed = sender.parse("ou_a\nou_b");
+  assert.equal(Array.from(parsed.value).join(","), "ou_a,ou_b");
+});
+
+test("client grants access by appending to the list as text", () => {
+  const { exports } = loadClient();
+  assert.equal(typeof exports.grantToList, "function", "grantToList must be exported");
+  // Adding a new person keeps the existing grants.
+  assert.equal(exports.grantToList("ou_a\nou_b", "ou_c"), "ou_a\nou_b\nou_c");
+  // Adding the same person again does not duplicate.
+  assert.equal(exports.grantToList("ou_a\nou_b", "ou_a"), "ou_a\nou_b");
+  // An empty list starts fresh.
+  assert.equal(exports.grantToList("", "ou_a"), "ou_a");
+});
+

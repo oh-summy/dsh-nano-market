@@ -10,6 +10,11 @@ import { listDirectoryUsers, type DirectoryUser } from "./users.js";
 
 /** 本机端口。dsh-remote 占用 9091，这里错开。 */
 export const DIRECTORY_PORT = 9092;
+/**
+ * 端口被别的实例占用时**不**改用别的端口：飞书的 open_id 按应用隔离，
+ * 读到另一个应用的通讯录会让人以为授权成功、实际在本应用里无效。
+ * 宁可不提供搜索（配置页会降级为手填 open_id），也不要串号。
+ */
 
 export interface DirectoryServiceOptions {
   /** 取飞书 tenant token / 调通讯录的能力（由 channel.rawClient 提供） */
@@ -42,6 +47,10 @@ export interface DirectoryService {
 export async function startDirectoryService(options: DirectoryServiceOptions): Promise<DirectoryService> {
   const origins = new Set(options.allowedOrigins ?? DEFAULT_ORIGINS);
   const port = options.port ?? DIRECTORY_PORT;
+  return listen(options, origins, port);
+}
+
+async function listen(options: DirectoryServiceOptions, origins: Set<string>, port: number): Promise<DirectoryService> {
 
   const server: Server = createServer((req, res) => {
     // 这个服务只监听 127.0.0.1、只读通讯录、不带凭据，所以对任意来源开放 CORS 是安全的：

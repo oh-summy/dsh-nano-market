@@ -109,17 +109,15 @@ export const Config = z.object({
 
 type AnyCtx = any;
 
-// ---- Helpers ----
-
-/** Bound a promise; resolve false when the timer fires instead of hanging. */
-function withTimeout(promise: Promise<unknown>, ms: number): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+/** Run a promise with a deadline. Returns undefined when the deadline passed. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  return new Promise<T | undefined>((resolve) => {
     let settled = false;
-    const timer = setTimeout(() => { if (!settled) { settled = true; resolve(false); } }, ms);
+    const timer = setTimeout(() => { if (!settled) { settled = true; resolve(undefined); } }, ms);
     timer.unref?.();
     Promise.resolve(promise).then(
-      () => { if (!settled) { settled = true; clearTimeout(timer); resolve(true); } },
-      () => { if (!settled) { settled = true; clearTimeout(timer); resolve(false); } },
+      (value) => { if (!settled) { settled = true; clearTimeout(timer); resolve(value); } },
+      (error) => { if (!settled) { settled = true; clearTimeout(timer); resolve(undefined); } },
     );
   });
 }
@@ -327,9 +325,15 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       ctx.logger?.info?.("[connect-lark] channel connected");
 
       // 2.5) 探测租户管理员：可用范围里的 owner 默认可用。
+      // 先清空，避免上一个应用的授权残留到新连接。
+      managerOpenId = "";
       try {
-        const directory = await fetchDirectoryUsers((chan as any).rawClient);
-        if (directory.ok && directory.manager) {
+        // 探测不能拖慢启动：飞书不可达时按「没有管理员」继续，而不是卡住。
+        const directory = await withTimeout(
+          fetchDirectoryUsers((chan as any).rawClient),
+          5000,
+        );
+        if (directory && directory.ok && directory.manager) {
           managerOpenId = directory.manager.openId;
           ctx.logger?.info?.("[connect-lark] tenant manager detected");
         }
