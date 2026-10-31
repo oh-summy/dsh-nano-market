@@ -245,11 +245,21 @@ var RunManager = class {
 			slot.lastCardUpdateAt = 0;
 			slot.runStartedAt = Date.now();
 			slot.cardHeartbeat = null;
+			slot.phase = void 0;
+			slot.lastThinkingAt = void 0;
+			slot.thinkingEndedAt = void 0;
 			const unsub = this.opts.subscribe(agent, sessionId, (delta, kind) => {
 				if (kind === "reasoning") {
+					slot.phase = "thinking";
 					slot.thinkingText = truncateTail(slot.thinkingText + delta, MAX_THINKING_CHARS);
+					slot.lastThinkingAt = Date.now();
 					this.opts.onThinking?.(slot, delta);
+				} else if (kind === "tool") {
+					slot.phase = "tool";
+					this.opts.onPhase?.(slot);
 				} else {
+					if (slot.thinkingText && slot.thinkingEndedAt === void 0) slot.thinkingEndedAt = Date.now();
+					slot.phase = "text";
 					slot.accumulatedText = truncateTail(slot.accumulatedText + delta, MAX_TEXT_CHARS);
 					this.opts.onDelta?.(slot, delta);
 				}
@@ -1070,28 +1080,31 @@ async function updateRunCard(slot, thinkingPolicy, opts = {}) {
 	const lines = [];
 	const thinkingQuoted = () => slot.thinkingText.split("\n").map((line) => "> " + line).join("\n");
 	const showThinking = thinkingPolicy === "cot-visible" && Boolean(slot.thinkingText);
-	Boolean(slot.accumulatedText) || Boolean(opts.final);
-	const elapsed = slot.runStartedAt ? Math.max(1, Math.round((Date.now() - slot.runStartedAt) / 1e3)) : 0;
-	const status = slot.failedWith ? "" : opts.final ? "✅ **已完成** —— 可以继续发送消息" : `⏳ **正在生成中** · 已用时 ${elapsed}s（思考与工具执行见下方，无需等待）`;
+	const bodyStarted = Boolean(slot.accumulatedText) || Boolean(opts.final);
+	const phaseTitle = slot.phase === "tool" ? "正在调用工具…" : slot.phase === "text" ? "正在生成…" : "正在思考…";
+	const title = slot.failedWith ? "DSH 回复" : opts.final ? "DSH 回复" : phaseTitle;
+	const thinkingTail = (maxLines) => {
+		const all = slot.thinkingText.split("\n");
+		return (all.length > maxLines ? "…（上文略）\n" : "") + all.slice(-maxLines).join("\n");
+	};
+	const thinkingSeconds = slot.thinkingEndedAt && slot.runStartedAt ? Math.max(1, Math.round((slot.thinkingEndedAt - slot.runStartedAt) / 1e3)) : null;
 	let panels;
 	if (slot.failedWith) lines.push("**" + friendlyRunFailure(slot.failedWith) + "**");
+	else if (showThinking && !bodyStarted && !opts.legacyThinking) lines.push("**思考过程**", thinkingTail(3));
 	else if (showThinking && !opts.legacyThinking) {
 		slot.thinkingText.length > FINAL_THINKING_TAIL ? "" + slot.thinkingText.slice(-4e3) : slot.thinkingText;
 		panels = [{
-			title: "思考过程",
-			content: thinkingQuoted(),
-			expanded: true
+			title: thinkingSeconds ? "思考过程 · " + thinkingSeconds + "s" : "思考过程",
+			content: thinkingQuoted()
 		}];
-		if (slot.accumulatedText) lines.push(slot.accumulatedText);
-		else if (opts.final) lines.push("本次回复没有文本输出。");
+		lines.push(slot.accumulatedText || "本次回复没有文本输出。");
 	} else if (showThinking) lines.push("**思考过程**", thinkingQuoted(), "---", slot.accumulatedText || "正在生成回复…");
 	else if (slot.accumulatedText) lines.push(slot.accumulatedText);
 	else if (opts.final) lines.push("本次回复没有文本输出。");
 	const timestamp = (/* @__PURE__ */ new Date()).toISOString();
 	await slot.streamController.update(richCard({
-		title: "DSH 回复",
+		title,
 		color: opts.final ? "green" : "blue",
-		status,
 		lines,
 		panels,
 		note: "connect-lark · by @oh-summy · " + timestamp,
@@ -1286,6 +1299,8 @@ function apply(ctx, config = {}) {
 						const frame = evt.frame;
 						if (frame?.type === "chunk" && frame.chunk?.type === "text-delta") onDelta(frame.chunk.text, "text");
 						else if (frame?.type === "chunk" && frame.chunk?.type === "reasoning-delta") onDelta(frame.chunk.text, "reasoning");
+						else if (frame?.type === "chunk" && frame.chunk?.type === "tool-call-delta") onDelta("", "tool");
+						else if (frame?.type === "chunk" && frame.chunk?.type === "tool-call-delta") onDelta("", "tool");
 					}));
 					const unsubTurn = ctx.on("session/event", (session, event) => {
 						if (event?.type === "turn/end" && session?.id === targetSessionId) onTurnEnd();
@@ -1354,6 +1369,9 @@ function apply(ctx, config = {}) {
 					scheduleCardUpdate(slot);
 				},
 				onThinking: (slot) => {
+					scheduleCardUpdate(slot);
+				},
+				onPhase: (slot) => {
 					scheduleCardUpdate(slot);
 				},
 				onComplete: async (slot) => {

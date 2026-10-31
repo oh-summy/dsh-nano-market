@@ -319,22 +319,33 @@ async function updateRunCard(
   const thinkingQuoted = () => slot.thinkingText.split("\n").map((line) => "> " + line).join("\n");
   const showThinking = thinkingPolicy === "cot-visible" && Boolean(slot.thinkingText);
   const bodyStarted = Boolean(slot.accumulatedText) || Boolean(opts.final);
-  // 状态行：生成中（含用时，工具执行期间由心跳刷新）/ 已完成
-  const elapsed = slot.runStartedAt ? Math.max(1, Math.round((Date.now() - slot.runStartedAt) / 1000)) : 0;
-  const status = slot.failedWith ? ""
-    : opts.final ? "✅ **已完成** —— 可以继续发送消息"
-    : `⏳ **正在生成中** · 已用时 ${elapsed}s（思考与工具执行见下方，无需等待）`;
-  let panels: Array<{ title: string; content: string; expanded?: boolean }> | undefined;
+  // 标题栏即状态：thinking→正在思考… tool→正在调用工具… text→正在生成… 终稿→DSH 回复（绿头）
+  const phaseTitle = slot.phase === "tool" ? "正在调用工具…"
+    : slot.phase === "text" ? "正在生成…"
+    : "正在思考…";
+  const title = slot.failedWith ? "DSH 回复" : opts.final ? "DSH 回复" : phaseTitle;
+  // 流式思考只滚动最近 3 行（完整过程终稿折叠后可看）
+  const thinkingTail = (maxLines: number) => {
+    const all = slot.thinkingText.split("\n");
+    return (all.length > maxLines ? "…（上文略）\n" : "") + all.slice(-maxLines).join("\n");
+  };
+  // 终稿面板标题带思考用时（runStartedAt→thinkingEndedAt）
+  const thinkingSeconds = slot.thinkingEndedAt && slot.runStartedAt
+    ? Math.max(1, Math.round((slot.thinkingEndedAt - slot.runStartedAt) / 1000))
+    : null;
+  let panels: Array<{ title: string; content: string }> | undefined;
   if (slot.failedWith) {
     lines.push("**" + friendlyRunFailure(slot.failedWith) + "**");
+  } else if (showThinking && !bodyStarted && !opts.legacyThinking) {
+    // 纯思考阶段：最近 3 行实时滚动（终稿折叠后可看完整过程）
+    lines.push("**思考过程**", thinkingTail(3));
   } else if (showThinking && !opts.legacyThinking) {
+    // 正文已开始：思考折叠为置顶面板（标题带思考用时），正文在其下
     const body = slot.thinkingText.length > FINAL_THINKING_TAIL
       ? "…（仅保留最近 " + FINAL_THINKING_TAIL + " 字，完整过程见会话）\n" + slot.thinkingText.slice(-FINAL_THINKING_TAIL)
       : slot.thinkingText;
-    // 思考面板默认展开（用户要求）；正文开始后折叠的需求由用户手动收起满足
-    panels = [{ title: "思考过程", content: thinkingQuoted(), expanded: true }];
-    if (slot.accumulatedText) lines.push(slot.accumulatedText);
-    else if (opts.final) lines.push("本次回复没有文本输出。");
+    panels = [{ title: thinkingSeconds ? "思考过程 · " + thinkingSeconds + "s" : "思考过程", content: thinkingQuoted() }];
+    lines.push(slot.accumulatedText || "本次回复没有文本输出。");
   } else if (showThinking) {
     // 折叠面板被飞书拒绝时的回退版式：思考同样在正文上方
     lines.push("**思考过程**", thinkingQuoted(), "---", slot.accumulatedText || "正在生成回复…");
@@ -345,9 +356,8 @@ async function updateRunCard(
   }
   const timestamp = new Date().toISOString();
   await slot.streamController.update(richCard({
-    title: "DSH 回复",
+    title,
     color: opts.final ? "green" : "blue",
-    status,
     lines,
     panels,
     note: "connect-lark · by @oh-summy · " + timestamp,
@@ -553,6 +563,10 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               onDelta(frame.chunk.text, "text");
             } else if (frame?.type === "chunk" && frame.chunk?.type === "reasoning-delta") {
               onDelta(frame.chunk.text, "reasoning");
+            } else if (frame?.type === "chunk" && frame.chunk?.type === "tool-call-delta") {
+              onDelta("", "tool");
+            } else if (frame?.type === "chunk" && frame.chunk?.type === "tool-call-delta") {
+              onDelta("", "tool");
             }
           }));
           const unsubTurn = ctx.on("session/event", (session: any, event: any) => {
@@ -621,6 +635,9 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           scheduleCardUpdate(slot);
         },
         onThinking: (slot) => {
+          scheduleCardUpdate(slot);
+        },
+        onPhase: (slot) => {
           scheduleCardUpdate(slot);
         },
         onComplete: async (slot) => {
