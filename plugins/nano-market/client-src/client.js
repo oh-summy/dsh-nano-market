@@ -39,6 +39,7 @@ const zh = {
   stateUpdate: "可更新",
   empty: "这个市场还没有注册任何插件。",
   unknownState: "读取已安装清单失败，暂不显示启用状态。",
+  marketRefreshFailed: "市场索引暂时读不到：",
   installTitle: "安装 {name} {version}？",
   installWarning: "插件代码会在本机以你的权限运行。请确认你信任它的来源。",
   installAcknowledge: "我确认信任这个插件的来源",
@@ -66,6 +67,7 @@ const en = {
   stateUpdate: "Update available",
   empty: "This market has no plugins yet.",
   unknownState: "The installed list could not be read, so the enable state is hidden.",
+  marketRefreshFailed: "The market index could not be read: ",
   installTitle: "Install {name} {version}?",
   installWarning: "The plugin code runs on this machine with your permissions. Make sure you trust its source.",
   installAcknowledge: "I trust the source of this plugin",
@@ -300,7 +302,7 @@ function NanoMarketTab(props) {
       return fresh;
     } catch (error) {
       // 没有网络也不影响浏览：快照已经画在屏幕上了。
-      setMarketError(error?.message || String(error));
+      setMarketError(t("marketRefreshFailed") + (error?.message || String(error)));
       return null;
     }
   }, [ctx]);
