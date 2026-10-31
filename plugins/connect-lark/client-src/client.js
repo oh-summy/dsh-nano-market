@@ -489,18 +489,30 @@ function Field({ label, hint, children }) {
 }
 
 function TextField({ id, label, hint, value, placeholder, disabled, onEdit, mask = false, t }) {
-  // 掩码语义：默认永远掩码显示，聚焦不再自动明文（明文须点右侧眼睛，离开输入框自动复掩）。
-  // 掩码态下输入框只读——往 "cli_a•••••" 里打字只会造出假值，先显眼睛再编辑。
+  // 掩码语义（与 dsh-remote 的 maskedInput 同一族）：
+  //   非编辑态：存量值默认掩码显示，点眼睛才明文（只读查看），失焦自动复掩；
+  //   编辑态：聚焦即进入草稿模式（清空 + placeholder 指引），自由输入，失焦提交非空新值。
+  // 聚焦不再自动明文；掩码串处于只读态，绝无机会被混进真值。
+  const [draft, setDraft] = React.useState(undefined);
   const [revealed, setRevealed] = React.useState(false);
-  const masked = mask && !revealed && value.text.length > 5;
-  const text = masked ? value.text.slice(0, 5) + "•••••" : value.text;
+  const editing = draft !== undefined;
+  const stored = value.text;
+  const hidden = mask && !revealed && stored.length > 5;
+  const shown = editing ? draft : hidden ? stored.slice(0, 5) + "•••••" : stored;
   return jsx(Field, { label, hint, children: jsxs("div", { className: "cl-input-row", children: [
     jsx("input", {
-      id, className: "cl-input", value: text, placeholder, disabled, readOnly: masked,
-      onBlur: () => setRevealed(false),
-      onChange: (event) => onEdit(event.target.value),
+      id, className: "cl-input", value: shown, placeholder, disabled,
+      readOnly: !editing,
+      onFocus: () => { if (!editing) setDraft(""); },
+      onChange: (event) => setDraft(event.target.value),
+      onBlur: () => {
+        const next = (draft ?? "").trim();
+        if (next && next !== stored) onEdit(next);
+        setDraft(undefined);
+        setRevealed(false);
+      },
     }),
-    masked || revealed ? jsx("button", {
+    !editing && (hidden || revealed) ? jsx("button", {
       type: "button", className: "cl-eye", disabled,
       "aria-label": revealed ? t("hide") : t("reveal"),
       "aria-pressed": revealed,
