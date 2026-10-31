@@ -316,21 +316,34 @@ async function updateRunCard(
 ): Promise<void> {
   if (!slot.streamController) return;
   const lines: string[] = [];
-  if (slot.failedWith) lines.push("**" + friendlyRunFailure(slot.failedWith) + "**");
-  else if (slot.accumulatedText) lines.push(slot.accumulatedText);
-  else if (opts.final) lines.push("本次回复没有文本输出。");
-  else if (slot.thinkingText && thinkingPolicy === "cot-visible") lines.push("正在思考…");
-  else lines.push("正在生成回复…");
-  let panels: Array<{ title: string; content: string }> | undefined;
-  if (thinkingPolicy === "cot-visible" && slot.thinkingText && !opts.legacyThinking) {
+  const thinkingQuoted = () => slot.thinkingText.split("\n").map((line) => "> " + line).join("\n");
+  const showThinking = thinkingPolicy === "cot-visible" && Boolean(slot.thinkingText);
+  if (slot.failedWith) {
+    lines.push("**" + friendlyRunFailure(slot.failedWith) + "**");
+  } else if (showThinking && !opts.legacyThinking) {
+    // 终稿：思考折叠面板在正文上方（标题不含「点击」字样，可点性由面板箭头图标暗示）
     const body = slot.thinkingText.length > FINAL_THINKING_TAIL
       ? "…（仅保留最近 " + FINAL_THINKING_TAIL + " 字，完整过程见会话）\n" + slot.thinkingText.slice(-FINAL_THINKING_TAIL)
       : slot.thinkingText;
-    panels = [{ title: "思考过程（点击展开）", content: body.split("\n").map((line) => "> " + line).join("\n") }];
-  } else if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
-    lines.push("---", "**思考过程**");
-    lines.push(slot.thinkingText.split("\n").map((line) => "> " + line).join("\n"));
+    // 流式：思考块先出现（顶部），正文在下方增长；完成后思考自动折叠
+    lines.push("**思考过程**", thinkingQuoted());
+    if (slot.accumulatedText) lines.push("---", slot.accumulatedText);
+    else if (opts.final) lines.push("本次回复没有文本输出。");
+  } else if (showThinking) {
+    // 折叠面板被飞书拒绝时的回退版式：思考同样在正文上方
+    lines.push("**思考过程**", thinkingQuoted(), "---", slot.accumulatedText || "正在生成回复…");
+  } else if (slot.accumulatedText) {
+    lines.push(slot.accumulatedText);
+  } else if (opts.final) {
+    lines.push("本次回复没有文本输出。");
+  } else {
+    lines.push("正在生成回复…");
   }
+  // 折叠面板只在终稿出现；流式阶段思考以引用块展开在顶部
+  const panels: Array<{ title: string; content: string }> | undefined =
+    showThinking && !opts.legacyThinking && opts.final
+      ? [{ title: "思考过程", content: thinkingQuoted() }]
+      : undefined;
   const timestamp = new Date().toISOString();
   await slot.streamController.update(richCard({
     title: "DSH 回复",

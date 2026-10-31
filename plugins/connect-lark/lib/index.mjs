@@ -24,7 +24,7 @@ function collapsiblePanel(panel) {
 			vertical_align: "center",
 			icon: {
 				tag: "standard_icon",
-				token: "down-small-1_outlined"
+				token: "down-small_outlined"
 			},
 			icon_position: "follow"
 		},
@@ -53,6 +53,7 @@ function richCard(opts) {
 			content: line
 		}
 	});
+	if (opts.panels) for (const p of opts.panels) elements.push(collapsiblePanel(p));
 	if (opts.buttons && opts.buttons.length > 0) for (const b of opts.buttons) {
 		const behaviors = [];
 		if (b.url) behaviors.push({
@@ -74,7 +75,6 @@ function richCard(opts) {
 			behaviors
 		});
 	}
-	if (opts.panels) for (const p of opts.panels) elements.push(collapsiblePanel(p));
 	if (opts.note) elements.push({
 		tag: "div",
 		text: {
@@ -1047,20 +1047,22 @@ function friendlyRunFailure(error) {
 async function updateRunCard(slot, thinkingPolicy, opts = {}) {
 	if (!slot.streamController) return;
 	const lines = [];
+	const thinkingQuoted = () => slot.thinkingText.split("\n").map((line) => "> " + line).join("\n");
+	const showThinking = thinkingPolicy === "cot-visible" && Boolean(slot.thinkingText);
 	if (slot.failedWith) lines.push("**" + friendlyRunFailure(slot.failedWith) + "**");
+	else if (showThinking && !opts.legacyThinking) {
+		slot.thinkingText.length > FINAL_THINKING_TAIL ? "" + slot.thinkingText.slice(-4e3) : slot.thinkingText;
+		lines.push("**思考过程**", thinkingQuoted());
+		if (slot.accumulatedText) lines.push("---", slot.accumulatedText);
+		else if (opts.final) lines.push("本次回复没有文本输出。");
+	} else if (showThinking) lines.push("**思考过程**", thinkingQuoted(), "---", slot.accumulatedText || "正在生成回复…");
 	else if (slot.accumulatedText) lines.push(slot.accumulatedText);
 	else if (opts.final) lines.push("本次回复没有文本输出。");
-	else if (slot.thinkingText && thinkingPolicy === "cot-visible") lines.push("正在思考…");
 	else lines.push("正在生成回复…");
-	let panels;
-	if (thinkingPolicy === "cot-visible" && slot.thinkingText && !opts.legacyThinking) panels = [{
-		title: "思考过程（点击展开）",
-		content: (slot.thinkingText.length > FINAL_THINKING_TAIL ? "…（仅保留最近 4000 字，完整过程见会话）\n" + slot.thinkingText.slice(-4e3) : slot.thinkingText).split("\n").map((line) => "> " + line).join("\n")
-	}];
-	else if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
-		lines.push("---", "**思考过程**");
-		lines.push(slot.thinkingText.split("\n").map((line) => "> " + line).join("\n"));
-	}
+	const panels = showThinking && !opts.legacyThinking && opts.final ? [{
+		title: "思考过程",
+		content: thinkingQuoted()
+	}] : void 0;
 	const timestamp = (/* @__PURE__ */ new Date()).toISOString();
 	await slot.streamController.update(richCard({
 		title: "DSH 回复",

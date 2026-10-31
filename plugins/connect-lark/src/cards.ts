@@ -34,7 +34,7 @@ function collapsiblePanel(panel: { title: string; content: string; expanded?: bo
     header: {
       title: { tag: "plain_text", content: panel.title },
       vertical_align: "center",
-      icon: { tag: "standard_icon", token: "down-small-1_outlined" },
+      icon: { tag: "standard_icon", token: "down-small_outlined" },
       icon_position: "follow",
     },
     elements: [{ tag: "div", text: { tag: "lark_md", content: panel.content } }],
@@ -53,6 +53,10 @@ export function richCard(opts: RichCardOptions): Record<string, unknown> {
     if (line === "---") elements.push({ tag: "hr" });
     else elements.push({ tag: "div", text: { tag: "lark_md", content: line } });
   }
+  // 折叠面板渲染在正文之前：思考过程先出现，完成后折叠，正文在其下
+  if (opts.panels) {
+    for (const p of opts.panels) elements.push(collapsiblePanel(p));
+  }
   if (opts.buttons && opts.buttons.length > 0) {
     // CardKit 2.0: buttons are direct elements, not an action wrapper.
     for (const b of opts.buttons) {
@@ -67,9 +71,6 @@ export function richCard(opts: RichCardOptions): Record<string, unknown> {
         behaviors,
       });
     }
-  }
-  if (opts.panels) {
-    for (const p of opts.panels) elements.push(collapsiblePanel(p));
   }
   if (opts.note) {
     // CardKit 2.0 does not accept the legacy `note` tag. Use a plain-text
