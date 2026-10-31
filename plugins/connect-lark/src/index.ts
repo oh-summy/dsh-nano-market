@@ -365,6 +365,25 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       if (!currentAlive()) { try { await chan.disconnect(); } catch { /* gone */ } return; }
       ctx.logger?.info?.("[connect-lark] channel connected");
 
+      // 2.5) 探测租户管理员：可用范围里的 owner 默认可用，不必手填 open_id。
+      // 每次连接探测一次（volatile 重连会重跑 boot，天然不带上一代残留）；
+      // 飞书不可达时按「没有管理员」继续——不卡启动，也不给每条消息加一次通讯录 RTT。
+      managerOpenId = "";
+      try {
+        const probe = await withTimeout(
+          fetchDirectoryUsers((chan as any).rawClient),
+          5000,
+        );
+        const directory = probe.ok ? probe.value : undefined;
+        if (directory && directory.ok && directory.manager) {
+          managerOpenId = directory.manager.openId;
+          ctx.logger?.info?.("[connect-lark] tenant manager detected");
+        }
+      } catch (e) {
+        ctx.logger?.warn?.("[connect-lark] manager lookup failed: " + (e as Error).message);
+      }
+      if (!currentAlive()) return;
+
       // 3) 授权用户目录（本机只读 HTTP 面）：配置页用同一个搜索框找人、找群。
       //    允许的来源 = 这个 DSH 实例自己的广告地址（隧道域名等）+ 回环地址。
       //    之前写死一份清单，Cloudflare 域名一换就 403，选择器直接废了。
@@ -544,25 +563,6 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
 
       // 5) Subscribe to messages.
       unsubMessage = chan.on("message", async (msg: any) => {
-      // 2.5) 探测租户管理员：可用范围里的 owner 默认可用。
-      // 先清空，避免上一个应用的授权残留到新连接。
-      managerOpenId = "";
-      try {
-        // 探测不能拖慢启动：飞书不可达时按「没有管理员」继续，而不是卡住。
-        const probe = await withTimeout(
-          fetchDirectoryUsers((chan as any).rawClient),
-          5000,
-        );
-        const directory = probe.ok ? probe.value : undefined;
-        if (directory && directory.ok && directory.manager) {
-          managerOpenId = directory.manager.openId;
-          ctx.logger?.info?.("[connect-lark] tenant manager detected");
-        }
-      } catch (e) {
-        ctx.logger?.warn?.("[connect-lark] manager lookup failed: " + (e as Error).message);
-      }
-
-
         if (!currentAlive()) return;
         if (!passesWhitelist(plain, msg.chatId, msg.senderId, msg.chatType, managerOpenId)) return;
 

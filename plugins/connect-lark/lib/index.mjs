@@ -1057,6 +1057,18 @@ function apply(ctx, config = {}) {
 				return;
 			}
 			ctx.logger?.info?.("[connect-lark] channel connected");
+			managerOpenId = "";
+			try {
+				const probe = await withTimeout(fetchDirectoryUsers(chan.rawClient), 5e3);
+				const directory = probe.ok ? probe.value : void 0;
+				if (directory && directory.ok && directory.manager) {
+					managerOpenId = directory.manager.openId;
+					ctx.logger?.info?.("[connect-lark] tenant manager detected");
+				}
+			} catch (e) {
+				ctx.logger?.warn?.("[connect-lark] manager lookup failed: " + e.message);
+			}
+			if (!currentAlive()) return;
 			try {
 				const allowed = /* @__PURE__ */ new Set(["null"]);
 				for (const candidate of [advertisedOrigin(ctx), ...loopbackOrigins()]) if (candidate) allowed.add(candidate);
@@ -1226,17 +1238,6 @@ function apply(ctx, config = {}) {
 				}
 			});
 			unsubMessage = chan.on("message", async (msg) => {
-				managerOpenId = "";
-				try {
-					const probe = await withTimeout(fetchDirectoryUsers(chan.rawClient), 5e3);
-					const directory = probe.ok ? probe.value : void 0;
-					if (directory && directory.ok && directory.manager) {
-						managerOpenId = directory.manager.openId;
-						ctx.logger?.info?.("[connect-lark] tenant manager detected");
-					}
-				} catch (e) {
-					ctx.logger?.warn?.("[connect-lark] manager lookup failed: " + e.message);
-				}
 				if (!currentAlive()) return;
 				if (!passesWhitelist(plain, msg.chatId, msg.senderId, msg.chatType, managerOpenId)) return;
 				const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
