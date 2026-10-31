@@ -6,7 +6,9 @@ const { createSnapshotStore } = require("@deepseek-ai/dsh-client-store");
 const NS = "connect-lark.settings";
 const PACKAGE = "@oh-summy/connect-lark";
 const ENTRY = "connect-lark";
-const inject = ["slots", "locale", "remote", "remote.session", "remote.directoryPicker", "workspaces", "configForms"];
+// "remote.credentials" 必须显式声明：带点键是字面服务名，不声明则 saveSecret 里
+// ctx.remote.credentials.set 抛 "cannot get property ... without inject"（宿主 cordis 语义）。
+const inject = ["slots", "locale", "remote", "remote.session", "remote.directoryPicker", "remote.credentials", "workspaces", "configForms"];
 
 const zh = {
   heroTitle: "把飞书消息交给 DSH",
@@ -525,13 +527,6 @@ function EyeOffIcon() {
   ] });
 }
 
-function ListField({ id, label, hint, value, placeholder, disabled, onEdit }) {
-  return jsx(Field, { label, hint, children: jsx("textarea", {
-    id, className: "cl-textarea", rows: 3, value: (Array.isArray(value.text) ? value.text.join("\n") : value.text) || "",
-    placeholder, disabled, onChange: (event) => onEdit(event.target.value),
-  }) });
-}
-
 function SecretField({ state, onEdit, t, disabled }) {
   const preview = state.fields.appSecretPreview.text;
   // 宿主的密钥字段语义：只写不回显，右侧徽标说明是否已配置；
@@ -747,7 +742,7 @@ function WorkspaceDialog({ listDirectory, createDirectory, onPick, onClose, t })
       ] }),
       error ? jsx("p", { className: "cl-hint", role: "alert", children: error }) : null,
       jsx("div", { className: "cl-browser-list", children: loading ? jsx("div", { className: "cl-empty", children: t("browserLoading") }) : (listing?.entries || []).filter((entry) => showHidden || !entry.hidden).map((entry) => jsx("button", {
-        type: "button", className: "cl-browser-entry", onClick: () => load(entry.path), children: jsxs("span", { children: [jsx("span", { className: "cl-browser-entry-mark", children: "▸" }), jsx("span", { children: entry.name })] }),
+        type: "button", className: "cl-browser-entry", onClick: () => load(entry.path), children: jsxs("span", { children: ["▸ ", entry.name] }),
       }, entry.path)) }),
       listing?.truncated ? jsx("p", { className: "cl-hint", children: t("browserTruncated") }) : null,
       creating ? jsxs("div", { className: "cl-browser-create", children: [
@@ -872,7 +867,7 @@ function DirectoryPicker({ value, onEdit, t, disabled }) {
   const load = React.useCallback(async () => {
     setState((s) => ({ ...s, status: "loading" }));
     try {
-      const response = await fetch("http://127.0.0.1:9092/lark-api/directory", { headers: { Accept: "application/json" } });
+      const response = await fetch("http://127.0.0.1:9092/lark-api/directory", { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(5000) });
       if (!response.ok) throw new Error("HTTP " + response.status);
       const body = await response.json();
       if (body && body.ok) {
@@ -912,9 +907,10 @@ function DirectoryPicker({ value, onEdit, t, disabled }) {
       onChange: (event) => setQuery(event.target.value),
     }),
     state.manager
-      ? jsx("button", {
+      ? jsx(P.Button, {
           type: "button",
-          className: "cl-btn",
+          variant: "outline",
+          size: "sm",
           disabled,
           onClick: () => grantUser(state.manager),
           children: t("useManager"),
@@ -923,11 +919,11 @@ function DirectoryPicker({ value, onEdit, t, disabled }) {
   ] });
 
   const body = state.status === "loading"
-    ? jsx("div", { className: "cl-users-note" }, t("loadingUsers"))
+    ? jsx("div", { className: "cl-users-note", children: t("loadingUsers") })
     : state.status === "unavailable"
-      ? jsx("div", { className: "cl-users-note warn" }, t("directoryUnavailable"))
+      ? jsx("div", { className: "cl-users-note warn", children: t("directoryUnavailable") })
       : users.length === 0 && chats.length === 0
-        ? jsx("div", { className: "cl-users-note" }, t("noUsers"))
+        ? jsx("div", { className: "cl-users-note", children: t("noUsers") })
         : jsxs("div", { className: "cl-users-list", children: [
             ...users.map((user) => jsx("button", {
               type: "button",

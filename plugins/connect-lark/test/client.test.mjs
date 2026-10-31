@@ -147,10 +147,18 @@ function loadClient() {
         useRef: (initial) => ({ current: initial }),
         useEffect: (fn) => { try { fn(); } catch { /* component under test may need a host runtime */ } },
       };
-      if (name === "react/jsx-runtime") return {
-        jsx: (type, props) => ({ type, props: props || {} }),
-        jsxs: (type, props) => ({ type, props: props || {} }),
-      };
+      if (name === "react/jsx-runtime") {
+        // 该运行时第三参是 key，不是 children。护栏：出现「有 key 但没有 children」
+        // 的元素，几乎必然是把文案当 key 传了（渲染成空提示框的真 bug 形态）。
+        const guarded = (make) => (type, props, maybeKey) => {
+          if (maybeKey !== undefined && (props === null || props === undefined || props.children === undefined)) {
+            throw new Error("jsx(type, props, key) saw no children — a child was likely passed as the key");
+          }
+          return make(type, props);
+        };
+        const make = (type, props) => ({ type, props: props || {} });
+        return { jsx: guarded(make), jsxs: guarded(make) };
+      }
       if (name === "@deepseek-ai/dsh-client-ui-primitives") return primitives;
       if (name === "@deepseek-ai/dsh-client-store") return { createSnapshotStore: (value) => ({ value, getSnapshot: () => value, set(next) { this.value = next; }, subscribe: () => () => {} }) };
       throw new Error("unexpected module " + name);
@@ -171,7 +179,7 @@ test("package exposes a web client configuration page", () => {
 
 test("client registers the native bundle config slot and all fields", async () => {
   const { exports, fields, definitions, edits } = loadClient();
-  assert.deepEqual(Array.from(exports.inject), ["slots", "locale", "remote", "remote.session", "remote.directoryPicker", "workspaces", "configForms"]);
+  assert.deepEqual(Array.from(exports.inject), ["slots", "locale", "remote", "remote.session", "remote.directoryPicker", "remote.credentials", "workspaces", "configForms"]);
 
   const calls = { get: [], served: [], slots: [] };
   let workspaceItems = [];
