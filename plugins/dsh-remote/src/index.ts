@@ -481,7 +481,11 @@ function startLoginServer(ctx: AnyCtx): http.Server {
           // 否则自动化测试/连续操作会吃掉主人的配额，眼睛和复制全部误报「操作过于频繁」
           const last = revealAt.get(ip) ?? 0;
           if (!isLocal && Date.now() - last < REVEAL_FREQ_MS) { res.writeHead(429, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "操作过于频繁，60s 一次" })); return; }
-          revealAt.set(ip, Date.now());
+          // 淘汰过期项：本 Map 只服务 60s 限频，过期即无意义——
+          // 不清理会随远端 IP（cf-connecting-ip）轮换无界慢涨。
+          const now = Date.now();
+          for (const [k, v] of revealAt) if (now - v >= REVEAL_FREQ_MS) revealAt.delete(k);
+          revealAt.set(ip, now);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ password }));
           return;

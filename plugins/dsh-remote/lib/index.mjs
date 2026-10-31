@@ -527,7 +527,9 @@ function startLoginServer(ctx) {
 						res.end(JSON.stringify({ error: "操作过于频繁，60s 一次" }));
 						return;
 					}
-					revealAt.set(ip, Date.now());
+					const now = Date.now();
+					for (const [k, v] of revealAt) if (now - v >= REVEAL_FREQ_MS) revealAt.delete(k);
+					revealAt.set(ip, now);
 					res.writeHead(200, { "Content-Type": "application/json" });
 					res.end(JSON.stringify({ password }));
 					return;

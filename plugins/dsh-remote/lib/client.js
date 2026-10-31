@@ -33,7 +33,6 @@ function rcApi(path, options) {
 }
 
 const zh = {
-  title: "远程访问",
   statusRunning: "隧道运行中",
   statusStopped: "隧道已停止——远程入口关闭，无链接也无需密码",
   statusReading: "隧道状态读取中…",
@@ -129,7 +128,6 @@ const zh = {
 };
 
 const en = {
-  title: "Remote access",
   statusRunning: "Tunnel running",
   statusStopped: "Tunnel stopped — the remote entrance is closed; no link and no password needed",
   statusReading: "Reading tunnel status…",
@@ -253,7 +251,7 @@ const RC_CSS = `
 // 行内 ⓘ：紧跟标签文字，悬停出宿主 Tooltip——页面本体不放说明长文。
 function InfoTip({ label }) {
   return jsx(P.Tooltip, { label, side: "top", portal: true, delayMs: 200, children:
-    jsx("span", { className: "rc-info", role: "note", "aria-label": label, style: { display: "inline-flex", color: "var(--dsw-alias-label-tertiary)", cursor: "help" }, children:
+    jsx("span", { role: "note", "aria-label": label, style: { display: "inline-flex", color: "var(--dsw-alias-label-tertiary)", cursor: "help" }, children:
       jsx(P.IconQuestionOutlineRegular, { size: 14 }) }) });
 }
 
@@ -494,6 +492,7 @@ function RemoteManager({ t }) {
       Row({ label: t("notifyTo"), tip: t("notifyToTip"), children: jsxs(Fragment, { children: [
         jsx("select", {
           className: "rc-days", disabled: busy,
+          "aria-label": t("notifyTo"),
           value: state?.chatId || "",
           onChange: (event) => {
             const option = event.target.selectedOptions[0];
@@ -567,6 +566,7 @@ function RemoteManager({ t }) {
     Row({ label: t("sessionDays"), tip: t("sessionDaysTip"), children:
       jsx("select", {
         className: "rc-days", disabled: busy || !state,
+        "aria-label": t("sessionDays"),
         value: state?.sessionDays ? String(state.sessionDays) : "7",
         onChange: (event) => act("/rc-api/config", t("done"), { sessionDays: parseInt(event.target.value, 10) || 7 }),
         children: [1, 3, 7, 14, 30].map((days) => jsx("option", { value: String(days), children: days + " " + t("dayUnit") }, days)),
