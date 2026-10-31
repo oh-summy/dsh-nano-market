@@ -13,6 +13,7 @@
     "validate": "node build/validate.mjs dist/index.json",
     "test": "node --test test/**/*.test.mjs",
     "pin": "node build/pin.mjs",
-    "ci": "npm test && npm run build && npm run validate"
+    "ci": "npm test && npm run build && npm run validate",
+    "build:plugins": "npm run build && node build/build-plugins.mjs"
   }
 }

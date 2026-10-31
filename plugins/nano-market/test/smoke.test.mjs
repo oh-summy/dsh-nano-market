@@ -40,8 +40,12 @@ test("the tab paints from a bundled market snapshot, so the first paint needs no
     assert.ok(entry.name, "every entry needs its package name");
     assert.ok(entry.title, "every entry needs a title");
     assert.ok(entry.versions.length > 0, "every entry needs at least one version");
-    // the install spec must be a pinned commit, never a floating tag
-    assert.match(entry.versions[0].install.spec, /^git\+https:\/\/[^#]+#[0-9a-f]{40}$/);
+    // 安装规格必须是钉死的 commit（git 源）或精确版本（npm 源），不能是浮动 tag
+    const spec = entry.versions[0].install.spec;
+    assert.ok(
+      /^git\+https:\/\/[^#]+#[0-9a-f]{40}(\&path:\/.+)?$/.test(spec) || /^@[^@]+\d/.test(spec),
+      `unexpected install spec: ${spec}`,
+    );
   }
   // the built client inlines it
   const built = readFileSync(join(pkgDir, "lib/client.js"), "utf8");
@@ -50,7 +54,9 @@ test("the tab paints from a bundled market snapshot, so the first paint needs no
 });
 
 test("the snapshot's install specs match the official market derivation", async () => {
-  const { installTarget } = await import("../scripts/gen-snapshot.mjs");
+  // 比的是快照文件里已经存下的规格（而不是当场算一遍就算数）——
+  // 快照被改坏时这条必须红。
+  const { installTarget } = await import("../scripts/install-target.mjs");
   const { marketInstallTarget } = await import("@deepseek-ai/dsh-plugin-market-index");
   const snapshot = JSON.parse(readFileSync(join(pkgDir, "src/market-snapshot.json"), "utf8"));
   const index = JSON.parse(readFileSync(join(pkgDir, "../../dist/index.json"), "utf8"));
@@ -59,8 +65,12 @@ test("the snapshot's install specs match the official market derivation", async 
     assert.ok(ours, `${plugin.name} must be in the snapshot`);
     for (const version of plugin.versions) {
       const expected = marketInstallTarget(plugin.name, version);
-      const mine = installTarget(plugin.name, version);
-      assert.equal(mine.spec, expected.spec);
+      const mine = ours.versions.find((item) => item.version === version.version);
+      assert.ok(mine, `${plugin.name}@${version.version} must be in the snapshot`);
+      assert.equal(mine.install.spec, expected.spec);
+      assert.equal(mine.install.registry, expected.registry);
+      // 我们的换算与官方一致（两个方向都比，避免只有快照对、换算错）
+      assert.equal(installTarget(plugin.name, version).spec, expected.spec);
     }
   }
 });

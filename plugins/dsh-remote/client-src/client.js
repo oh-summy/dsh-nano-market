@@ -27,15 +27,8 @@ const NM_CSS = `
 .nm { font-family: system-ui,-apple-system,sans-serif; color: #1f2328; width: 100%; font-size: 14px; }
 .nm-sec { font-size: 11px; font-weight: 600; color: #9ca3af; text-transform: uppercase; letter-spacing: .05em; margin: 22px 0 6px; }
 .nm-card { background: #fff; border: 1px solid #eef0f3; border-radius: 14px; padding: 8px 22px; margin-bottom: 14px; }
-.nm-bare { background: #fff; border: 1px solid #eef0f3; border-radius: 14px; padding: 18px 22px; margin-bottom: 14px; }
 .nm-row { display: flex; align-items: center; gap: 10px; padding: 14px 0; cursor: pointer; }
 .nm-row-plain { cursor: default; }
-.nm-lrow .nm-desc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nm-name { font-weight: 500; font-size: 13.5px; }
-.nm-ver { color: #9ca3af; font-size: 12px; margin-left: 6px; font-family: ui-monospace,monospace; }
-.nm-desc { color: #8b949e; font-size: 12px; line-height: 1.5; }
-.nm-badge { background: #eef2ff; color: #4f46e5; border-radius: 999px; padding: 1px 8px; font-size: 11px; margin-left: 6px; }
-.nm-badge-g { background: #f3f4f6; color: #9ca3af; border-radius: 999px; padding: 1px 8px; font-size: 11px; margin-left: 6px; }
 .nm-label { min-width: 96px; color: #6b7280; font-size: 13px; flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; }
 .nm-dot-on { color: #16a34a; font-weight: 600; font-size: 13px; }
 .nm-dot-off { color: #9ca3af; font-weight: 600; font-size: 13px; }
@@ -48,11 +41,9 @@ const NM_CSS = `
 .nm-btn-d:hover { background: #fdf5f5; }
 .nm-input { flex: 1; min-width: 220px; border: 1px solid #e8eaed; border-radius: 8px; padding: 6px 10px; font-size: 13px; box-sizing: border-box; background: #fafbfc; color: #4b5563; }
 .nm-input:focus { background: #fff; outline: none; border-color: #bfdbfe; }
-.nm-note { color: #9ca3af; font-size: 12px; line-height: 1.7; margin: 8px 0 0; }
 .nm-msg { color: #2563eb; font-size: 13px; margin: 4px 0 0; min-height: 18px; }
 .nm-events { border: 1px solid #eef0f3; border-radius: 10px; padding: 10px 12px; max-height: 200px; overflow: auto; font-size: 12px; color: #9ca3af; background: #fafbfc; }
 .nm-event { padding: 3px 0; word-break: break-all; }
-.nm-empty { color: #9ca3af; font-size: 13px; padding: 18px 0; text-align: center; }
 .nm-sw { width: 30px; height: 17px; border-radius: 999px; background: #1f2328; position: relative; cursor: pointer; flex-shrink: 0; border: none; }
 .nm-sw.off { background: #d8dbe0; }
 .nm-sw i { position: absolute; top: 2px; left: 15px; width: 13px; height: 13px; border-radius: 999px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.15); transition: left .15s; }
@@ -71,8 +62,6 @@ const NM_CSS = `
 .nm-chk { font-size: 12.5px; margin-right: 12px; }
 .nm-chk.ok { color: #16a34a; }
 .nm-chk.bad { color: #dc2626; }
-.nm-skel { height: 13px; border-radius: 6px; margin: 16px 0; background: linear-gradient(90deg,#f1f3f5 25%,#e9ecef 50%,#f1f3f5 75%); background-size: 200% 100%; animation: nmsk 1.1s infinite linear; }
-.nm-skel.w60 { width: 60%; }
 @keyframes nmsk { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 `;
 

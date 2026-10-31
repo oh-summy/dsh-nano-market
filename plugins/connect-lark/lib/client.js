@@ -20,24 +20,18 @@ const zh = {
   heroDescription: "连接应用后，私聊和群里的消息会进入你选择的 DSH 工作区。",
   heroStatus: "插件开启后自动连接",
   connection: "连接飞书",
+  domain: "接入域名",
   connectionHint: "只需应用信息，国内和海外可以随时切换。",
   workspace: "工作区与模型",
   workspaceHint: "默认沿用 DSH 当前的工作方式，需要时再覆盖。",
-  trigger: "触发方式",
-  triggerHint: "私聊由飞书应用权限决定；群里 @ 机器人即可响应。",
   feishu: "飞书 · 国内",
   lark: "Lark · 海外",
   appId: "App ID",
   appIdHint: "应用信息仅保存在本机 DSH 配置中，页面默认掩码显示。",
-  appSecretRef: "App Secret 凭据引用",
-  appSecretRefHint: "Secret 保存在 DSH 凭据缝，不进入 Git，也不会在页面显示。",
   defaultPath: "默认工作区",
-    defaultPathHint: "从 DSH 工作区中选择；右侧按钮可挑其他目录。",
-  editWorkspace: "修改",
+  defaultPathHint: "从 DSH 工作区中选择；右侧按钮可挑其他目录。",
   addWorkspace: "添加工作区",
   customPath: "自定义目录",
-  addingWorkspace: "正在选择目录…",
-  workspaceFailed: "未能添加工作区，请重试。",
   model: "模型",
   modelHint: "默认使用 DSH 新会话的模型；只有需要时才单独覆盖。",
   reasoningEffort: "思考强度",
@@ -46,7 +40,6 @@ const zh = {
   followModel: "跟随模型默认",
   searchModels: "搜索模型或提供方…",
   noModels: "没有匹配的模型",
-  catalogLoading: "正在读取 DSH 可用模型…",
   catalogError: "模型列表暂时不可用，仍可跟随 DSH 当前配置。",
   retry: "重试",
   save: "保存更改",
@@ -55,7 +48,6 @@ const zh = {
   readOnly: "当前部署的配置为只读。",
   unavailable: "connect-lark 未运行，暂时无法配置。",
   appIdPlaceholder: "cli_xxxxxxxx",
-  secretPlaceholder: "CONNECT_LARK_APP_SECRET",
   guideButton: "创建应用与权限",
   guideTitle: "创建飞书应用",
   guideIntro: "在飞书开放平台完成下面几步，然后回到这里填写应用信息。",
@@ -71,19 +63,12 @@ const zh = {
   guideClose: "关闭",
   guideJsonLabel: "最小权限清单",
   guideNote: "这是一份最小配置清单，不是密钥；可以复制给应用管理员核对。",
-  fixedTrigger: "群里 @ 机器人即可触发，无需额外设置。",
   access: "访问控制",
   accessHint: "谁可以给这个机器人发消息。默认只允许你授权的用户，避免其他人驱动本机 Agent。",
   accessApp: "跟随应用权限",
   accessAppHint: "谁能私聊机器人由飞书应用的「可用范围」决定，插件不再额外限制，也无需填任何 id。群聊仍需 @ 机器人，群成员不受此限制——要收紧群请改用「指定人员可用」。",
   accessList: "指定人员可用",
   accessListHint: "只允许名单里的人私聊、名单里的群发消息，租户管理员始终可用。",
-  accessRestricted: "仅授权用户",
-  accessRestrictedHint: "只接受显式授权的聊天；未授权的消息会被忽略。推荐使用。",
-  accessOpen: "允许所有聊天",
-  accessOpenHint: "任何能私聊该机器人的人都可以驱动本机 Agent。仅用于个人私有场景。",
-  openId: "我的 open_id",
-  openIdHint: "指定唯一的私聊用户；不填就按上面的模式判断。在飞书开放平台或发送消息后可以查到自己的 open_id。",
   pickUser: "搜索要授权的人或群",
   pickUserHint: "输入姓名、open_id 或群名，搜到的结果点一下就加入授权名单。",
   searchPlaceholder: "搜索姓名 / open_id / 群名…",
@@ -93,10 +78,6 @@ const zh = {
   useManager: "用管理员",
   managerPrefix: "管理员",
   selectedUser: "已选",
-  senderAllowlist: "私聊用户授权",
-  senderAllowlistHint: "每行一个 open_id；留空则只有设置了 open_id 的用户可私聊。",
-  groupAllowlist: "群聊授权",
-  groupAllowlistHint: "每行一个 chat_id（oc_xxx）；留空则拒绝所有群聊。",
 };
 const en = { ...zh };
 
@@ -259,7 +240,6 @@ const styles = `
 .cl-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .cl-guide-link{border:0;background:transparent;color:var(--cl-blue);font:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:2px 0;white-space:nowrap}
 .cl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
-.cl-grid-two{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
 .cl-triple{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:18px}
 .cl-triple>*{min-width:0}
 @media(max-width:900px){.cl-triple{grid-template-columns:1fr}}
@@ -271,10 +251,10 @@ const styles = `
 .cl-field{min-width:0;margin-bottom:16px}
 .cl-field:last-child{margin-bottom:0}
 .cl-label{display:block;font-size:11.5px;font-weight:600;margin-bottom:6px;color:var(--cl-muted);letter-spacing:.01em}
-.cl-input,.cl-select,.cl-picker-trigger,.cl-textarea{box-sizing:border-box;width:100%;border:1px solid var(--cl-border-strong);border-radius:var(--cl-radius);background:#fff;color:var(--cl-ink);padding:9px 11px;font:inherit;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s}
+.cl-input,.cl-picker-trigger,.cl-textarea{box-sizing:border-box;width:100%;border:1px solid var(--cl-border-strong);border-radius:var(--cl-radius);background:#fff;color:var(--cl-ink);padding:9px 11px;font:inherit;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s}
 .cl-textarea{resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
-.cl-input:focus,.cl-select:focus,.cl-picker-trigger:focus-visible,.cl-textarea:focus,.cl-segment button:focus-visible{outline:none;border-color:var(--cl-blue);box-shadow:0 0 0 3px rgba(51,112,255,.12)}
-.cl-input:disabled,.cl-select:disabled,.cl-picker-trigger:disabled,.cl-textarea:disabled{background:var(--cl-surface-2);color:var(--cl-faint)}
+.cl-input:focus,.cl-picker-trigger:focus-visible,.cl-textarea:focus,.cl-segment button:focus-visible{outline:none;border-color:var(--cl-blue);box-shadow:0 0 0 3px rgba(51,112,255,.12)}
+.cl-input:disabled,.cl-picker-trigger:disabled,.cl-textarea:disabled{background:var(--cl-surface-2);color:var(--cl-faint)}
 .cl-hint{margin:6px 0 0;color:var(--cl-faint);font-size:11px;line-height:1.55}
 .cl-segment{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:var(--cl-hover);border-radius:10px;padding:4px;margin-bottom:18px}
 .cl-segment button{border:1px solid transparent;border-radius:7px;background:transparent;color:#5f6672;padding:8px 12px;font:inherit;font-size:12px;cursor:pointer}
@@ -302,17 +282,12 @@ const styles = `
 .cl-user-picked{margin-left:auto;font-size:11px;color:#16a34a;font-weight:600;flex-shrink:0}
 .cl-users-note{font-size:11.5px;color:#8b949e;line-height:1.65;margin:9px 0 0}
 .cl-users-note.warn{color:#8a5a00;background:#fff8e8;border-radius:7px;padding:8px 10px;margin-top:10px}
-.cl-workspace-field-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:7px}
-.cl-workspace-field-head .cl-label{margin-bottom:0}
 .cl-path-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:stretch}
 .cl-path-row .cl-picker-trigger{height:100%}
 .cl-workspace-add{display:inline-flex;align-items:center;justify-content:center;width:38px;border:1px solid var(--cl-border-strong);border-radius:var(--cl-radius);background:#fff;color:var(--cl-muted);font:inherit;cursor:pointer;transition:background .12s,border-color .12s,color .12s}
 .cl-workspace-add:hover:not(:disabled){background:#f5f7fa;border-color:#c9d2e0;color:var(--cl-blue)}
 
 .cl-workspace-add:disabled{opacity:.45;cursor:not-allowed}
-.cl-workspace-edit{display:inline-flex;align-items:center;gap:5px;border:0;border-radius:6px;background:transparent;color:#526174;padding:3px 6px;font:inherit;font-size:11px;font-weight:550;cursor:pointer}
-.cl-workspace-edit:hover{background:#f0f4fa;color:var(--cl-blue)}
-.cl-workspace-edit:focus-visible{outline:2px solid var(--cl-blue);outline-offset:2px}
 .cl-browser-modal{width:min(680px,100%)}
 .cl-browser-path{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin:18px 0 12px}
 .cl-browser-list{height:340px;overflow:auto;border:1px solid #e9ecf2;border-radius:12px;padding:6px;background:#fcfdfe}
@@ -341,13 +316,10 @@ const styles = `
 .cl-option:hover{background:var(--cl-hover)}
 .cl-option[aria-selected="true"]{background:color-mix(in srgb,var(--cl-blue) 9%,transparent);box-shadow:inset 2.5px 0 0 var(--cl-blue)}
 .cl-option[aria-selected="true"] .cl-option-name{color:var(--cl-blue)}
-.cl-option[aria-selected="true"] .cl-option-mark{opacity:1}
 .cl-option-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
 .cl-option-desc{color:var(--cl-faint);font-size:11px;line-height:1.4}
-.cl-option-mark{flex:0 0 auto;width:14px;color:var(--cl-blue);font-size:11px;text-align:center;opacity:0}
 .cl-option-name{display:block;font-size:12px;font-weight:550}
 .cl-option-desc{display:block;color:var(--cl-muted);font-size:10px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cl-check{color:var(--cl-blue);font-size:12px;font-weight:700}
 .cl-empty{padding:18px;text-align:center;color:var(--cl-muted);font-size:12px}
 .cl-catalog-error{display:flex;align-items:center;gap:10px;color:#8a5a00;background:#fff8e8;border-radius:8px;padding:8px 10px;font-size:11px;margin-bottom:12px}
 .cl-retry{border:0;background:transparent;color:var(--cl-blue);font:inherit;font-weight:600;cursor:pointer;padding:2px}
@@ -377,10 +349,9 @@ const styles = `
 .cl-secondary{border:1px solid #d8dde5;background:#fff;color:#374151}
 .cl-modal-note{color:#4a5568;font-size:11.5px;margin:14px 0 0;line-height:1.65;padding:9px 12px;border-radius:9px;background:#f4f7fd;border:1px solid #e3ebfa;display:flex;gap:8px}
 .cl-modal-note::before{content:"";flex:0 0 auto;width:5px;height:5px;margin-top:6px;border-radius:50%;background:var(--cl-blue);opacity:.55}
-.cl-footer{color:var(--cl-muted);font-size:10px;line-height:1.5;margin-top:8px}
 @media(max-width:560px){.cl-hero{padding:18px}.cl-hero-top{align-items:flex-start;flex-direction:column}.cl-card{padding:17px}.cl-status{white-space:normal}.cl-modal{padding:20px}.cl-section-head{flex-direction:column}.cl-guide-link{align-self:flex-start}}
 @keyframes clMenuIn{from{opacity:0;transform:scaleY(.96) translateY(-3px)}to{opacity:1;transform:none}}
-@media(prefers-reduced-motion:reduce){.cl-input,.cl-select,.cl-picker-trigger{transition:none}.cl-modal-backdrop{backdrop-filter:none}.cl-menu{animation:none}}
+@media(prefers-reduced-motion:reduce){.cl-input,.cl-picker-trigger{transition:none}.cl-modal-backdrop{backdrop-filter:none}.cl-menu{animation:none}}
 `;
 
 function Field({ label, hint, children }) {

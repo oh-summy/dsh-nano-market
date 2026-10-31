@@ -1,9 +1,4 @@
 {
-  "generatedAt": 1793421130,
-  "title": {
-    "en": "oh-summy's DSH Nano Market",
-    "zh": "oh-summy 的 DSH 纳米市场"
-  },
   "entries": [
     {
       "name": "@oh-summy/dsh-remote",
@@ -16,40 +11,15 @@
         "zh": "通过 Cloudflare 临时隧道 + 密码门远程访问本机 DSH；链接变化自动推送到飞书（群聊/私聊），内置权限体检与环境自检。"
       },
       "icon": "https://oh-summy.github.io/dsh-nano-market/icons/dsh-remote.svg",
-      "author": "oh-summy",
-      "homepage": "https://github.com/oh-summy/dsh-nano-market/tree/main/plugins/dsh-remote",
-      "repository": {
-        "url": "https://github.com/oh-summy/dsh-nano-market",
-        "directory": "plugins/dsh-remote"
-      },
-      "metadata": {
-        "category": "tools",
-        "keywords": [
-          "dsh",
-          "dsh-plugin",
-          "remote",
-          "tunnel",
-          "cloudflare",
-          "feishu"
-        ],
-        "labels": [
-          "mine",
-          "notifier",
-          "needs-env"
-        ]
-      },
       "versions": [
         {
           "version": "0.2.0",
-          "publishTimestamp": 1792941848,
-          "engines": {
-            "dsh": ">=0.2.1-rc.2 || >=0.2.2-0"
-          },
           "install": {
             "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#4d03c081c3e79cf500f79412b4e1281efbc521d0"
           }
         }
-      ]
+      ],
+      "defaultVersion": "0.2.0"
     },
     {
       "name": "@oh-summy/connect-lark",
@@ -62,39 +32,15 @@
         "zh": "飞书/Lark 长连接桥接 DSH：把飞书消息接到本地 DSH agent，流式富卡片回复，支持图片和工作区。"
       },
       "icon": "https://oh-summy.github.io/dsh-nano-market/icons/connect-lark.svg",
-      "author": "oh-summy",
-      "homepage": "https://github.com/oh-summy/dsh-nano-market/tree/main/plugins/connect-lark",
-      "repository": {
-        "url": "https://github.com/oh-summy/dsh-nano-market",
-        "directory": "plugins/connect-lark"
-      },
-      "metadata": {
-        "category": "tools",
-        "keywords": [
-          "dsh",
-          "dsh-plugin",
-          "connect-lark",
-          "feishu",
-          "lark",
-          "chat"
-        ],
-        "labels": [
-          "mine",
-          "needs-env"
-        ]
-      },
       "versions": [
         {
           "version": "0.1.0",
-          "publishTimestamp": 1793288669,
-          "engines": {
-            "dsh": ">=0.2.1-rc.4 || >=0.2.2-0"
-          },
           "install": {
             "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#3bf790ef09e8d83a0347a2956ec9d646f089af5e"
           }
         }
-      ]
+      ],
+      "defaultVersion": "0.1.0"
     }
   ]
 }
