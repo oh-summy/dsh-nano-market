@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-remote",
+    "description": "Remote access to your local DSH via a Cloudflare quick tunnel with a password gate and Feishu notifications (group or DM)."
+  }
+}

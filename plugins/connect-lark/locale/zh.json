@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "connect-lark 飞书桥接",
+    "description": "飞书/Lark 长连接桥接 DSH：把飞书消息接到本地 DSH agent，流式富卡片回复，支持图片和工作区。"
+  }
+}
