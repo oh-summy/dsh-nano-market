@@ -39,6 +39,9 @@ const zh = {
   stateUpdate: "可更新",
   empty: "这个市场还没有注册任何插件。",
   unknownState: "读取已安装清单失败，暂不显示启用状态。",
+  stateUnknownShort: "状态未知",
+  retry: "重试",
+  retrying: "重试中…",
   marketRefreshFailed: "市场索引暂时读不到：",
   installTitle: "安装 {name} {version}？",
   installWarning: "插件代码会在本机以你的权限运行。请确认你信任它的来源。",
@@ -82,6 +85,9 @@ const en = {
   stateUpdate: "Update available",
   empty: "This market has no plugins yet.",
   unknownState: "The installed list could not be read, so the enable state is hidden.",
+  stateUnknownShort: "Unknown",
+  retry: "Retry",
+  retrying: "Retrying…",
   marketRefreshFailed: "The market index could not be read: ",
   installTitle: "Install {name} {version}?",
   installWarning: "The plugin code runs on this machine with your permissions. Make sure you trust its source.",
@@ -140,7 +146,11 @@ const CSS = `
 .nmk-statusTag{height:18px;padding:0 7px;font-size:10px;line-height:1;flex:none}
 .nmk-msg{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;margin:0}
 .nmk-msg.err{color:var(--dsw-alias-state-error-primary)}
-.nmk-notice{margin:0;padding:9px 12px;border-radius:var(--dsw-radius-md);background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 10%,transparent);color:var(--dsw-alias-label-secondary);font-size:12.5px;line-height:1.6}
+.nmk-notice{display:flex;align-items:center;gap:10px;margin:0;padding:9px 12px;border-radius:var(--dsw-radius-md);background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 10%,transparent);color:var(--dsw-alias-label-secondary);font-size:12.5px;line-height:1.6}
+.nmk-notice>span{flex:1;min-width:0}
+.nmk-retry{flex:none;border:0;background:transparent;color:var(--dsw-alias-state-business-primary);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;padding:2px 6px;border-radius:var(--dsw-radius-xs)}
+.nmk-retry:disabled{opacity:.5;cursor:default}
+.nmk-retry:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}
 .nmk-empty{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px;padding:12px 0}
 `;
 
@@ -217,6 +227,13 @@ function installable(compatibility) {
   return compatibility === undefined || compatibility.compatible === true || compatibility.exempted === true;
 }
 
+// 图标加载失败时回退到宿主默认插件图形，不留碎图或空框（远端 icons 偶发不可达）。
+function CardIcon({ src }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) return jsx(P.PluginArtworkDefault, { size: 48 });
+  return jsx("img", { className: "nmk-packageImage", src, alt: "", width: 48, height: 48, onError: () => setFailed(true) });
+}
+
 /** 一张市场卡片：与宿主「已安装」页签的卡片同构。 */
 function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onInstall, onOpen }) {
   const working = busy === entry.name;
@@ -233,11 +250,9 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
   const installed = status === "enabled" || status === "installed-off";
   const locked = bundle?.readOnlyReason !== undefined || (bundle?.error !== undefined && status !== "enabled");
   // 图标优先用本机已安装插件的 manifest 图标（宿主读出来的 data:URL），
-  // 其次用市场条目里的图标，都没有就用宿主的默认插件图形。
+  // 其次用市场条目里的图标，都没有（或加载失败）就用宿主的默认插件图形。
   const iconSource = bundle?.meta?.icon || entry.icon;
-  const artwork = iconSource
-    ? jsx("img", { className: "nmk-packageImage", src: iconSource, alt: "", width: 48, height: 48 })
-    : jsx(P.PluginArtworkDefault, { size: 48 });
+  const artwork = jsx(CardIcon, { src: iconSource });
   const statusLabel = status === "enabled"
     ? t("stateEnabled")
     : status === "installed-off"
@@ -245,7 +260,7 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
       : status === "provided"
         ? t("stateProvided")
         : status === "unknown"
-            ? t("unknownState")
+            ? t("stateUnknownShort")
             : t("stateNotInstalled");
   // 与官方 Discover 同规则：不兼容（且未豁免）的版本不给安装，说明原因。
   const canInstall = installable(version?.compatibility);
@@ -278,9 +293,17 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
           delayMs: 300,
           children: jsx(P.Button, { variant: "primary", size: "sm", "aria-disabled": "true", "aria-label": t("install"), children: t("install") }),
         }))
-    : status === "provided" || status === "unknown"
-      ? null
-      : jsx(P.Switch, {
+    : // 清单读不到时开关留在原位但禁用（悬停说明原因），避免整块控件消失造成布局跳动。
+      status === "unknown"
+      ? jsx(P.Switch, {
+          checked: false,
+          label: t("switchAria", { name: title }),
+          disabled: true,
+          title: t("unknownState"),
+        })
+      : status === "provided"
+        ? null
+        : jsx(P.Switch, {
           checked: status === "enabled",
           label: t("switchAria", { name: title }),
           disabled: working || locked,
@@ -388,6 +411,18 @@ function NanoMarketTab(props) {
     void refreshMarket();
   }, [refreshBundles, refreshMarket]);
 
+  // 两条横幅共用一个重试入口：清单与索引一起补读，进行中两个按钮同时禁用。
+  const [refreshing, setRefreshing] = useState(false);
+  const retryReads = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refreshBundles();
+      await refreshMarket();
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refreshBundles, refreshMarket]);
+
   // 让卡片不停在旧状态的整组事件：装完/启停完（plugin-manager/changed）、
   // 索引源配置变了（plugin-market/changed，官方 Discover 也订它）、
   // 连接重置后本机清单可能过期（connection/reset，与官方已安装页同款）。
@@ -490,8 +525,14 @@ function NanoMarketTab(props) {
             onOpen: () => props.openPackage(entry.name),
           })) }),
     ] }),
-    bundleError ? jsx("div", { className: "nmk-notice", children: t("unknownState") }) : null,
-    marketError ? jsx("div", { className: "nmk-notice", children: marketError }) : null,
+    bundleError ? jsxs("div", { className: "nmk-notice", children: [
+      jsx("span", { children: t("unknownState") }),
+      jsx("button", { type: "button", className: "nmk-retry", disabled: refreshing, onClick: () => void retryReads(), children: refreshing ? t("retrying") : t("retry") }),
+    ] }) : null,
+    marketError ? jsxs("div", { className: "nmk-notice", children: [
+      jsx("span", { children: marketError }),
+      jsx("button", { type: "button", className: "nmk-retry", disabled: refreshing, onClick: () => void retryReads(), children: refreshing ? t("retrying") : t("retry") }),
+    ] }) : null,
     message ? jsx("div", { className: "nmk-msg" + (message.tone === "error" ? " err" : ""), children: message.text }) : null,
     jsx(P.RiskConfirmation, {
       open: Boolean(confirming),

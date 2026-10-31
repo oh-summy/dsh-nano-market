@@ -72,6 +72,7 @@ const zh = {
   managerUnreachable: "管理面未连接——本实例未开放管理 API，远程访问需在 3080 主实例操作。",
   managerRetrying: "管理面连接中…（{error}，数秒内自动恢复）",
   retry: "重试",
+  retrying: "重试中…",
   appId: "App ID",
   appIdTip: "开放平台 → 凭证与基础信息里的 cli_ 开头 ID。",
   appSecret: "App Secret",
@@ -167,6 +168,7 @@ const en = {
   managerUnreachable: "Manager unreachable — this instance exposes no management API; manage remote access on the 3080 primary instance.",
   managerRetrying: "Manager connecting… ({error}; recovers in seconds)",
   retry: "Retry",
+  retrying: "Retrying…",
   appId: "App ID",
   appIdTip: "The cli_-prefixed ID under Credentials & basic info on the open platform.",
   appSecret: "App Secret",
@@ -269,6 +271,7 @@ function RemoteManager({ t }) {
   const [error, setError] = React.useState("");
   const [message, setMessage] = React.useState(null); // {text, err}
   const [busy, setBusy] = React.useState(false);
+  const [refreshing, setRefreshing] = React.useState(false);
   const [revealed, setRevealed] = React.useState(false);
   const [password, setPassword] = React.useState("");
   const [confirmReset, setConfirmReset] = React.useState(false);
@@ -284,7 +287,9 @@ function RemoteManager({ t }) {
 
   React.useEffect(() => () => { liveRef.current = false; }, []);
 
-  const refresh = React.useCallback(async () => {
+  // manual = 用户点了「重试」：给按钮挂进行中反馈；5s 轮询走无参调用，不闪按钮。
+  const refresh = React.useCallback(async (manual) => {
+    if (manual) setRefreshing(true);
     try {
       const next = await rcApi("/rc-api/state");
       if (!liveRef.current) return;
@@ -293,6 +298,8 @@ function RemoteManager({ t }) {
     } catch (reason) {
       if (!liveRef.current) return;
       setError(reason?.message || String(reason));
+    } finally {
+      if (manual && liveRef.current) setRefreshing(false);
     }
   }, []);
 
@@ -412,7 +419,8 @@ function RemoteManager({ t }) {
 
   const errorRow = error ? jsxs("div", { className: "rc-row", children: [
     jsx("p", { className: "rc-msg err", role: "alert", children: managerUnreachableText(error, t) }),
-    jsx(P.Button, { variant: "outline", size: "sm", onClick: () => void refresh(), children: t("retry") }),
+    // 重试要有进行中反馈：禁用 + 换字，避免「点了像没点」。
+    jsx(P.Button, { variant: "outline", size: "sm", disabled: refreshing, onClick: () => void refresh(true), children: refreshing ? t("retrying") : t("retry") }),
   ] }) : null;
 
   const statusRow = jsxs("div", { className: "rc-row", children: [

@@ -22,6 +22,8 @@ const zh = {
   appName: "飞书",
   appId: "App ID",
   appIdHint: "应用信息仅保存在本机 DSH 配置中，页面默认掩码显示。",
+  reveal: "显示 App ID 明文",
+  hide: "隐藏 App ID 明文",
   defaultPath: "默认工作区",
   defaultPathHint: "从 DSH 工作区中选择；右侧按钮可挑其他目录。",
   addWorkspace: "添加工作区",
@@ -118,6 +120,8 @@ const en = {
   appName: "Feishu",
   appId: "App ID",
   appIdHint: "App credentials stay in local DSH config; the page masks them by default.",
+  reveal: "Show App ID",
+  hide: "Hide App ID",
   defaultPath: "Default workspace",
   defaultPathHint: "Pick from DSH workspaces; the button on the right browses for another folder.",
   addWorkspace: "Add workspace",
@@ -380,6 +384,12 @@ const styles = `
 .cl-textarea{resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 .cl-input:focus,.cl-picker-trigger:focus-visible,.cl-textarea:focus,.cl-segment button:focus-visible{outline:none;border-color:var(--cl-blue);box-shadow:0 0 0 3px color-mix(in srgb,var(--cl-blue) 15%,transparent)}
 .cl-input:disabled,.cl-picker-trigger:disabled,.cl-textarea:disabled{background:var(--cl-surface-2);color:var(--cl-faint)}
+.cl-input-row{display:flex;align-items:center;gap:8px}
+.cl-input-row .cl-input{flex:1;min-width:0}
+.cl-eye{flex:none;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid var(--cl-border-strong);border-radius:8px;background:var(--cl-surface);color:var(--cl-muted);cursor:pointer;transition:color .12s,border-color .12s}
+.cl-eye:hover:not(:disabled){color:var(--cl-blue);border-color:var(--cl-blue)}
+.cl-eye:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}
+.cl-eye:disabled{opacity:.45;cursor:not-allowed}
 .cl-hint{margin:6px 0 0;color:var(--cl-faint);font-size:11px;line-height:1.55}
 .cl-segment{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:var(--cl-hover);border-radius:10px;padding:4px;margin-bottom:18px}
 .cl-segment button{border:1px solid transparent;border-radius:7px;background:transparent;color:var(--cl-muted);padding:8px 12px;font:inherit;font-size:12px;cursor:pointer}
@@ -476,14 +486,43 @@ function Field({ label, hint, children }) {
   ] });
 }
 
-function TextField({ id, label, hint, value, placeholder, disabled, onEdit, mask = false }) {
-  const [focused, setFocused] = React.useState(false);
-  const text = mask && !focused && value.text.length > 5 ? value.text.slice(0, 5) + "*****" : value.text;
-  return jsx(Field, { label, hint, children: jsx("input", {
-    id, className: "cl-input", value: text, placeholder, disabled,
-    onFocus: () => setFocused(true), onBlur: () => setFocused(false),
-    onChange: (event) => onEdit(event.target.value),
-  }) });
+function TextField({ id, label, hint, value, placeholder, disabled, onEdit, mask = false, t }) {
+  // 掩码语义：默认永远掩码显示，聚焦不再自动明文（明文须点右侧眼睛，离开输入框自动复掩）。
+  // 掩码态下输入框只读——往 "cli_a•••••" 里打字只会造出假值，先显眼睛再编辑。
+  const [revealed, setRevealed] = React.useState(false);
+  const masked = mask && !revealed && value.text.length > 5;
+  const text = masked ? value.text.slice(0, 5) + "•••••" : value.text;
+  return jsx(Field, { label, hint, children: jsxs("div", { className: "cl-input-row", children: [
+    jsx("input", {
+      id, className: "cl-input", value: text, placeholder, disabled, readOnly: masked,
+      onBlur: () => setRevealed(false),
+      onChange: (event) => onEdit(event.target.value),
+    }),
+    masked || revealed ? jsx("button", {
+      type: "button", className: "cl-eye", disabled,
+      "aria-label": revealed ? t("hide") : t("reveal"),
+      "aria-pressed": revealed,
+      title: revealed ? t("hide") : t("reveal"),
+      onClick: () => setRevealed(!revealed),
+      children: revealed ? EyeOffIcon() : EyeIcon(),
+    }) : null,
+  ] }) });
+}
+
+function EyeIcon() {
+  return jsxs("svg", { width: 15, height: 15, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+    strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: [
+    jsx("path", { d: "M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z" }),
+    jsx("circle", { cx: 12, cy: 12, r: 2.8 }),
+  ] });
+}
+
+function EyeOffIcon() {
+  return jsxs("svg", { width: 15, height: 15, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+    strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children: [
+    jsx("path", { d: "M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z" }),
+    jsx("path", { d: "M4 4l16 16" }),
+  ] });
 }
 
 function ListField({ id, label, hint, value, placeholder, disabled, onEdit }) {
@@ -641,10 +680,10 @@ function PermissionPicker({ value, onEdit, disabled, open, setOpen, t }) {
   return jsxs("div", { className: "cl-picker", children: [
     jsx("span", { className: "cl-label", children: t("permissionLabel") }),
     jsxs("button", { type: "button", className: "cl-picker-trigger", disabled, onClick: () => setOpen(isOpen ? null : "permission"), children: [
-      jsxs("span", { className: "cl-picker-text", children: [
+      // 触发器只放选项名：描述在窄列里必然截断，完整说明保留在菜单项与下方 hint。
+      jsx("span", { className: "cl-picker-text", children:
         jsx("span", { className: "cl-picker-title", children: current.label }),
-        jsx("span", { className: "cl-picker-sub", children: current.description }),
-      ] }),
+      }),
       jsx("span", { className: "cl-chevron", children: isOpen ? "▲" : "▼" }),
     ] }),
     jsx("p", { className: "cl-hint", children: t("permissionHint") }),
@@ -994,7 +1033,7 @@ function LarkConfigCard(props) {
             disabled, onClick: () => edit("domain")(domain), children: t(domain),
           }, domain)) }),
           jsxs("div", { className: "cl-grid", children: [
-            jsx(TextField, { id: "connect-lark-appId", label: t("appId"), hint: t("appIdHint"), value: value("appId"), placeholder: t("appIdPlaceholder"), disabled, onEdit: edit("appId"), mask: true }),
+            jsx(TextField, { id: "connect-lark-appId", label: t("appId"), hint: t("appIdHint"), value: value("appId"), placeholder: t("appIdPlaceholder"), disabled, onEdit: edit("appId"), mask: true, t }),
             jsx(SecretField, { state, onEdit: props.editSecret, t, disabled }),
           ] }),
         ] }, "connection"),
