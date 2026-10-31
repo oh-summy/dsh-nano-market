@@ -228,7 +228,7 @@ const RC_CSS = `
 .rc-wrap{display:flex;flex-direction:column;gap:12px;max-width:760px}
 .rc-row{display:flex;align-items:center;gap:10px;min-height:32px;flex-wrap:wrap}
 .rc-label{display:inline-flex;align-items:center;gap:6px;min-width:110px;color:var(--dsw-alias-label-secondary);font-size:13px}
-.rc-control{flex:1;min-width:220px;display:inline-flex;align-items:center;gap:10px}
+.rc-control{flex:1;min-width:220px;display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap}
 .rc-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--dsw-alias-bg-layer-3);border-radius:var(--dsw-radius-sm);padding:3px 10px;word-break:break-all}
 .rc-link{color:var(--dsw-alias-state-business-primary);word-break:break-all;text-decoration:none}
 .rc-link:hover{text-decoration:underline}
