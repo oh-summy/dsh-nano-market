@@ -13,16 +13,16 @@
       "icon": "https://oh-summy.github.io/dsh-nano-market/icons/dsh-remote.svg",
       "versions": [
         {
-          "version": "0.2.0",
+          "version": "0.3.0",
           "engines": {
-            "dsh": ">=0.2.1-rc.2 || >=0.2.2-0"
+            "dsh": ">=0.2.1-rc.4 || >=0.2.2-0"
           },
           "install": {
-            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#4d03c081c3e79cf500f79412b4e1281efbc521d0"
+            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#25e1d142940a7187c2ec6c7f760a56a7cc37229f"
           }
         }
       ],
-      "defaultVersion": "0.2.0"
+      "defaultVersion": "0.3.0"
     },
     {
       "name": "@oh-summy/connect-lark",
@@ -37,16 +37,16 @@
       "icon": "https://oh-summy.github.io/dsh-nano-market/icons/connect-lark.svg",
       "versions": [
         {
-          "version": "0.1.0",
+          "version": "0.2.0",
           "engines": {
             "dsh": ">=0.2.1-rc.4 || >=0.2.2-0"
           },
           "install": {
-            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#3bf790ef09e8d83a0347a2956ec9d646f089af5e"
+            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#b305cf8e43bb5d3a0e8c1c53207ba0743625b402"
           }
         }
       ],
-      "defaultVersion": "0.1.0"
+      "defaultVersion": "0.2.0"
     }
   ]
 }
