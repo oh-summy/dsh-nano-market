@@ -65,7 +65,9 @@ if (tagExists) {
 }
 
 // 4) 以 HEAD 的插件子目录为内容构造 tree（不碰工作区/主 index）。
-const tree = run(`git read-tree HEAD:${pkgDir} && git write-tree`, { GIT_INDEX_FILE: tmpIndex });
+// GIT_INDEX_FILE 必须经 env 传给 git：execSync 的裸键会被忽略，
+// 否则 read-tree 会把插件子树读进主索引，整仓索引被替换成插件目录（2026-11-01 实测事故）。
+const tree = run(`git read-tree HEAD:${pkgDir} && git write-tree`, { env: { ...process.env, GIT_INDEX_FILE: tmpIndex } });
 
 // 5) 提交到 pkg/<name> 分支（父提交 = 分支现有 tip，首发布无父）。
 let parents = "";
