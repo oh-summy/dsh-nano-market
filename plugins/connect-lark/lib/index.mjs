@@ -1214,7 +1214,14 @@ function apply(ctx, config = {}) {
 						};
 					}
 					if (plain.agentOwnership === "owned-per-chat") {
-						const sessionId = "connect-lark:" + chatId;
+						const cwdTag = (() => {
+							const path = plain.defaultPath || "";
+							if (!path) return "";
+							let h = 5381;
+							for (let i = 0; i < path.length; i++) h = (h << 5) + h + path.charCodeAt(i) >>> 0;
+							return "@" + h.toString(36);
+						})();
+						const sessionId = "connect-lark:" + chatId + cwdTag;
 						const catalog = await ctx.sessionController.modelCatalog();
 						const agentOptions = resolveAgentModelOptions(plain, catalog);
 						const { agent, sessionId: resolvedSessionId, handle } = await createOrResumeAgent(ctx, sessionId, { cwd: plain.defaultPath || void 0 }, agentOptions, plain.permissionPreset);

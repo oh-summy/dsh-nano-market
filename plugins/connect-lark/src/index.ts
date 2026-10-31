@@ -479,7 +479,16 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             return { agent: existing.agent, sessionId: existing.sessionId, handle: existing.handle };
           }
           if (plain.agentOwnership === "owned-per-chat") {
-            const sessionId = "connect-lark:" + chatId;
+            // 会话 ID 带默认工作区指纹：cwd 是会话的出身属性，resume 不改出身——
+            // 改默认工作区必须换新会话才能生效。指纹用简单多项式即可（只做缓存失效）。
+            const cwdTag = (() => {
+              const path = plain.defaultPath || "";
+              if (!path) return "";
+              let h = 5381;
+              for (let i = 0; i < path.length; i++) h = ((h << 5) + h + path.charCodeAt(i)) >>> 0;
+              return "@" + h.toString(36);
+            })();
+            const sessionId = "connect-lark:" + chatId + cwdTag;
             const catalog = await ctx.sessionController.modelCatalog();
             const agentOptions = resolveAgentModelOptions(plain, catalog);
             const { agent, sessionId: resolvedSessionId, handle } = await createOrResumeAgent(
