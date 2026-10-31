@@ -24,9 +24,10 @@
     "plugin"
   ],
   "scripts": {
-    "build": "tsc --noEmit && tsdown src/index.ts -d lib --format esm && node scripts/build-client.mjs",
+    "build": "tsc --noEmit && tsdown src/index.ts -d lib --format esm && node scripts/gen-snapshot.mjs && node scripts/build-client.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "gen-snapshot": "node scripts/gen-snapshot.mjs"
   },
   "dsh": {
     "bundle": {
