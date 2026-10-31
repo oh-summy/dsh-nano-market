@@ -40,6 +40,7 @@ const APP_SECRET_REF = credentialRef("DSH_REMOTE_APP_SECRET");
 
 export interface Config {
   enabled?: boolean;
+  autoStart?: boolean;
   cloudflaredPath?: string;
   caddyPath?: string;
   autoRestart?: boolean;
@@ -60,6 +61,7 @@ export const inject = ["credentials"];
 // 改存本插件自己的 settings.json，立即生效不重启；profile 只承载静态安装配置（路径类）。
 export const Config = z.object({
   enabled: z.boolean().default(false).describe("启用远程访问（关闭即回收隧道；开启产生新的临时链接）"),
+  autoStart: z.boolean().default(false).describe("跟随 DSH 启动：每次宿主启动时自动拉起隧道并经飞书推送新链接（关闭则只能手动启动）"),
   cloudflaredPath: z.string().default("").describe("cloudflared 路径（留空自动探测）"),
   caddyPath: z.string().default("").describe("caddy 路径（留空自动探测）"),
   // 兼容旧值（webhook/app 按传输方式）→ 新模型（group/dm 按收件人）：profile 遗留键不至于炸掉条目
@@ -435,6 +437,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
             running: !!cloudflaredChild?.pid && pidAlive(cloudflaredChild.pid),
             url: currentUrl,
             passwordMask: password.slice(0, 4) + "••••••••",
+            autoStart: cfg.autoStart === true,
             autoRestart: cfg.autoRestart !== false,
             sessionDays: Number(cfg.sessionDays) || 7,
             channel: cfg.notifyChannel || "off",
@@ -568,6 +571,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
           if (json.notifyChatId !== undefined) fields.notifyChatId = String(json.notifyChatId);
           if (json.notifyChatName !== undefined) fields.notifyChatName = String(json.notifyChatName);
           if (json.autoRestart !== undefined) fields.autoRestart = !!json.autoRestart;
+          if (json.autoStart !== undefined) fields.autoStart = !!json.autoStart;
           if (json.sessionDays !== undefined) fields.sessionDays = Math.min(Math.max(parseInt(String(json.sessionDays), 10) || 7, 1), 30);
           cfg = { ...cfg, ...fields } as Config;
           saveSettings();
@@ -717,6 +721,8 @@ function loadSettings(): Config {
   })();
   const s = raw as Config;
   s.notifyChannel = migrateChannel(s.notifyChannel) as Config["notifyChannel"];
+  // autoStart 未设置的老用户：沿用旧行为（enabled=true 本来就是「每次启动自动拉起」）
+  if (s.autoStart === undefined) s.autoStart = s.enabled === true;
   if (!s.notifyChatId && s.notifyChannel === "group" && s.notifyOpenId) {
     // app+open_id 且没选过群 → 语义上更像私聊
     s.notifyChannel = "dm";
@@ -727,6 +733,7 @@ function loadSettings(): Config {
 function saveSettings(): void {
   const s = {
     enabled: cfg.enabled === true,
+    autoStart: cfg.autoStart === true,
     autoRestart: cfg.autoRestart !== false,
     notifyChannel: cfg.notifyChannel || "off",
     notifyAppId: cfg.notifyAppId || "",
@@ -964,7 +971,9 @@ export function apply(ctx: AnyCtx, config: Config = {}) {
       }
       if (!isAlive()) { try { loginServer!.close(); } catch { /* not listening */ } loginServer = null; return; }
       say(ctx, "info", `[dsh-remote] login/api listening on 127.0.0.1:${LOGIN_PORT}`);
-      if (!cfg.enabled) return; // idle：管理面在，隧道不在
+      // 跟随启动模式：每次宿主启动自动拉起隧道（URL 捕获后会经飞书推送 started 通知）；
+      // 手动模式：隧道保持停止，等用户在管理面点「启动」。
+      if (cfg.autoStart !== true) return; // idle：管理面在，隧道不在
       await reapOrphans(ctx);
       if (!isAlive()) return;
       spawnCaddy(ctx);

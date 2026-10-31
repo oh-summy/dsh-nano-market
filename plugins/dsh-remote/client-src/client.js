@@ -63,6 +63,11 @@ const zh = {
   dayUnit: "天",
   autoRestart: "自动重启",
   autoRestartTip: "临时隧道进程意外退出后 5 秒内自动重拉。",
+  autoStart: "跟随 DSH 启动",
+  autoStartTip: "开启后每次 DSH 启动都会自动拉起隧道，并经飞书推送新链接和密码；关闭则只在手动点「启动」时开启。切换在下次启动 DSH 时生效。",
+  autoStartSaved: "已保存，下次启动 DSH 时生效",
+  envHintCloudflared: "未安装——brew install cloudflared（装最新版即可，quick tunnel 无需 Cloudflare 账号）",
+  envHintCaddy: "未安装——brew install caddy（装最新版即可）",
   envTitle: "环境检查",
   eventsTitle: "事件",
   envReading: "读取中…",
@@ -158,6 +163,11 @@ const en = {
   dayUnit: "day(s)",
   autoRestart: "Auto restart",
   autoRestartTip: "Restarts the quick tunnel within 5 seconds if it exits unexpectedly.",
+  autoStart: "Start with DSH",
+  autoStartTip: "When on, every DSH start brings the tunnel up automatically and pushes the fresh link and password via Feishu; when off, it only starts when you press Start. Takes effect the next time DSH starts.",
+  autoStartSaved: "Saved; takes effect next time DSH starts",
+  envHintCloudflared: "Not installed — brew install cloudflared (latest is fine; the quick tunnel needs no Cloudflare account)",
+  envHintCaddy: "Not installed — brew install caddy (latest is fine)",
   envTitle: "Environment check",
   eventsTitle: "Events",
   envReading: "Reading…",
@@ -230,6 +240,9 @@ const RC_CSS = `
 .rc-label{display:inline-flex;align-items:center;gap:6px;min-width:110px;color:var(--dsw-alias-label-secondary);font-size:13px}
 .rc-control{flex:1;min-width:220px;display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap}
 .rc-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;background:var(--dsw-alias-bg-layer-3);border-radius:var(--dsw-radius-sm);padding:3px 10px;word-break:break-all}
+.rc-code-copy{cursor:pointer;transition:color .12s}
+.rc-code-copy:hover{color:var(--dsw-alias-state-business-primary)}
+.rc-code-copy:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
 .rc-link{color:var(--dsw-alias-state-business-primary);word-break:break-all;text-decoration:none}
 .rc-link:hover{text-decoration:underline}
 .rc-msg{color:var(--dsw-alias-label-secondary);font-size:13px;min-height:18px;margin:0}
@@ -270,6 +283,7 @@ function RemoteManager({ t }) {
   const [message, setMessage] = React.useState(null); // {text, err}
   const [busy, setBusy] = React.useState(false);
   const [refreshing, setRefreshing] = React.useState(false);
+  const [copied, setCopied] = React.useState(false);
   const [revealed, setRevealed] = React.useState(false);
   const [password, setPassword] = React.useState("");
   const [confirmReset, setConfirmReset] = React.useState(false);
@@ -378,11 +392,18 @@ function RemoteManager({ t }) {
     try {
       const r = await rcApi("/rc-api/reveal", { method: "POST" });
       await navigator.clipboard.writeText(r.password);
-      setMessage({ text: t("copied") });
+      setCopied(true); // 按钮自身的瞬时反馈；不再占用下面的消息行
     } catch (reason) {
       setMessage({ text: t("failed") + (reason?.message || ""), err: true });
     }
   }
+
+  // 已复制的瞬时反馈：1.6s 后自动弹回，不引入独立提示行
+  React.useEffect(() => {
+    if (!copied) return undefined;
+    const timer = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(timer);
+  }, [copied]);
 
   async function fetchChats() {
     setMessage({ text: t("fetchingChats") });
@@ -442,9 +463,13 @@ function RemoteManager({ t }) {
 
   const passwordRow = state?.running ? jsxs("div", { className: "rc-row", children: [
     jsx("span", { className: "rc-label", children: t("password") }),
-    jsx("span", { className: "rc-code", children: revealed ? password : (state.passwordMask || "••••") }),
+    // 点密码即复制（不展示明文）；键盘可达：Enter/Space 触发
+    jsx("span", { className: "rc-code rc-code-copy", role: "button", tabIndex: 0, title: t("copyPassword"),
+      onClick: () => void copyPassword(),
+      onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void copyPassword(); } },
+      children: revealed ? password : (state.passwordMask || "••••") }),
+    jsx(P.Button, { variant: "ghost", size: "sm", onClick: () => void copyPassword(), children: copied ? t("copied") + " ✓" : t("copyPassword") }),
     jsx(P.Button, { variant: "ghost", size: "sm", onClick: () => void revealPassword(), children: revealed ? t("hide") : t("reveal") }),
-    jsx(P.Button, { variant: "ghost", size: "sm", onClick: () => void copyPassword(), children: t("copyPassword") }),
     jsx(P.Button, { variant: "outline", size: "sm", className: "rc-danger", disabled: busy, onClick: () => setConfirmReset(true), children: t("resetPassword") }),
   ] }) : null;
 
@@ -516,11 +541,22 @@ function RemoteManager({ t }) {
     ),
   ] }) : null;
 
+  // 跟随启动：独立于「现在是否在跑」的模式开关（写 settings.json，下次启动 DSH 生效）
+  const autoStartRow = Row({ label: t("autoStart"), tip: t("autoStartTip"), children:
+    jsx(P.Switch, {
+      checked: state?.autoStart === true,
+      label: t("autoStart"),
+      disabled: busy || state === null,
+      onChange: () => act("/rc-api/config", t("autoStartSaved"), { autoStart: !(state?.autoStart === true) }),
+    }) });
+
   const envRows = env === null ? jsx("span", { className: "rc-msg", children: t("envReading") })
     : env.unreachable ? jsx("span", { className: "rc-msg", children: t("envUnreachable") })
     : jsxs(Fragment, { children: [
-        envRow("cloudflared", t("envCloudflared"), env.cloudflared.found, env.cloudflared.version || env.cloudflared.path || ""),
-        envRow("caddy", t("envCaddy"), env.caddy.found, env.caddy.version || env.caddy.path || ""),
+        envRow("cloudflared", t("envCloudflared"), env.cloudflared.found,
+          env.cloudflared.found ? (env.cloudflared.version || env.cloudflared.path || "") : t("envHintCloudflared")),
+        envRow("caddy", t("envCaddy"), env.caddy.found,
+          env.caddy.found ? (env.caddy.version || env.caddy.path || "") : t("envHintCaddy")),
         envRow("cf", t("envCfAccount"), env.cfAccount, t("envNoAccount")),
         env.tunnelLink ? envRow("tunnel", t("envTunnelLink"), env.tunnelLink.ok, env.tunnelLink.ok ? "HTTP " + env.tunnelLink.status + " · " + t("envLoginOk") : String(env.tunnelLink.status)) : null,
         envRow("secret", t("envDshSecret"), env.dshSecret, env.dshSecret ? "" : t("envNotRead")),
@@ -530,6 +566,7 @@ function RemoteManager({ t }) {
     jsx("style", { children: RC_CSS }),
     errorRow,
     statusRow,
+    autoStartRow,
     urlRow,
     passwordRow,
     message ? jsx("p", { className: "rc-msg" + (message.err ? " err" : ""), role: "status", children: message.text }) : null,
