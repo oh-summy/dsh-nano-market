@@ -242,7 +242,10 @@ function managerUnreachableText(message, t) {
 
 // 版式令牌：颜色只允许 --dsw-*（fallback 除外），弹窗/开关/按钮本体来自宿主原语。
 const RC_CSS = `
-.rc-wrap{display:flex;flex-direction:column;gap:12px;max-width:760px}
+.rc-wrap{display:flex;flex-direction:column;gap:12px;max-width:760px;position:relative}
+@keyframes rcToastIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.rc-toast{position:absolute;top:-18px;right:0;z-index:20;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-1);border-radius:8px;padding:6px 12px;font-size:12px;box-shadow:0 4px 14px rgba(0,0,0,.18);animation:rcToastIn .18s ease;max-width:60%}
+.rc-toast.err{background:color-mix(in srgb,var(--dsw-alias-state-error-primary,#ef4444) 88%,#000)}
 .rc-row{display:flex;align-items:center;gap:10px;min-height:32px;flex-wrap:wrap}
 .rc-label{display:inline-flex;align-items:center;gap:6px;min-width:110px;color:var(--dsw-alias-label-secondary);font-size:13px}
 .rc-control{flex:1;min-width:220px;display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -591,7 +594,8 @@ function RemoteManager({ t: hostT, locale }) {
     autoStartRow,
     urlRow,
     passwordRow,
-    message ? jsx("p", { className: "rc-msg" + (message.err ? " err" : ""), role: "status", children: message.text }) : null,
+    // 瞬时反馈走浮窗：不独占一行、不推移布局
+    message ? jsx("p", { className: "rc-toast" + (message.err ? " err" : ""), role: "status", children: message.text }) : null,
     Row({ label: t("notify"), tip: t("notifyTip"), children: jsxs(Fragment, { children: [
       jsx(P.Switch, {
         checked: chOn,

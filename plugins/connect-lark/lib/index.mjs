@@ -10,28 +10,23 @@ import { join } from "node:path";
 // src/cards.ts
 /**
 * CardKit 2.0 折叠面板：默认收起，点标题展开。用于「思考过程」——
-* 内容截尾后放 lark_md，展开不挤占正文。
+* 只保留实测被飞书接受的属性（2.0 拒绝 border.style/background_style 等 1.0 字段）。
 */
 function collapsiblePanel(panel) {
 	return {
 		tag: "collapsible_panel",
 		expanded: panel.expanded === true,
-		background_style: "default",
-		border: { style: "default" },
-		vertical_spacing: "medium",
 		header: {
 			title: {
 				tag: "plain_text",
 				content: panel.title
 			},
-			background_style: "default",
 			vertical_align: "center",
 			icon: {
 				tag: "standard_icon",
 				token: "down-small-1_outlined"
 			},
-			icon_position: "follow",
-			width: "default"
+			icon_position: "follow"
 		},
 		elements: [{
 			tag: "div",
@@ -1040,13 +1035,19 @@ async function createOrResumeAgent(ctx, sessionId, meta, agentOptions, permissio
 const FINAL_THINKING_TAIL = 4e3;
 /** 卡片更新节流：每个 token 一次 PATCH 会被飞书限流，卡片反而像冻结。 */
 const CARD_UPDATE_INTERVAL_MS = 900;
+/** 把运行失败翻译成用户能行动的话：上游不可达 = DSH 服务没开。 */
+function friendlyRunFailure(error) {
+	const m = String(error.message || error);
+	if (/ECONNREFUSED|fetch failed|connect|socket|hang/i.test(m)) return "DSH 服务未开启——请先启动本机 DSH，再发送消息。";
+	return "**运行失败：** " + m;
+}
 /** Update one streaming rich card with the latest answer and optional CoT.
 * final=true 时思考过程收进折叠面板（截尾）；legacyThinking=true 渲染旧版引用块，
 * 作为折叠面板被飞书拒绝时的回退版式。 */
 async function updateRunCard(slot, thinkingPolicy, opts = {}) {
 	if (!slot.streamController) return;
 	const lines = [];
-	if (slot.failedWith) lines.push("**运行失败：** " + slot.failedWith.message);
+	if (slot.failedWith) lines.push("**" + friendlyRunFailure(slot.failedWith) + "**");
 	else if (slot.accumulatedText) lines.push(slot.accumulatedText);
 	else if (opts.final) lines.push("本次回复没有文本输出。");
 	else if (slot.thinkingText && thinkingPolicy === "cot-visible") lines.push("正在思考…");
@@ -1335,14 +1336,14 @@ function apply(ctx, config = {}) {
 							if (!(await withTimeout(slot.streamReady ?? Promise.resolve(), streamReadyTimeoutMs())).ok) slot.streamFailed = /* @__PURE__ */ new Error("stream producer did not start within " + streamReadyTimeoutMs() + "ms");
 						}
 						if (slot.streamFailed || !slot.streamController) {
-							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
+							const reply = slot.accumulatedText || (slot.failedWith ? friendlyRunFailure(slot.failedWith) : "[connect-lark] 回复未生成");
 							await sendBounded(chan, slot.chatId, reply);
 							return;
 						}
 						try {
 							await finalizeRunCard(slot, plain.thinkingPolicy);
 						} catch (e) {
-							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
+							const reply = slot.accumulatedText || (slot.failedWith ? friendlyRunFailure(slot.failedWith) : "[connect-lark] 回复未生成");
 							await sendBounded(chan, slot.chatId, reply);
 						}
 					} finally {

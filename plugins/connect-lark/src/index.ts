@@ -297,6 +297,15 @@ const FINAL_THINKING_TAIL = 4000;
 /** 卡片更新节流：每个 token 一次 PATCH 会被飞书限流，卡片反而像冻结。 */
 const CARD_UPDATE_INTERVAL_MS = 900;
 
+/** 把运行失败翻译成用户能行动的话：上游不可达 = DSH 服务没开。 */
+function friendlyRunFailure(error: Error): string {
+  const m = String(error.message || error);
+  if (/ECONNREFUSED|fetch failed|connect|socket|hang/i.test(m)) {
+    return "DSH 服务未开启——请先启动本机 DSH，再发送消息。";
+  }
+  return "**运行失败：** " + m;
+}
+
 /** Update one streaming rich card with the latest answer and optional CoT.
  * final=true 时思考过程收进折叠面板（截尾）；legacyThinking=true 渲染旧版引用块，
  * 作为折叠面板被飞书拒绝时的回退版式。 */
@@ -307,7 +316,7 @@ async function updateRunCard(
 ): Promise<void> {
   if (!slot.streamController) return;
   const lines: string[] = [];
-  if (slot.failedWith) lines.push("**运行失败：** " + slot.failedWith.message);
+  if (slot.failedWith) lines.push("**" + friendlyRunFailure(slot.failedWith) + "**");
   else if (slot.accumulatedText) lines.push(slot.accumulatedText);
   else if (opts.final) lines.push("本次回复没有文本输出。");
   else if (slot.thinkingText && thinkingPolicy === "cot-visible") lines.push("正在思考…");
@@ -610,7 +619,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               }
             }
             if (slot.streamFailed || !slot.streamController) {
-              const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
+              const reply = slot.accumulatedText || (slot.failedWith ? friendlyRunFailure(slot.failedWith) : "[connect-lark] 回复未生成");
               // Bound the send: a hung Feishu request would otherwise keep the
               // slot in "finishing" and stall every later message in this chat.
               await sendBounded(chan, slot.chatId, reply);
@@ -619,7 +628,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             try {
               await finalizeRunCard(slot, plain.thinkingPolicy);
             } catch (e) {
-              const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
+              const reply = slot.accumulatedText || (slot.failedWith ? friendlyRunFailure(slot.failedWith) : "[connect-lark] 回复未生成");
               await sendBounded(chan, slot.chatId, reply);
             }
           } finally {
