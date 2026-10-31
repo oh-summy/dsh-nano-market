@@ -14,6 +14,9 @@
       "versions": [
         {
           "version": "0.2.0",
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 || >=0.2.2-0"
+          },
           "install": {
             "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#4d03c081c3e79cf500f79412b4e1281efbc521d0"
           }
@@ -35,6 +38,9 @@
       "versions": [
         {
           "version": "0.1.0",
+          "engines": {
+            "dsh": ">=0.2.1-rc.4 || >=0.2.2-0"
+          },
           "install": {
             "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#3bf790ef09e8d83a0347a2956ec9d646f089af5e"
           }

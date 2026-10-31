@@ -20,6 +20,13 @@ if (!existsSync(indexUrl)) {
   );
 }
 const index = JSON.parse(readFileSync(indexUrl, "utf8"));
+
+// 宿主的 defaultVersion 规则：最高且非预发布。快照按同样的规则挑，
+// 否则离线首屏那条路径可能指向一个预发布版本。
+function defaultVersionOf(versions) {
+  const stable = versions.filter((item) => !/-/.test(item.version));
+  return (stable[0] ?? versions[0])?.version;
+}
 const entries = (index.plugins || []).map((plugin) => ({
   name: plugin.name,
   title: plugin.title,
@@ -29,9 +36,10 @@ const entries = (index.plugins || []).map((plugin) => ({
   // 宿主刷新成功后会换成它算好的「最高兼容版本」。
   versions: (plugin.versions || []).map((version) => ({
     version: version.version,
+    engines: version.engines,
     install: installTarget(plugin.name, version),
   })),
-  defaultVersion: plugin.versions?.[0]?.version,
+  defaultVersion: defaultVersionOf(plugin.versions || []),
 }));
 const snapshot = { entries };
 writeFileSync(new URL("../src/market-snapshot.json", import.meta.url), JSON.stringify(snapshot, null, 2) + "\n");
