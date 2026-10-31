@@ -45,6 +45,7 @@ function collapsiblePanel(panel) {
 */
 function richCard(opts) {
 	const elements = [];
+	if (opts.panels) for (const p of opts.panels) elements.push(collapsiblePanel(p));
 	for (const line of opts.lines) if (line === "---") elements.push({ tag: "hr" });
 	else elements.push({
 		tag: "div",
@@ -53,7 +54,6 @@ function richCard(opts) {
 			content: line
 		}
 	});
-	if (opts.panels) for (const p of opts.panels) elements.push(collapsiblePanel(p));
 	if (opts.buttons && opts.buttons.length > 0) for (const b of opts.buttons) {
 		const behaviors = [];
 		if (b.url) behaviors.push({
@@ -1049,20 +1049,23 @@ async function updateRunCard(slot, thinkingPolicy, opts = {}) {
 	const lines = [];
 	const thinkingQuoted = () => slot.thinkingText.split("\n").map((line) => "> " + line).join("\n");
 	const showThinking = thinkingPolicy === "cot-visible" && Boolean(slot.thinkingText);
+	const bodyStarted = Boolean(slot.accumulatedText) || Boolean(opts.final);
+	const collapsedTop = showThinking && !opts.legacyThinking && bodyStarted;
+	let panels;
 	if (slot.failedWith) lines.push("**" + friendlyRunFailure(slot.failedWith) + "**");
-	else if (showThinking && !opts.legacyThinking) {
+	else if (showThinking && collapsedTop) {
 		slot.thinkingText.length > FINAL_THINKING_TAIL ? "" + slot.thinkingText.slice(-4e3) : slot.thinkingText;
-		lines.push("**思考过程**", thinkingQuoted());
-		if (slot.accumulatedText) lines.push("---", slot.accumulatedText);
-		else if (opts.final) lines.push("本次回复没有文本输出。");
-	} else if (showThinking) lines.push("**思考过程**", thinkingQuoted(), "---", slot.accumulatedText || "正在生成回复…");
-	else if (slot.accumulatedText) lines.push(slot.accumulatedText);
-	else if (opts.final) lines.push("本次回复没有文本输出。");
+		panels = [{
+			title: "思考过程",
+			content: thinkingQuoted()
+		}];
+		lines.push(slot.accumulatedText || "本次回复没有文本输出。");
+	} else if (showThinking) lines.push("**思考过程**", thinkingQuoted());
+	else if (showThinking || slot.accumulatedText) {
+		if (showThinking) lines.push("**思考过程**", thinkingQuoted(), "---");
+		lines.push(slot.accumulatedText || "正在生成回复…");
+	} else if (opts.final) lines.push("本次回复没有文本输出。");
 	else lines.push("正在生成回复…");
-	const panels = showThinking && !opts.legacyThinking && opts.final ? [{
-		title: "思考过程",
-		content: thinkingQuoted()
-	}] : void 0;
 	const timestamp = (/* @__PURE__ */ new Date()).toISOString();
 	await slot.streamController.update(richCard({
 		title: "DSH 回复",
