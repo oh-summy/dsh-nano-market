@@ -45,6 +45,13 @@ function collapsiblePanel(panel) {
 */
 function richCard(opts) {
 	const elements = [];
+	if (opts.status) elements.push({
+		tag: "div",
+		text: {
+			tag: "lark_md",
+			content: opts.status
+		}
+	});
 	if (opts.panels) for (const p of opts.panels) elements.push(collapsiblePanel(p));
 	for (const line of opts.lines) if (line === "---") elements.push({ tag: "hr" });
 	else elements.push({
@@ -236,6 +243,8 @@ var RunManager = class {
 			slot.cardUpdateTimer = null;
 			slot.cardDirty = false;
 			slot.lastCardUpdateAt = 0;
+			slot.runStartedAt = Date.now();
+			slot.cardHeartbeat = null;
 			const unsub = this.opts.subscribe(agent, sessionId, (delta, kind) => {
 				if (kind === "reasoning") {
 					slot.thinkingText = truncateTail(slot.thinkingText + delta, MAX_THINKING_CHARS);
@@ -308,6 +317,10 @@ var RunManager = class {
 			clearTimeout(slot.cardUpdateTimer);
 			slot.cardUpdateTimer = null;
 		}
+		if (slot.cardHeartbeat) {
+			clearInterval(slot.cardHeartbeat);
+			slot.cardHeartbeat = null;
+		}
 		slot.cardDirty = false;
 		if (slot.pending.length > 0 && !this.disposed) {
 			const next = slot.pending.shift();
@@ -338,6 +351,10 @@ var RunManager = class {
 		if (slot.cardUpdateTimer) {
 			clearTimeout(slot.cardUpdateTimer);
 			slot.cardUpdateTimer = null;
+		}
+		if (slot.cardHeartbeat) {
+			clearInterval(slot.cardHeartbeat);
+			slot.cardHeartbeat = null;
 		}
 		slot.cardDirty = false;
 		if (slot.pending.length > 0 && !this.disposed) {
@@ -396,6 +413,10 @@ var RunManager = class {
 			try {
 				slot.streamDone?.();
 			} catch {}
+			if (slot.cardHeartbeat) {
+				clearInterval(slot.cardHeartbeat);
+				slot.cardHeartbeat = null;
+			}
 			if (slot.state === "running" || slot.state === "cancelling") try {
 				await this.opts.onCancel?.(slot);
 			} catch {}
@@ -1049,27 +1070,28 @@ async function updateRunCard(slot, thinkingPolicy, opts = {}) {
 	const lines = [];
 	const thinkingQuoted = () => slot.thinkingText.split("\n").map((line) => "> " + line).join("\n");
 	const showThinking = thinkingPolicy === "cot-visible" && Boolean(slot.thinkingText);
-	const bodyStarted = Boolean(slot.accumulatedText) || Boolean(opts.final);
-	const collapsedTop = showThinking && !opts.legacyThinking && bodyStarted;
+	Boolean(slot.accumulatedText) || Boolean(opts.final);
+	const elapsed = slot.runStartedAt ? Math.max(1, Math.round((Date.now() - slot.runStartedAt) / 1e3)) : 0;
+	const status = slot.failedWith ? "" : opts.final ? "✅ **已完成** —— 可以继续发送消息" : `⏳ **正在生成中** · 已用时 ${elapsed}s（思考与工具执行见下方，无需等待）`;
 	let panels;
 	if (slot.failedWith) lines.push("**" + friendlyRunFailure(slot.failedWith) + "**");
-	else if (showThinking && collapsedTop) {
+	else if (showThinking && !opts.legacyThinking) {
 		slot.thinkingText.length > FINAL_THINKING_TAIL ? "" + slot.thinkingText.slice(-4e3) : slot.thinkingText;
 		panels = [{
 			title: "思考过程",
-			content: thinkingQuoted()
+			content: thinkingQuoted(),
+			expanded: true
 		}];
-		lines.push(slot.accumulatedText || "本次回复没有文本输出。");
-	} else if (showThinking) lines.push("**思考过程**", thinkingQuoted());
-	else if (showThinking || slot.accumulatedText) {
-		if (showThinking) lines.push("**思考过程**", thinkingQuoted(), "---");
-		lines.push(slot.accumulatedText || "正在生成回复…");
-	} else if (opts.final) lines.push("本次回复没有文本输出。");
-	else lines.push("正在生成回复…");
+		if (slot.accumulatedText) lines.push(slot.accumulatedText);
+		else if (opts.final) lines.push("本次回复没有文本输出。");
+	} else if (showThinking) lines.push("**思考过程**", thinkingQuoted(), "---", slot.accumulatedText || "正在生成回复…");
+	else if (slot.accumulatedText) lines.push(slot.accumulatedText);
+	else if (opts.final) lines.push("本次回复没有文本输出。");
 	const timestamp = (/* @__PURE__ */ new Date()).toISOString();
 	await slot.streamController.update(richCard({
 		title: "DSH 回复",
-		color: "blue",
+		color: opts.final ? "green" : "blue",
+		status,
 		lines,
 		panels,
 		note: "connect-lark · by @oh-summy · " + timestamp,
@@ -1294,6 +1316,10 @@ function apply(ctx, config = {}) {
 					const done = new Promise((resolve) => {
 						slot.streamDone = resolve;
 					});
+					slot.cardHeartbeat = setInterval(() => {
+						if (slot.streamController) scheduleCardUpdate(slot);
+					}, 3e3);
+					slot.cardHeartbeat.unref?.();
 					slot.streamReady = new Promise((resolve) => {
 						slot.streamReadyResolve = resolve;
 					});
@@ -1352,6 +1378,10 @@ function apply(ctx, config = {}) {
 							await sendBounded(chan, slot.chatId, reply);
 						}
 					} finally {
+						if (slot.cardHeartbeat) {
+							clearInterval(slot.cardHeartbeat);
+							slot.cardHeartbeat = null;
+						}
 						slot.streamDone?.();
 					}
 				}

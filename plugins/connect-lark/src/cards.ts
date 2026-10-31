@@ -13,6 +13,8 @@ export type CardColor = "blue" | "wathet" | "turquoise" | "green" | "yellow" | "
 export interface RichCardOptions {
   title: string;
   color: CardColor;
+  /** 运行状态行（渲染为首元素）：如「⏳ 正在生成中 · 已用时 3s」/「✅ 已完成」。 */
+  status?: string;
   /** Markdown lines. "---" renders as a horizontal rule. */
   lines: string[];
   /** Collapsible panels appended after the lines (CardKit 2.0 折叠面板). */
@@ -49,6 +51,10 @@ function collapsiblePanel(panel: { title: string; content: string; expanded?: bo
  */
 export function richCard(opts: RichCardOptions): Record<string, unknown> {
   const elements: Array<Record<string, unknown>> = [];
+  // 状态行渲染在最前：生成中/已完成一目了然
+  if (opts.status) {
+    elements.push({ tag: "div", text: { tag: "lark_md", content: opts.status } });
+  }
   // 折叠面板渲染在正文之前：思考过程先出现，完成后折叠，正文在其下
   if (opts.panels) {
     for (const p of opts.panels) elements.push(collapsiblePanel(p));

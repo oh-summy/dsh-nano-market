@@ -58,6 +58,10 @@ export interface RunSlot {
   cardUpdateTimer?: NodeJS.Timeout | null;
   cardDirty?: boolean;
   lastCardUpdateAt?: number;
+  /** 本次运行的起点（卡片「生成中 · 已用时」的计时基准）。 */
+  runStartedAt?: number;
+  /** 卡片心跳：无 delta 的工具执行期间定期刷新状态行（owned by apply()）。 */
+  cardHeartbeat?: NodeJS.Timeout | null;
 }
 
 export interface RunManagerOptions {
@@ -214,6 +218,8 @@ export class RunManager {
       slot.cardUpdateTimer = null;
       slot.cardDirty = false;
       slot.lastCardUpdateAt = 0;
+      slot.runStartedAt = Date.now();
+      slot.cardHeartbeat = null;
 
       const unsub = this.opts.subscribe(
         agent,
@@ -283,6 +289,7 @@ export class RunManager {
     slot.streamReady = undefined;
     slot.streamReadyResolve = undefined;
     if (slot.cardUpdateTimer) { clearTimeout(slot.cardUpdateTimer); slot.cardUpdateTimer = null; }
+    if (slot.cardHeartbeat) { clearInterval(slot.cardHeartbeat); slot.cardHeartbeat = null; }
     slot.cardDirty = false;
     if (slot.pending.length > 0 && !this.disposed) {
       const next = slot.pending.shift()!;
@@ -307,6 +314,7 @@ export class RunManager {
     slot.streamReady = undefined;
     slot.streamReadyResolve = undefined;
     if (slot.cardUpdateTimer) { clearTimeout(slot.cardUpdateTimer); slot.cardUpdateTimer = null; }
+    if (slot.cardHeartbeat) { clearInterval(slot.cardHeartbeat); slot.cardHeartbeat = null; }
     slot.cardDirty = false;
     if (slot.pending.length > 0 && !this.disposed) {
       const next = slot.pending.shift()!;
@@ -361,6 +369,7 @@ export class RunManager {
     for (const slot of this.slots.values()) {
       try { slot.cancelController?.abort(); } catch { /* gone */ }
       try { slot.streamDone?.(); } catch { /* already finished */ }
+      if (slot.cardHeartbeat) { clearInterval(slot.cardHeartbeat); slot.cardHeartbeat = null; }
       // Only abandon an owned run; idle/done slots and a shared attach-gui
       // session must not be cancelled by plugin teardown or config saves.
       if (slot.state === "running" || slot.state === "cancelling") {
