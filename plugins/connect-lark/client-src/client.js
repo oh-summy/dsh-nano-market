@@ -79,6 +79,11 @@ const zh = {
   secretHint: "完整 Secret 只存进 DSH 凭据缝；这里只写新值，旧值不会回显。",
   secretConfigured: "已配置",
   secretNotSet: "未配置",
+  secretReplace: "已配置，粘贴新值即覆盖",
+  statusPending: "有未保存的更改…",
+  statusSaving: "保存中…",
+  statusSaved: "已保存 ✓",
+  statusFailed: "保存失败",
   dshDefault: "DSH 默认",
   close: "关闭",
   cancel: "取消",
@@ -179,6 +184,11 @@ const en = {
   secretHint: "The full secret is stored only in the DSH credential vault; type a new value here — existing values are never shown back.",
   secretConfigured: "Configured",
   secretNotSet: "Not set",
+  secretReplace: "Configured — paste a new value to replace",
+  statusPending: "Unsaved changes…",
+  statusSaving: "Saving…",
+  statusSaved: "Saved ✓",
+  statusFailed: "Save failed",
   dshDefault: "DSH default",
   close: "Close",
   cancel: "Cancel",
@@ -216,6 +226,10 @@ function guideJson(t) {
     connection: t("guideConnection"),
   }, null, 2);
 }
+
+// client 测试沙箱里可能没有 node 全局定时器：防御式取用（退化为立即执行）
+const deferFn = (fn, ms) => (typeof setTimeout === "function" ? setTimeout(fn, ms) : (fn(), undefined));
+const cancelFn = (t) => (typeof clearTimeout === "function" ? clearTimeout(t) : undefined);
 
 const FIELDS = [
   { path: "appId", kind: "text" },
@@ -290,13 +304,45 @@ class LarkSettingsModel {
     this.store = createSnapshotStore(this.projection());
     this.unsubscribe = this.formState.subscribe?.(() => this.publish());
     this.unsubscribeWorkspaces = this.workspaces.list.subscribe?.(() => this.publish());
+    this.saveTimer = null;
+    this.saveStatus = "idle"; // idle | pending | saving | saved | error
+    this.saveError = "";
     this.loadCatalog();
   }
   projection() {
     const snapshot = this.formState.getSnapshot();
-    return { ...snapshot, dirty: snapshot.dirty || this.secretDraft.length > 0, secretDraft: this.secretDraft, catalog: this.catalog, workspaces: this.workspaces.list.getSnapshot() };
+    return { ...snapshot, dirty: snapshot.dirty || this.secretDraft.length > 0, secretDraft: this.secretDraft, catalog: this.catalog, workspaces: this.workspaces.list.getSnapshot(),
+      saveStatus: this.saveStatus, saveError: this.saveError };
   }
   publish() { this.store.set(this.projection()); }
+  /** 自动保存：最后一次改动 700ms 后落盘；连续编辑只保留最后一次。 */
+  scheduleSave() {
+    this.saveStatus = "pending";
+    this.publish();
+    if (this.saveTimer != null) cancelFn(this.saveTimer);
+    this.saveTimer = deferFn(() => { this.saveTimer = null; void this.runSave(); }, 700);
+  }
+  async runSave() {
+    this.saveStatus = "saving";
+    this.publish();
+    try {
+      if (this.secretDraft) await this.saveSecret(this.secretDraft);
+      const result = await this.form.actions().save();
+      if (result && result.ok === false) throw new Error(result.error?.message || "save failed");
+      this.saveStatus = "saved";
+      this.saveError = "";
+    } catch (error) {
+      this.saveStatus = "error";
+      this.saveError = error instanceof Error ? error.message : String(error);
+    }
+    this.publish();
+    if (this.saveStatus === "saved") {
+      // 「已保存 ✓」短暂驻留后回到安静态
+      deferFn(() => { if (this.saveStatus === "saved") { this.saveStatus = "idle"; this.publish(); } }, 2200);
+    }
+  }
+  /** 同步保存入口（错误提示里的「重试」也走这里）。 */
+  save() { this.scheduleSave(); return this.projection(); }
   async loadCatalog() {
     this.catalog = { ...this.catalog, status: "loading" };
     this.publish();
@@ -327,23 +373,22 @@ class LarkSettingsModel {
     this.secretDraft = "";
     this.publish();
   }
-  async save() {
-    if (this.secretDraft) await this.saveSecret(this.secretDraft);
-    return this.form.actions().save();
-  }
   inject() {
     return {
       hooks: { larkSettings: this.store },
       ...this.form.actions(),
-      save: () => this.save(),
+      // 字段级编辑统一挂自动保存：选择器、输入框失焦、Secret 草稿都走同一条防抖落盘路径
+      edit: (path, text) => { this.form.actions().edit(path, text); this.scheduleSave(); },
+      save: () => this.scheduleSave(),
       refreshCatalog: () => this.loadCatalog(),
       listDirectory: (path) => this.listDirectory(path),
       createDirectory: (path, name) => this.createDirectory(path, name),
       saveSecret: (value) => this.saveSecret(value),
-      editSecret: (text) => { this.secretDraft = text; this.publish(); },
+      editSecret: (text) => { this.secretDraft = text; this.publish(); this.scheduleSave(); },
     };
   }
   dispose() {
+    if (this.saveTimer != null) cancelFn(this.saveTimer);
     this.unsubscribe?.();
     this.unsubscribeWorkspaces?.();
     this.form.dispose();
@@ -381,7 +426,13 @@ const styles = `
 .cl-segment-inline button:disabled{opacity:.5;cursor:not-allowed}
 .cl-field{min-width:0;margin-bottom:16px}
 .cl-field:last-child{margin-bottom:0}
-.cl-label{display:block;font-size:11.5px;font-weight:600;margin-bottom:6px;color:var(--cl-muted);letter-spacing:.01em}
+.cl-label{font-size:12px;font-weight:600;color:var(--cl-muted);letter-spacing:.01em}
+.cl-label-row{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.cl-label-row .cl-label{flex:1;min-width:0}
+.cl-state-tag{flex:none;font-size:10.5px;font-weight:600;color:var(--cl-muted);background:var(--cl-hover);border-radius:999px;padding:2px 8px}
+.cl-state-tag.ok{color:var(--cl-ok);background:color-mix(in srgb,var(--cl-ok) 10%,transparent)}
+.cl-savebar{margin:2px 0 0;font-size:12px;color:var(--cl-muted);text-align:right}
+.cl-savebar.err{color:var(--cl-warn)}
 .cl-input,.cl-picker-trigger,.cl-textarea{box-sizing:border-box;width:100%;border:1px solid var(--cl-border-strong);border-radius:var(--cl-radius);background:var(--cl-surface);color:var(--cl-ink);padding:9px 11px;font:inherit;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s}
 .cl-textarea{resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
 .cl-input:focus,.cl-picker-trigger:focus-visible,.cl-textarea:focus,.cl-segment button:focus-visible{outline:none;border-color:var(--cl-blue);box-shadow:0 0 0 3px color-mix(in srgb,var(--cl-blue) 15%,transparent)}
@@ -481,9 +532,13 @@ const styles = `
 @media(prefers-reduced-motion:reduce){.cl-input,.cl-picker-trigger{transition:none}.cl-menu{animation:none}}
 `;
 
-function Field({ label, hint, children }) {
+function Field({ label, badge, badgeTone, hint, children }) {
   return jsxs("div", { className: "cl-field", children: [
-    jsx("span", { className: "cl-label", children: label }), children,
+    jsxs("span", { className: "cl-label-row", children: [
+      jsx("span", { className: "cl-label", children: label }),
+      badge ? jsx("span", { className: "cl-state-tag" + (badgeTone === "ok" ? " ok" : ""), children: badge }) : null,
+    ] }),
+    children,
     hint ? jsx("p", { className: "cl-hint", children: hint }) : null,
   ] });
 }
@@ -541,17 +596,20 @@ function EyeOffIcon() {
 
 function SecretField({ state, onEdit, t, disabled }) {
   const preview = state.fields.appSecretPreview.text;
-  // 宿主的密钥字段语义：只写不回显，右侧徽标说明是否已配置；
-  // 真值仍走 DSH 凭据缝（model.saveSecret），这里永远只拿草稿。
-  return jsx(P.SettingsSecretField, {
-    id: "connect-lark-appSecret",
+  // 与 App ID 同一套 cl-* 排版（两列才能对齐）；只写不回显：空输入 + 徽标表达状态，
+  // 真值走凭据缝（model.saveSecret），这里永远只拿草稿。
+  return jsx(Field, {
     label: "App Secret",
+    badge: preview ? t("secretConfigured") : t("secretNotSet"),
+    badgeTone: preview ? "ok" : undefined,
     hint: t("secretHint"),
-    configured: preview.length > 0,
-    stateLabel: preview ? t("secretConfigured") : t("secretNotSet"),
-    text: state.secretDraft,
-    disabled,
-    onEdit,
+    children: jsx("input", {
+      id: "connect-lark-appSecret", className: "cl-input", type: "password",
+      value: state.secretDraft,
+      placeholder: preview ? t("secretReplace") : t("secretNew"),
+      disabled, autoComplete: "new-password", spellCheck: false,
+      onChange: (event) => onEdit(event.target.value),
+    }),
   });
 }
 
@@ -1031,30 +1089,37 @@ function LarkConfigCard(props) {
         jsx("span", { className: "cl-node", children: "DSH Agent" }),
       ] }),
     ] }),
-    jsx(P.SettingsForm, {
-      labels: { unavailable: t("unavailable"), readOnly: t("readOnly"), saveFailed: t("saveFailed"), save: t("save"), saving: t("saving") },
-      state, onSave: props.save, onDiscard: props.discard,
-      children: [
-        jsx(Section, { number: "01", title: t("connection"), hint: t("connectionHint"), action: jsx("button", { type: "button", className: "cl-guide-link", onClick: () => setGuideOpen(true), children: t("guideButton") + " ↗" }), children: [
-          jsx("div", { className: "cl-segment", role: "radiogroup", "aria-label": t("domain"), children: ["feishu", "lark"].map((domain) => jsx("button", {
-            type: "button", role: "radio", "aria-checked": value("domain").text === domain,
-            disabled, onClick: () => edit("domain")(domain), children: t(domain),
-          }, domain)) }),
-          jsxs("div", { className: "cl-grid", children: [
-            jsx(TextField, { id: "connect-lark-appId", label: t("appId"), hint: t("appIdHint"), value: value("appId"), placeholder: t("appIdPlaceholder"), disabled, onEdit: edit("appId"), mask: true, t }),
-            jsx(SecretField, { state, onEdit: props.editSecret, t, disabled }),
+    disabled && jsx("div", { className: "cl-catalog-error", role: "alert", children: t("unavailable") }),
+    !disabled && state.readOnly === true ? jsx("div", { className: "cl-catalog-error", role: "alert", children: t("readOnly") }) : null,
+    jsx(Section, { number: "01", title: t("connection"), hint: t("connectionHint"), action: jsx("button", { type: "button", className: "cl-guide-link", onClick: () => setGuideOpen(true), children: t("guideButton") + " ↗" }), children: [
+      jsx("div", { className: "cl-segment", role: "radiogroup", "aria-label": t("domain"), children: ["feishu", "lark"].map((domain) => jsx("button", {
+        type: "button", role: "radio", "aria-checked": value("domain").text === domain,
+        disabled, onClick: () => edit("domain")(domain), children: t(domain),
+      }, domain)) }),
+      jsxs("div", { className: "cl-grid", children: [
+        jsx(TextField, { id: "connect-lark-appId", label: t("appId"), hint: t("appIdHint"), value: value("appId"), placeholder: t("appIdPlaceholder"), disabled, onEdit: edit("appId"), mask: true, t }),
+        jsx(SecretField, { state, onEdit: props.editSecret, t, disabled }),
+      ] }),
+    ] }, "connection"),
+    jsx(Section, { number: "02", title: t("access"), hint: t("accessHint"), children: [
+      jsx(AccessPicker, { value, onEdit: edit, t, disabled }),
+    ] }, "access"),
+    jsx(Section, { number: "03", title: t("workspace"), hint: t("workspaceHint"), children: [
+      jsx(WorkspacePicker, { state, value: value("defaultPath"), onEdit: edit("defaultPath"), onBrowse: props.listDirectory, onCreateDirectory: props.createDirectory, t, disabled }),
+      state.catalog.status === "error" ? jsxs("div", { className: "cl-catalog-error", children: [t("catalogError"), jsx("button", { className: "cl-retry", type: "button", onClick: props.refreshCatalog, children: t("retry") })] }) : null,
+      jsx(AgentRow, { state, value, edit, t, disabled }),
+    ] }, "workspace"),
+    state.saveStatus !== "idle" ? jsx("p", {
+      className: "cl-savebar" + (state.saveStatus === "error" ? " err" : ""),
+      role: "status",
+      children: state.saveStatus === "pending" ? t("statusPending")
+        : state.saveStatus === "saving" ? t("statusSaving")
+        : state.saveStatus === "saved" ? t("statusSaved")
+        : jsxs(React.Fragment, { children: [
+            t("statusFailed") + (state.saveError ? "：" + state.saveError : ""),
+            jsx("button", { className: "cl-retry", type: "button", onClick: () => props.save(), children: t("retry") }),
           ] }),
-        ] }, "connection"),
-        jsx(Section, { number: "02", title: t("access"), hint: t("accessHint"), children: [
-          jsx(AccessPicker, { value, onEdit: edit, t, disabled }),
-        ] }, "access"),
-        jsx(Section, { number: "03", title: t("workspace"), hint: t("workspaceHint"), children: [
-          jsx(WorkspacePicker, { state, value: value("defaultPath"), onEdit: edit("defaultPath"), onBrowse: props.listDirectory, onCreateDirectory: props.createDirectory, t, disabled }),
-          state.catalog.status === "error" ? jsxs("div", { className: "cl-catalog-error", children: [t("catalogError"), jsx("button", { className: "cl-retry", type: "button", onClick: props.refreshCatalog, children: t("retry") })] }) : null,
-          jsx(AgentRow, { state, value, edit, t, disabled }),
-        ] }, "workspace"),
-      ],
-    }),
+    }) : null,
     guideOpen ? jsx(GuideDialog, { onClose: () => setGuideOpen(false), t }) : null,
   ] });
 }
