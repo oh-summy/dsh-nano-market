@@ -50,5 +50,15 @@
     "cordis.patch.yml",
     "README.md",
     "icon.svg"
-  ]
+  ],
+  "meta": {
+    "title": {
+      "en": "dsh-remote",
+      "zh": "dsh-remote 远程访问"
+    },
+    "description": {
+      "en": "Remote access to your local DSH via a Cloudflare quick tunnel with a password gate and Feishu notifications (group or DM).",
+      "zh": "通过 Cloudflare 临时隧道 + 密码门远程访问本机 DSH；链接变化自动推送到飞书（群聊/私聊），内置权限体检与环境自检。"
+    }
+  }
 }

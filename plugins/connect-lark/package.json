@@ -60,5 +60,15 @@
     "cordis.patch.yml",
     "README.md",
     "icon.svg"
-  ]
+  ],
+  "meta": {
+    "title": {
+      "en": "connect-lark",
+      "zh": "connect-lark 飞书桥接"
+    },
+    "description": {
+      "en": "Feishu/Lark long-connection bridge for DSH: forwards messages to local DSH agents with streaming rich cards, image support, and workspace-aware replies.",
+      "zh": "飞书/Lark 长连接桥接 DSH：把飞书消息接到本地 DSH agent，流式富卡片回复，支持图片和工作区。"
+    }
+  }
 }

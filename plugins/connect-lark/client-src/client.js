@@ -376,6 +376,7 @@ class LarkSettingsModel {
   inject() {
     return {
       hooks: { larkSettings: this.store },
+      locale: this.ctx.locale,
       ...this.form.actions(),
       // 字段级编辑统一挂自动保存：选择器、输入框失焦、Secret 草稿都走同一条防抖落盘路径
       edit: (path, text) => { this.form.actions().edit(path, text); this.scheduleSave(); },
@@ -1105,7 +1106,20 @@ function AccessPicker({ value, onEdit, t, disabled }) {
 function LarkConfigCard(props) {
   const state = props.useLarkSettings((snapshot) => snapshot);
   const [guideOpen, setGuideOpen] = React.useState(false);
-  const t = props.t;
+  // 语言自定：宿主 locale 面可订阅（真机）时直查本地字典，切换立即生效；
+  // 无 subscribe 的环境（测试沙箱）沿用注入的 t，保持渲染契约。
+  const locale = props.locale;
+  const reactive = typeof locale?.subscribe === "function";
+  const [lang, setLang] = React.useState(() => (locale?.getSnapshot?.()?.active === "en" ? "en" : "zh"));
+  React.useEffect(() => {
+    if (!reactive) return undefined;
+    return locale.subscribe(() => setLang(locale.getSnapshot().active === "en" ? "en" : "zh"));
+  }, [locale, reactive]);
+  const t = React.useCallback((key) => {
+    if (!reactive) return props.t(key);
+    const table = lang === "en" ? en : zh;
+    return table[key] !== undefined ? table[key] : (en[key] ?? zh[key] ?? key);
+  }, [lang, props.t, reactive]);
   const disabled = !state.writable;
   const value = (path) => state.fields[path];
   const edit = (path) => (text) => props.edit(path, text);

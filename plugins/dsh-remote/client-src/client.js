@@ -277,7 +277,22 @@ function envRow(key, name, ok, detail) {
 }
 
 /** 远程访问管理面：轮询本机管理面 API，全部操作走宿主原语。 */
-function RemoteManager({ t }) {
+function RemoteManager({ t: hostT, locale }) {
+  // 语言自定：宿主 locale 面可订阅（真机）时直查本地字典，切换立即生效；
+  // 无 subscribe 的环境（测试沙箱）沿用注入的 t，保持渲染契约。
+  const reactive = typeof locale?.subscribe === "function";
+  const [lang, setLang] = React.useState(() => (locale?.getSnapshot?.()?.active === "en" ? "en" : "zh"));
+  React.useEffect(() => {
+    if (!reactive) return undefined;
+    return locale.subscribe(() => setLang(locale.getSnapshot().active === "en" ? "en" : "zh"));
+  }, [locale, reactive]);
+  const t = React.useCallback((key, vars) => {
+    if (!reactive) return hostT(key, vars);
+    const table = lang === "en" ? en : zh;
+    let text = table[key] !== undefined ? table[key] : (en[key] ?? zh[key] ?? key);
+    if (vars) for (const [k, v] of Object.entries(vars)) text = text.split("{" + k + "}").join(String(v));
+    return text;
+  }, [lang, hostT, reactive]);
   const [state, setState] = React.useState(null);
   const [error, setError] = React.useState("");
   const [message, setMessage] = React.useState(null); // {text, err}
@@ -651,7 +666,7 @@ function apply(ctx) {
     // view:"summary"（行内一句话）不画管理面，交给宿主条目描述兜底。
     const view = props.view;
     if (view === "summary") return null;
-    // 翻译函数优先用宿主注入的那份（它会随语言切换刷新）。
-    return jsx(RemoteManager, { t: props.t ?? t });
+    // 语言自定：面板内部订阅宿主 locale 直查本地字典（注入 t 不保证随切换重绑）。
+    return jsx(RemoteManager, { t: props.t, locale: ctx.locale });
   }));
 }
