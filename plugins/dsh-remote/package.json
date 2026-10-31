@@ -3,7 +3,7 @@
   "version": "0.3.0-beta.1",
   "icon": "./icon.svg",
   "private": true,
-  "description": "Remote access for DSH via a Cloudflare quick tunnel with a password gate. The management page now lives in the plugin's own detail page (Plugins → Nano Market → configure).",
+  "description": "Remote access to your local DSH via a Cloudflare quick tunnel with a password gate and Feishu notifications (group or DM).",
   "license": "MIT",
   "type": "module",
   "main": "./lib/index.mjs",

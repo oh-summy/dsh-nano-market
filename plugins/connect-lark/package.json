@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "icon": "./icon.svg",
   "private": true,
-  "description": "Feishu/Lark long-connection channel for DSH: chats drive the local agent, replies stream as rich cards. Registered in the dsh-nano-market.",
+  "description": "Feishu/Lark long-connection bridge for DSH: forwards messages to local DSH agents with streaming rich cards, image support, and workspace-aware replies.",
   "license": "MIT",
   "type": "module",
   "main": "./lib/index.mjs",

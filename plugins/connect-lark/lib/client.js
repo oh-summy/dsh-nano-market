@@ -483,14 +483,25 @@ const styles = `
 .cl-workspace-add:hover:not(:disabled){background:var(--cl-hover);border-color:var(--cl-border-strong);color:var(--cl-blue)}
 
 .cl-workspace-add:disabled{opacity:.45;cursor:not-allowed}
-.cl-browser-path{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin:0 0 12px}
-.cl-browser-list{height:340px;overflow:auto;border:1px solid var(--cl-border);border-radius:12px;padding:6px;background:var(--cl-surface-2)}
-.cl-browser-entry{display:block;width:100%;border:0;border-radius:7px;background:transparent;color:var(--cl-ink);text-align:left;padding:8px 10px;font:inherit;font-size:12px;cursor:pointer}
-
-.cl-browser-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px}
+.cl-dialog-shield{position:fixed;inset:0;z-index:1000;background:rgba(15,17,21,.4);display:flex;align-items:flex-start;justify-content:center;padding:56px 24px 24px;overflow:auto}
+.cl-dialog{width:680px;max-width:100%;background:var(--cl-surface);border:1px solid var(--cl-border);border-radius:var(--cl-radius-lg);box-shadow:var(--cl-shadow);padding:20px 22px 18px}
+.cl-dialog-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
+.cl-dialog-title{font-size:15px;font-weight:650;color:var(--cl-ink)}
+.cl-dialog-sub{font-size:12px;color:var(--cl-muted);margin-top:3px;line-height:1.55}
+.cl-dialog-x{flex:none;width:30px;height:30px;border:0;border-radius:8px;background:transparent;color:var(--cl-muted);cursor:pointer;font-size:13px}
+.cl-dialog-x:hover{background:var(--cl-hover);color:var(--cl-ink)}
+.cl-dialog-foot{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:14px}
+.cl-browser-path{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;margin:0 0 10px}
+.cl-browser-list{height:360px;overflow:auto;border:1px solid var(--cl-border);border-radius:12px;padding:6px;background:var(--cl-surface-2);margin-bottom:10px}
+.cl-browser-entry{display:flex;align-items:center;gap:9px;width:100%;border:0;border-radius:8px;background:transparent;color:var(--cl-ink);text-align:left;padding:8px 10px;font:inherit;font-size:13px;cursor:pointer;transition:background .12s}
+.cl-browser-entry:hover{background:var(--cl-hover)}
+.cl-browser-entry-glyph{flex:none;color:var(--cl-faint);display:inline-flex}
+.cl-browser-entry-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cl-browser-home{display:inline-flex;align-items:center;justify-content:center;width:38px;border:1px solid var(--cl-border-strong);border-radius:var(--cl-radius);background:var(--cl-surface);color:var(--cl-muted);cursor:pointer;transition:color .12s,border-color .12s}
+.cl-browser-home:hover:not(:disabled){color:var(--cl-blue);border-color:var(--cl-blue)}
 .cl-browser-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.cl-browser-create{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin-top:14px}
-@media(max-width:560px){.cl-browser-list{height:280px}.cl-browser-footer{align-items:flex-start;flex-direction:column}}
+.cl-browser-create{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin:10px 0 0}
+@media(max-width:560px){.cl-dialog{padding:16px}.cl-dialog-shield{padding:16px 12px}.cl-browser-list{height:300px}.cl-dialog-foot{align-items:flex-start;flex-direction:column-reverse;gap:10px}.cl-dialog-foot .cl-modal-actions{width:100%;justify-content:flex-end}}
 .cl-picker{position:relative;min-width:0}
 .cl-picker-trigger{display:flex;align-items:center;gap:10px;text-align:left;cursor:pointer;min-height:52px;padding:9px 11px;border-radius:var(--cl-radius);background:var(--cl-surface-2);transition:background .12s,border-color .12s}
 .cl-picker-trigger:hover:not(:disabled){background:var(--cl-hover)}
@@ -794,6 +805,12 @@ function WorkspaceDialog({ listDirectory, createDirectory, onPick, onClose, t })
     }
   };
   React.useEffect(() => { load(); }, []);
+  // 自绘对话框：Esc 关闭（宿主 Modal 宽度不可控，这里自己画才能展开到舒适的工作宽度）
+  React.useEffect(() => {
+    const onKey = (event) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
   const create = async () => {
     if (!folderName.trim() || !listing) return;
     setLoading(true);
@@ -806,38 +823,54 @@ function WorkspaceDialog({ listDirectory, createDirectory, onPick, onClose, t })
       setLoading(false);
     }
   };
-  // 外壳交给宿主的 Modal：层级、Esc、点外部关闭、焦点都归它管，本组件只画内容。
-  return jsx(P.Modal, {
-    open: true,
-    onClose,
-    title: t("browserTitle"),
-    closeLabel: t("close"),
-    children: jsxs("div", { className: "cl-browser", children: [
-      jsxs("div", { className: "cl-browser-path", children: [
-        jsx("input", { className: "cl-input", value: pathInput, "aria-label": t("browserPathLabel"), onChange: (event) => setPathInput(event.target.value), onKeyDown: (event) => { if (event.key === "Enter") load(pathInput); } }),
-        listing?.home ? jsx(P.Button, { variant: "outline", size: "sm", onClick: () => load(listing.home), children: t("browserHome") }) : null,
+  const folderGlyph = () => jsx("svg", { width: 15, height: 15, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor",
+    strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true", children:
+    jsx("path", { d: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" }) });
+  return jsxs("div", { className: "cl-dialog-shield", onClick: onClose, children: [
+    jsxs("div", { className: "cl-dialog", role: "dialog", "aria-modal": "true", "aria-label": t("browserTitle"),
+      onClick: (e) => e.stopPropagation(),
+      children: [
+        jsxs("div", { className: "cl-dialog-head", children: [
+          jsxs("div", { children: [
+            jsx("div", { className: "cl-dialog-title", children: t("browserTitle") }),
+            jsx("div", { className: "cl-dialog-sub", children: t("defaultPathHint") }),
+          ] }),
+          jsx("button", { type: "button", className: "cl-dialog-x", "aria-label": t("close"), onClick: onClose, children: "✕" }),
+        ] }),
+        jsxs("div", { className: "cl-browser-path", children: [
+          jsx("input", { className: "cl-input", value: pathInput, "aria-label": t("browserPathLabel"), autoFocus: true, spellCheck: false,
+            onChange: (event) => setPathInput(event.target.value),
+            onKeyDown: (event) => { if (event.key === "Enter") load(pathInput); } }),
+          listing?.home ? jsx("button", { type: "button", className: "cl-browser-home", title: t("browserHome"), "aria-label": t("browserHome"),
+            onClick: () => load(listing.home), children: folderGlyph() }) : null,
+        ] }),
+        error ? jsx("p", { className: "cl-hint", role: "alert", children: error }) : null,
+        jsx("div", { className: "cl-browser-list", children: loading
+          ? jsx("div", { className: "cl-empty", children: t("browserLoading") })
+          : (listing?.entries || []).filter((entry) => showHidden || !entry.hidden).map((entry) => jsxs("button", {
+              type: "button", className: "cl-browser-entry", onClick: () => load(entry.path),
+              children: [jsx("span", { className: "cl-browser-entry-glyph", children: folderGlyph() }),
+                jsx("span", { className: "cl-browser-entry-name", children: entry.name })],
+            }, entry.path)) }),
+        listing?.truncated ? jsx("p", { className: "cl-hint", children: t("browserTruncated") }) : null,
+        creating ? jsxs("div", { className: "cl-browser-create", children: [
+          jsx("input", { className: "cl-input", value: folderName, placeholder: t("browserFolderName"), autoFocus: true,
+            onChange: (event) => setFolderName(event.target.value),
+            onKeyDown: (event) => { if (event.key === "Enter") create(); } }),
+          jsx(P.Button, { variant: "primary", size: "sm", onClick: create, children: t("browserCreate") }),
+        ] }) : null,
+        jsxs("div", { className: "cl-dialog-foot", children: [
+          jsxs("div", { className: "cl-browser-tools", children: [
+            jsx(P.Button, { variant: "outline", size: "sm", onClick: () => setCreating(!creating), children: t("browserNewFolder") }),
+            jsx(P.Button, { variant: "ghost", size: "sm", onClick: () => setShowHidden(!showHidden), children: showHidden ? t("browserHideHidden") : t("browserShowHidden") }),
+          ] }),
+          jsxs("div", { className: "cl-modal-actions", children: [
+            jsx(P.Button, { variant: "outline", size: "sm", onClick: onClose, children: t("cancel") }),
+            jsx(P.Button, { variant: "primary", size: "sm", disabled: !listing, onClick: () => onPick(listing.path), children: t("browserOpen") }),
+          ] }),
+        ] }),
       ] }),
-      error ? jsx("p", { className: "cl-hint", role: "alert", children: error }) : null,
-      jsx("div", { className: "cl-browser-list", children: loading ? jsx("div", { className: "cl-empty", children: t("browserLoading") }) : (listing?.entries || []).filter((entry) => showHidden || !entry.hidden).map((entry) => jsx("button", {
-        type: "button", className: "cl-browser-entry", onClick: () => load(entry.path), children: jsxs("span", { children: ["▸ ", entry.name] }),
-      }, entry.path)) }),
-      listing?.truncated ? jsx("p", { className: "cl-hint", children: t("browserTruncated") }) : null,
-      creating ? jsxs("div", { className: "cl-browser-create", children: [
-        jsx("input", { className: "cl-input", value: folderName, placeholder: t("browserFolderName"), onChange: (event) => setFolderName(event.target.value) }),
-        jsx(P.Button, { variant: "primary", size: "sm", onClick: create, children: t("browserCreate") }),
-      ] }) : null,
-    ] }),
-    footer: jsxs("div", { className: "cl-browser-footer", children: [
-      jsxs("div", { className: "cl-browser-tools", children: [
-        jsx(P.Button, { variant: "outline", size: "sm", onClick: () => setCreating(!creating), children: t("browserNewFolder") }),
-        jsx(P.Button, { variant: "ghost", size: "sm", onClick: () => setShowHidden(!showHidden), children: showHidden ? t("browserHideHidden") : t("browserShowHidden") }),
-      ] }),
-      jsxs("div", { className: "cl-modal-actions", children: [
-        jsx(P.Button, { variant: "outline", size: "sm", onClick: onClose, children: t("cancel") }),
-        jsx(P.Button, { variant: "primary", size: "sm", disabled: !listing, onClick: () => onPick(listing.path), children: t("browserOpen") }),
-      ] }),
-    ] }),
-  });
+  ] });
 }
 
 function WorkspacePicker({ state, value, onEdit, onBrowse, onCreateDirectory, t, disabled }) {
