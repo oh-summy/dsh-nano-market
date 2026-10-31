@@ -292,15 +292,33 @@ export async function createOrResumeAgent(ctx: AnyCtx, sessionId: string, meta: 
   throw new Error("unreachable");
 }
 
-/** Update one streaming rich card with the latest answer and optional CoT. */
-async function updateRunCard(slot: RunSlot, thinkingPolicy: ResolvedConfig["thinkingPolicy"]): Promise<void> {
+/** 终稿思考面板保留的尾部字符数：CardKit 单卡有 ~30KB 上限，长思考截尾防更新失败。 */
+const FINAL_THINKING_TAIL = 4000;
+/** 卡片更新节流：每个 token 一次 PATCH 会被飞书限流，卡片反而像冻结。 */
+const CARD_UPDATE_INTERVAL_MS = 900;
+
+/** Update one streaming rich card with the latest answer and optional CoT.
+ * final=true 时思考过程收进折叠面板（截尾）；legacyThinking=true 渲染旧版引用块，
+ * 作为折叠面板被飞书拒绝时的回退版式。 */
+async function updateRunCard(
+  slot: RunSlot,
+  thinkingPolicy: ResolvedConfig["thinkingPolicy"],
+  opts: { final?: boolean; legacyThinking?: boolean } = {},
+): Promise<void> {
   if (!slot.streamController) return;
   const lines: string[] = [];
   if (slot.failedWith) lines.push("**运行失败：** " + slot.failedWith.message);
   else if (slot.accumulatedText) lines.push(slot.accumulatedText);
-  else if (slot.state === "done" || slot.state === "finishing") lines.push("本次回复没有文本输出。");
+  else if (opts.final) lines.push("本次回复没有文本输出。");
+  else if (slot.thinkingText && thinkingPolicy === "cot-visible") lines.push("正在思考…");
   else lines.push("正在生成回复…");
-  if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
+  let panels: Array<{ title: string; content: string }> | undefined;
+  if (thinkingPolicy === "cot-visible" && slot.thinkingText && !opts.legacyThinking) {
+    const body = slot.thinkingText.length > FINAL_THINKING_TAIL
+      ? "…（仅保留最近 " + FINAL_THINKING_TAIL + " 字，完整过程见会话）\n" + slot.thinkingText.slice(-FINAL_THINKING_TAIL)
+      : slot.thinkingText;
+    panels = [{ title: "思考过程（点击展开）", content: body.split("\n").map((line) => "> " + line).join("\n") }];
+  } else if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
     lines.push("---", "**思考过程**");
     lines.push(slot.thinkingText.split("\n").map((line) => "> " + line).join("\n"));
   }
@@ -309,9 +327,21 @@ async function updateRunCard(slot: RunSlot, thinkingPolicy: ResolvedConfig["thin
     title: "DSH 回复",
     color: "blue",
     lines,
+    panels,
     note: "connect-lark · by @oh-summy · " + timestamp,
     buttons: [{ text: "dsh-nano-market", url: "https://github.com/oh-summy/dsh-nano-market" }],
   }));
+}
+
+/** 终稿更新：先试折叠面板版式，被飞书拒绝时回退旧版引用块。 */
+async function finalizeRunCard(slot: RunSlot, thinkingPolicy: ResolvedConfig["thinkingPolicy"]): Promise<void> {
+  if (!slot.streamController) return;
+  try {
+    await updateRunCard(slot, thinkingPolicy, { final: true });
+  } catch (panelError) {
+    try { await updateRunCard(slot, thinkingPolicy, { final: true, legacyThinking: true }); }
+    catch { throw panelError; }
+  }
 }
 
 // ---- apply() ----
@@ -403,6 +433,31 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       if (!currentAlive()) { try { await directoryService?.close(); } catch { /* gone */ } return; }
 
       // 4) Create run manager.
+      // 卡片更新节流：先到期的 PATCH 立即发；窗口内的后续变更记脏标记，
+      // 上一次 PATCH 落地后再补一发——流式期间最多 ~1 次/秒，终稿绕过节流直出。
+      const scheduleCardUpdate = (slot: RunSlot) => {
+        if (!slot.streamController) return;
+        if (slot.cardUpdateTimer) { slot.cardDirty = true; return; }
+        const fire = () => {
+          slot.cardUpdateTimer = null;
+          slot.lastCardUpdateAt = Date.now();
+          void updateRunCard(slot, plain.thinkingPolicy)
+            .catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + (e as Error).message))
+            .finally(() => {
+              if (slot.cardDirty && slot.streamController) {
+                slot.cardDirty = false;
+                scheduleCardUpdate(slot);
+              }
+            });
+        };
+        const elapsed = Date.now() - (slot.lastCardUpdateAt ?? 0);
+        if (elapsed >= CARD_UPDATE_INTERVAL_MS) fire();
+        else {
+          const timer = setTimeout(fire, CARD_UPDATE_INTERVAL_MS - elapsed);
+          timer.unref?.();
+          slot.cardUpdateTimer = timer;
+        }
+      };
       runManager = new RunManager({
         resolveAgent: async (chatId, title) => {
           // Reuse existing agent from slot if already created (owned-per-chat).
@@ -501,7 +556,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               initial: richCard({
                 title: "DSH 回复",
                 color: "blue",
-                lines: ["正在连接 DSH Agent…"],
+                lines: ["正在思考…"],
                 note: "connect-lark · by @oh-summy · " + new Date().toISOString(),
                 buttons: [{ text: "dsh-nano-market", url: "https://github.com/oh-summy/dsh-nano-market" }],
               }),
@@ -527,13 +582,16 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           });
         },
         onDelta: (slot) => {
-          void updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + (e as Error).message));
+          scheduleCardUpdate(slot);
         },
         onThinking: (slot) => {
-          void updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + (e as Error).message));
+          scheduleCardUpdate(slot);
         },
         onComplete: async (slot) => {
           try {
+            // 终稿直出，绕过节流；挂起的节流定时器先撤掉
+            if (slot.cardUpdateTimer) { clearTimeout(slot.cardUpdateTimer); slot.cardUpdateTimer = null; }
+            slot.cardDirty = false;
             if (!slot.streamController && !slot.streamFailed) {
               // Bound the wait so a channel that never starts the producer cannot
               // leave this chat stuck in "finishing" forever.
@@ -550,7 +608,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               return;
             }
             try {
-              await updateRunCard(slot, plain.thinkingPolicy);
+              await finalizeRunCard(slot, plain.thinkingPolicy);
             } catch (e) {
               const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
               await sendBounded(chan, slot.chatId, reply);

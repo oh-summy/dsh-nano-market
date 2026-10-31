@@ -9,6 +9,40 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // src/cards.ts
 /**
+* CardKit 2.0 折叠面板：默认收起，点标题展开。用于「思考过程」——
+* 内容截尾后放 lark_md，展开不挤占正文。
+*/
+function collapsiblePanel(panel) {
+	return {
+		tag: "collapsible_panel",
+		expanded: panel.expanded === true,
+		background_style: "default",
+		border: { style: "default" },
+		vertical_spacing: "medium",
+		header: {
+			title: {
+				tag: "plain_text",
+				content: panel.title
+			},
+			background_style: "default",
+			vertical_align: "center",
+			icon: {
+				tag: "standard_icon",
+				token: "down-small-1_outlined"
+			},
+			icon_position: "follow",
+			width: "default"
+		},
+		elements: [{
+			tag: "div",
+			text: {
+				tag: "lark_md",
+				content: panel.content
+			}
+		}]
+	};
+}
+/**
 * Build a CardKit JSON 2.0 object with header + body elements.
 *
 * This is the "raw CardKit JSON" path — the SDK does NOT own this structure.
@@ -45,6 +79,7 @@ function richCard(opts) {
 			behaviors
 		});
 	}
+	if (opts.panels) for (const p of opts.panels) elements.push(collapsiblePanel(p));
 	if (opts.note) elements.push({
 		tag: "div",
 		text: {
@@ -203,6 +238,9 @@ var RunManager = class {
 			slot.streamFailed = void 0;
 			slot.streamReady = void 0;
 			slot.streamReadyResolve = void 0;
+			slot.cardUpdateTimer = null;
+			slot.cardDirty = false;
+			slot.lastCardUpdateAt = 0;
 			const unsub = this.opts.subscribe(agent, sessionId, (delta, kind) => {
 				if (kind === "reasoning") {
 					slot.thinkingText = truncateTail(slot.thinkingText + delta, MAX_THINKING_CHARS);
@@ -271,6 +309,11 @@ var RunManager = class {
 		slot.streamFailed = void 0;
 		slot.streamReady = void 0;
 		slot.streamReadyResolve = void 0;
+		if (slot.cardUpdateTimer) {
+			clearTimeout(slot.cardUpdateTimer);
+			slot.cardUpdateTimer = null;
+		}
+		slot.cardDirty = false;
 		if (slot.pending.length > 0 && !this.disposed) {
 			const next = slot.pending.shift();
 			try {
@@ -297,6 +340,11 @@ var RunManager = class {
 		slot.streamFailed = void 0;
 		slot.streamReady = void 0;
 		slot.streamReadyResolve = void 0;
+		if (slot.cardUpdateTimer) {
+			clearTimeout(slot.cardUpdateTimer);
+			slot.cardUpdateTimer = null;
+		}
+		slot.cardDirty = false;
 		if (slot.pending.length > 0 && !this.disposed) {
 			const next = slot.pending.shift();
 			try {
@@ -988,15 +1036,27 @@ async function createOrResumeAgent(ctx, sessionId, meta, agentOptions, permissio
 	}
 	throw new Error("unreachable");
 }
-/** Update one streaming rich card with the latest answer and optional CoT. */
-async function updateRunCard(slot, thinkingPolicy) {
+/** 终稿思考面板保留的尾部字符数：CardKit 单卡有 ~30KB 上限，长思考截尾防更新失败。 */
+const FINAL_THINKING_TAIL = 4e3;
+/** 卡片更新节流：每个 token 一次 PATCH 会被飞书限流，卡片反而像冻结。 */
+const CARD_UPDATE_INTERVAL_MS = 900;
+/** Update one streaming rich card with the latest answer and optional CoT.
+* final=true 时思考过程收进折叠面板（截尾）；legacyThinking=true 渲染旧版引用块，
+* 作为折叠面板被飞书拒绝时的回退版式。 */
+async function updateRunCard(slot, thinkingPolicy, opts = {}) {
 	if (!slot.streamController) return;
 	const lines = [];
 	if (slot.failedWith) lines.push("**运行失败：** " + slot.failedWith.message);
 	else if (slot.accumulatedText) lines.push(slot.accumulatedText);
-	else if (slot.state === "done" || slot.state === "finishing") lines.push("本次回复没有文本输出。");
+	else if (opts.final) lines.push("本次回复没有文本输出。");
+	else if (slot.thinkingText && thinkingPolicy === "cot-visible") lines.push("正在思考…");
 	else lines.push("正在生成回复…");
-	if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
+	let panels;
+	if (thinkingPolicy === "cot-visible" && slot.thinkingText && !opts.legacyThinking) panels = [{
+		title: "思考过程（点击展开）",
+		content: (slot.thinkingText.length > FINAL_THINKING_TAIL ? "…（仅保留最近 4000 字，完整过程见会话）\n" + slot.thinkingText.slice(-4e3) : slot.thinkingText).split("\n").map((line) => "> " + line).join("\n")
+	}];
+	else if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
 		lines.push("---", "**思考过程**");
 		lines.push(slot.thinkingText.split("\n").map((line) => "> " + line).join("\n"));
 	}
@@ -1005,12 +1065,29 @@ async function updateRunCard(slot, thinkingPolicy) {
 		title: "DSH 回复",
 		color: "blue",
 		lines,
+		panels,
 		note: "connect-lark · by @oh-summy · " + timestamp,
 		buttons: [{
 			text: "dsh-nano-market",
 			url: "https://github.com/oh-summy/dsh-nano-market"
 		}]
 	}));
+}
+/** 终稿更新：先试折叠面板版式，被飞书拒绝时回退旧版引用块。 */
+async function finalizeRunCard(slot, thinkingPolicy) {
+	if (!slot.streamController) return;
+	try {
+		await updateRunCard(slot, thinkingPolicy, { final: true });
+	} catch (panelError) {
+		try {
+			await updateRunCard(slot, thinkingPolicy, {
+				final: true,
+				legacyThinking: true
+			});
+		} catch {
+			throw panelError;
+		}
+	}
 }
 function apply(ctx, config = {}) {
 	let plain = plainConfig(config);
@@ -1086,6 +1163,30 @@ function apply(ctx, config = {}) {
 				} catch {}
 				return;
 			}
+			const scheduleCardUpdate = (slot) => {
+				if (!slot.streamController) return;
+				if (slot.cardUpdateTimer) {
+					slot.cardDirty = true;
+					return;
+				}
+				const fire = () => {
+					slot.cardUpdateTimer = null;
+					slot.lastCardUpdateAt = Date.now();
+					updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + e.message)).finally(() => {
+						if (slot.cardDirty && slot.streamController) {
+							slot.cardDirty = false;
+							scheduleCardUpdate(slot);
+						}
+					});
+				};
+				const elapsed = Date.now() - (slot.lastCardUpdateAt ?? 0);
+				if (elapsed >= CARD_UPDATE_INTERVAL_MS) fire();
+				else {
+					const timer = setTimeout(fire, CARD_UPDATE_INTERVAL_MS - elapsed);
+					timer.unref?.();
+					slot.cardUpdateTimer = timer;
+				}
+			};
 			runManager = new RunManager({
 				resolveAgent: async (chatId, title) => {
 					const existing = runManager?.getSlot(chatId);
@@ -1188,7 +1289,7 @@ function apply(ctx, config = {}) {
 						initial: richCard({
 							title: "DSH 回复",
 							color: "blue",
-							lines: ["正在连接 DSH Agent…"],
+							lines: ["正在思考…"],
 							note: "connect-lark · by @oh-summy · " + (/* @__PURE__ */ new Date()).toISOString(),
 							buttons: [{
 								text: "dsh-nano-market",
@@ -1211,13 +1312,18 @@ function apply(ctx, config = {}) {
 					});
 				},
 				onDelta: (slot) => {
-					updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + e.message));
+					scheduleCardUpdate(slot);
 				},
 				onThinking: (slot) => {
-					updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + e.message));
+					scheduleCardUpdate(slot);
 				},
 				onComplete: async (slot) => {
 					try {
+						if (slot.cardUpdateTimer) {
+							clearTimeout(slot.cardUpdateTimer);
+							slot.cardUpdateTimer = null;
+						}
+						slot.cardDirty = false;
 						if (!slot.streamController && !slot.streamFailed) {
 							if (!(await withTimeout(slot.streamReady ?? Promise.resolve(), streamReadyTimeoutMs())).ok) slot.streamFailed = /* @__PURE__ */ new Error("stream producer did not start within " + streamReadyTimeoutMs() + "ms");
 						}
@@ -1227,7 +1333,7 @@ function apply(ctx, config = {}) {
 							return;
 						}
 						try {
-							await updateRunCard(slot, plain.thinkingPolicy);
+							await finalizeRunCard(slot, plain.thinkingPolicy);
 						} catch (e) {
 							const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
 							await sendBounded(chan, slot.chatId, reply);

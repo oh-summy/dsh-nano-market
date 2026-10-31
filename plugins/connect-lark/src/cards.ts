@@ -15,10 +15,35 @@ export interface RichCardOptions {
   color: CardColor;
   /** Markdown lines. "---" renders as a horizontal rule. */
   lines: string[];
+  /** Collapsible panels appended after the lines (CardKit 2.0 折叠面板). */
+  panels?: Array<{ title: string; content: string; expanded?: boolean }>;
   /** Footer small text (the "bottom note"). */
   note?: string;
   /** Optional button(s). Each gets a url or a callback value. */
   buttons?: Array<{ text: string; url?: string; value?: string }>;
+}
+
+/**
+ * CardKit 2.0 折叠面板：默认收起，点标题展开。用于「思考过程」——
+ * 内容截尾后放 lark_md，展开不挤占正文。
+ */
+function collapsiblePanel(panel: { title: string; content: string; expanded?: boolean }): Record<string, unknown> {
+  return {
+    tag: "collapsible_panel",
+    expanded: panel.expanded === true,
+    background_style: "default",
+    border: { style: "default" },
+    vertical_spacing: "medium",
+    header: {
+      title: { tag: "plain_text", content: panel.title },
+      background_style: "default",
+      vertical_align: "center",
+      icon: { tag: "standard_icon", token: "down-small-1_outlined" },
+      icon_position: "follow",
+      width: "default",
+    },
+    elements: [{ tag: "div", text: { tag: "lark_md", content: panel.content } }],
+  };
 }
 
 /**
@@ -47,6 +72,9 @@ export function richCard(opts: RichCardOptions): Record<string, unknown> {
         behaviors,
       });
     }
+  }
+  if (opts.panels) {
+    for (const p of opts.panels) elements.push(collapsiblePanel(p));
   }
   if (opts.note) {
     // CardKit 2.0 does not accept the legacy `note` tag. Use a plain-text

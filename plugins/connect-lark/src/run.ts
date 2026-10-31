@@ -54,6 +54,10 @@ export interface RunSlot {
   streamFailed?: Error;
   streamReady?: Promise<void>;
   streamReadyResolve?: () => void;
+  /** Card update throttle (owned by apply()): at most one PATCH per interval. */
+  cardUpdateTimer?: NodeJS.Timeout | null;
+  cardDirty?: boolean;
+  lastCardUpdateAt?: number;
 }
 
 export interface RunManagerOptions {
@@ -207,6 +211,9 @@ export class RunManager {
       slot.streamFailed = undefined;
       slot.streamReady = undefined;
       slot.streamReadyResolve = undefined;
+      slot.cardUpdateTimer = null;
+      slot.cardDirty = false;
+      slot.lastCardUpdateAt = 0;
 
       const unsub = this.opts.subscribe(
         agent,
@@ -275,6 +282,8 @@ export class RunManager {
     slot.streamFailed = undefined;
     slot.streamReady = undefined;
     slot.streamReadyResolve = undefined;
+    if (slot.cardUpdateTimer) { clearTimeout(slot.cardUpdateTimer); slot.cardUpdateTimer = null; }
+    slot.cardDirty = false;
     if (slot.pending.length > 0 && !this.disposed) {
       const next = slot.pending.shift()!;
       try { await this.start(chatId, next.content, next.source); }
@@ -297,6 +306,8 @@ export class RunManager {
     slot.streamFailed = undefined;
     slot.streamReady = undefined;
     slot.streamReadyResolve = undefined;
+    if (slot.cardUpdateTimer) { clearTimeout(slot.cardUpdateTimer); slot.cardUpdateTimer = null; }
+    slot.cardDirty = false;
     if (slot.pending.length > 0 && !this.disposed) {
       const next = slot.pending.shift()!;
       try { await this.start(chatId, next.content, next.source); }
