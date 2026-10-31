@@ -54,6 +54,20 @@ export interface RunSlot {
   streamFailed?: Error;
   streamReady?: Promise<void>;
   streamReadyResolve?: () => void;
+  /** Card update throttle (owned by apply()): at most one PATCH per interval. */
+  cardUpdateTimer?: NodeJS.Timeout | null;
+  cardDirty?: boolean;
+  lastCardUpdateAt?: number;
+  /** 本次运行的起点（卡片「生成中 · 已用时」的计时基准）。 */
+  runStartedAt?: number;
+  /** 当前阶段：thinking=推理中 tool=调用工具 text=输出正文（驱动标题栏状态）。 */
+  phase?: "thinking" | "tool" | "text";
+  /** 最后一次收到推理 delta 的时刻（思考用时的终点）。 */
+  lastThinkingAt?: number;
+  /** 第一个正文 delta 到达的时刻（思考用时的终点基准）。 */
+  thinkingEndedAt?: number;
+  /** 卡片心跳：无 delta 的工具执行期间定期刷新状态行（owned by apply()）。 */
+  cardHeartbeat?: NodeJS.Timeout | null;
 }
 
 export interface RunManagerOptions {
@@ -62,13 +76,15 @@ export interface RunManagerOptions {
   /** Build a user message from content. */
   buildMessage: (content: unknown, source: { kind: string }) => unknown;
   /** Subscribe to agent events for incremental text. */
-  subscribe: (agent: unknown, sessionId: string, onDelta: (delta: string, kind?: "text" | "reasoning") => void, onTurnEnd: () => void, onError: (e: Error) => void) => () => void;
+  subscribe: (agent: unknown, sessionId: string, onDelta: (delta: string, kind?: "text" | "reasoning" | "tool") => void, onTurnEnd: () => void, onError: (e: Error) => void) => () => void;
   /** Start a streaming card for this run. */
   onStart?: (slot: RunSlot) => void | Promise<void>;
   /** Update the card with a normal text delta. */
   onDelta?: (slot: RunSlot, delta: string) => void;
   /** Update the card with a reasoning delta. */
   onThinking?: (slot: RunSlot, delta: string) => void;
+  /** 阶段推进（thinking→tool→text）：驱动标题栏状态。 */
+  onPhase?: (slot: RunSlot) => void;
   /** Start a turn (call agent.followup). */
   followup: (agent: unknown, message: unknown) => void;
   /** Called when a run completes (turn/end or error). */
@@ -207,15 +223,31 @@ export class RunManager {
       slot.streamFailed = undefined;
       slot.streamReady = undefined;
       slot.streamReadyResolve = undefined;
+      slot.cardUpdateTimer = null;
+      slot.cardDirty = false;
+      slot.lastCardUpdateAt = 0;
+      slot.runStartedAt = Date.now();
+      slot.cardHeartbeat = null;
+      slot.phase = void 0;
+      slot.lastThinkingAt = void 0;
+      slot.thinkingEndedAt = void 0;
 
       const unsub = this.opts.subscribe(
         agent,
         sessionId,
         (delta, kind) => {
           if (kind === "reasoning") {
+            slot.phase = "thinking";
             slot.thinkingText = truncateTail(slot.thinkingText + delta, MAX_THINKING_CHARS);
+            slot.lastThinkingAt = Date.now();
             this.opts.onThinking?.(slot, delta);
+          } else if (kind === "tool") {
+            // 工具调用期间无流式输出，仅推进阶段：标题栏保持「正在调用工具…」
+            slot.phase = "tool";
+            this.opts.onPhase?.(slot);
           } else {
+            if (slot.thinkingText && slot.thinkingEndedAt === void 0) slot.thinkingEndedAt = Date.now();
+            slot.phase = "text";
             slot.accumulatedText = truncateTail(slot.accumulatedText + delta, MAX_TEXT_CHARS);
             this.opts.onDelta?.(slot, delta);
           }
@@ -275,6 +307,9 @@ export class RunManager {
     slot.streamFailed = undefined;
     slot.streamReady = undefined;
     slot.streamReadyResolve = undefined;
+    if (slot.cardUpdateTimer) { clearTimeout(slot.cardUpdateTimer); slot.cardUpdateTimer = null; }
+    if (slot.cardHeartbeat) { clearInterval(slot.cardHeartbeat); slot.cardHeartbeat = null; }
+    slot.cardDirty = false;
     if (slot.pending.length > 0 && !this.disposed) {
       const next = slot.pending.shift()!;
       try { await this.start(chatId, next.content, next.source); }
@@ -297,6 +332,9 @@ export class RunManager {
     slot.streamFailed = undefined;
     slot.streamReady = undefined;
     slot.streamReadyResolve = undefined;
+    if (slot.cardUpdateTimer) { clearTimeout(slot.cardUpdateTimer); slot.cardUpdateTimer = null; }
+    if (slot.cardHeartbeat) { clearInterval(slot.cardHeartbeat); slot.cardHeartbeat = null; }
+    slot.cardDirty = false;
     if (slot.pending.length > 0 && !this.disposed) {
       const next = slot.pending.shift()!;
       try { await this.start(chatId, next.content, next.source); }
@@ -350,6 +388,7 @@ export class RunManager {
     for (const slot of this.slots.values()) {
       try { slot.cancelController?.abort(); } catch { /* gone */ }
       try { slot.streamDone?.(); } catch { /* already finished */ }
+      if (slot.cardHeartbeat) { clearInterval(slot.cardHeartbeat); slot.cardHeartbeat = null; }
       // Only abandon an owned run; idle/done slots and a shared attach-gui
       // session must not be cancelled by plugin teardown or config saves.
       if (slot.state === "running" || slot.state === "cancelling") {

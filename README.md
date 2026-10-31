@@ -4,10 +4,10 @@
 
 ## Quick Start
 
-1. **安装**：当前尚未注册到市场，暂不提供公开安装 spec。正式发布后从 DSH Discover 安装；开发审查使用本仓库 `plugins/connect-lark` 本地目录。
+1. **安装**：从 DSH Discover 安装 `@oh-summy/connect-lark`，或直接从市场索引 `https://oh-summy.github.io/dsh-nano-market/index.json` 添加。
 2. **创建应用**：打开 [飞书开放平台](https://open.feishu.cn/app)，创建自建应用并启用机器人。配置页的「创建应用与权限」弹窗提供最小权限清单和复制按钮。
-3. **配置**：填写 App ID 和 App Secret，然后在「访问控制」里授权自己（设置 `openId` 或切换 `accessMode`）。完整 Secret 只保存在 DSH 凭据缝，应用配置保存在本机 DSH profile，均不进入 Git；页面仅显示前 5 位 + 掩码。
-4. **完成访问控制**：在「访问控制」里设置 `openId` 或切换 `accessMode`，否则默认 restricted 会拒绝所有消息。工作区可通过路径右侧的目录弹窗选择任意文件夹（不会加入 DSH 工作区列表）；模型和思考强度默认跟随 DSH 新会话。
+3. **配置**：填写 App ID 和 App Secret。访问控制默认「跟随应用权限」——谁能私聊机器人由飞书应用的「可用范围」决定，插件不再额外限制，无需填任何 id。需要收紧时才切到「指定人员可用」。完整 Secret 只保存在 DSH 凭据缝，应用配置保存在本机 DSH profile，均不进入 Git；页面仅显示前 5 位 + 掩码。
+4. **可选收紧**：在「访问控制」切到「指定人员可用」，用姓名或 open_id 搜索并授权；租户管理员始终可用。工作区可通过路径右侧的目录弹窗选择任意文件夹（不会加入 DSH 工作区列表）；模型和思考强度默认跟随 DSH 新会话。
 5. **启用**：插件本身的开关即连接。访问控制由插件的 allowlist 和 `accessMode` 管理；群里固定 @ 机器人触发。
 
 ## 功能
@@ -29,7 +29,7 @@
 | `reasoningEffort` | `""` | 留空跟随所选模型的默认思考强度 |
 | `permissionPreset` | `""` | 留空跟随 DSH；可选仅可查看、工作区内修改、完全权限、自动审查 |
 | `agentOwnership` | `owned-per-chat` | 默认每个聊天独立 Agent；`attach-gui` 仅高级场景使用 |
-| `accessMode` | `restricted` | 访问模式：`restricted` 只允许显式授权的聊天（推荐，空列表拒绝）；`open` 允许所有聊天 |
+| `accessMode` | `app` | 访问模式：`app` 跟随飞书应用的可用范围（默认，不额外限制）；`list` 只允许授权名单与租户管理员 |
 | `requireMention` | `true` | 群聊需要 @ 机器人 |
 | `senderAllowlist` | `[]` | 私聊用户限制；`restricted` 模式下为空则拒绝所有私聊 |
 | `groupAllowlist` | `[]` | 群聊限制；`restricted` 模式下为空则拒绝所有群聊 |

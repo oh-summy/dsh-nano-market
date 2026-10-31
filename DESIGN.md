@@ -39,9 +39,11 @@ channel 仍是 0.x，精确 pin 版本（不用 `^`）、锁依赖、显式设�
 2. `inputModalities === undefined` 检查 — 不能裸 `.includes("image")`
 3. `unknown` 按不支持处理 — 不依赖模型抛错（dsh-llm 会替换成占位文本）
 
-### 6. 访问控制（fail-closed 默认）
+### 6. 访问控制
 
-默认 `accessMode: restricted`：空 `senderAllowlist` / `groupAllowlist` 拒绝该类消息，机器人必须被显式授权，不依赖飞书应用范围作为唯一边界。`openId` 一旦设置，私聊强制只允许该用户（两种模式都生效）。个人私有场景可显式设 `accessMode: open` 放行全部。群聊默认要求 @ 机器人（`requireMention` 可配，默认 true）。
+默认 `accessMode: app`：**跟随飞书应用的「可用范围」**——谁能私聊机器人由应用权限决定，插件不再叠加第二道门，也不需要任何 id。
+
+切到 `accessMode: list` 才收紧：只允许 `senderAllowlist` / `groupAllowlist` 里的人，加上租户管理员（`is_tenant_manager`，服务端启动时自动探测，无需手填 open_id）。`openId` 字段仍保留，作为单人的快捷授权。群聊默认要求 @ 机器人（`requireMention` 可配，默认 true）。
 
 ### 7. 资源管理
 
