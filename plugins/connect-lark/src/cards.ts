@@ -49,13 +49,13 @@ function collapsiblePanel(panel: { title: string; content: string; expanded?: bo
  */
 export function richCard(opts: RichCardOptions): Record<string, unknown> {
   const elements: Array<Record<string, unknown>> = [];
-  for (const line of opts.lines) {
-    if (line === "---") elements.push({ tag: "hr" });
-    else elements.push({ tag: "div", text: { tag: "lark_md", content: line } });
-  }
   // 折叠面板渲染在正文之前：思考过程先出现，完成后折叠，正文在其下
   if (opts.panels) {
     for (const p of opts.panels) elements.push(collapsiblePanel(p));
+  }
+  for (const line of opts.lines) {
+    if (line === "---") elements.push({ tag: "hr" });
+    else elements.push({ tag: "div", text: { tag: "lark_md", content: line } });
   }
   if (opts.buttons && opts.buttons.length > 0) {
     // CardKit 2.0: buttons are direct elements, not an action wrapper.
