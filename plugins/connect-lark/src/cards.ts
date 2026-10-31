@@ -13,12 +13,34 @@ export type CardColor = "blue" | "wathet" | "turquoise" | "green" | "yellow" | "
 export interface RichCardOptions {
   title: string;
   color: CardColor;
+  /** 运行状态行（渲染为首元素）：如「⏳ 正在生成中 · 已用时 3s」/「✅ 已完成」。 */
+  status?: string;
   /** Markdown lines. "---" renders as a horizontal rule. */
   lines: string[];
+  /** Collapsible panels appended after the lines (CardKit 2.0 折叠面板). */
+  panels?: Array<{ title: string; content: string; expanded?: boolean }>;
   /** Footer small text (the "bottom note"). */
   note?: string;
   /** Optional button(s). Each gets a url or a callback value. */
   buttons?: Array<{ text: string; url?: string; value?: string }>;
+}
+
+/**
+ * CardKit 2.0 折叠面板：默认收起，点标题展开。用于「思考过程」——
+ * 只保留实测被飞书接受的属性（2.0 拒绝 border.style/background_style 等 1.0 字段）。
+ */
+function collapsiblePanel(panel: { title: string; content: string; expanded?: boolean }): Record<string, unknown> {
+  return {
+    tag: "collapsible_panel",
+    expanded: panel.expanded === true,
+    header: {
+      title: { tag: "plain_text", content: panel.title },
+      vertical_align: "center",
+      icon: { tag: "standard_icon", token: "down-small_outlined" },
+      icon_position: "follow",
+    },
+    elements: [{ tag: "div", text: { tag: "lark_md", content: panel.content } }],
+  };
 }
 
 /**
@@ -29,6 +51,14 @@ export interface RichCardOptions {
  */
 export function richCard(opts: RichCardOptions): Record<string, unknown> {
   const elements: Array<Record<string, unknown>> = [];
+  // 状态行渲染在最前：生成中/已完成一目了然
+  if (opts.status) {
+    elements.push({ tag: "div", text: { tag: "lark_md", content: opts.status } });
+  }
+  // 折叠面板渲染在正文之前：思考过程先出现，完成后折叠，正文在其下
+  if (opts.panels) {
+    for (const p of opts.panels) elements.push(collapsiblePanel(p));
+  }
   for (const line of opts.lines) {
     if (line === "---") elements.push({ tag: "hr" });
     else elements.push({ tag: "div", text: { tag: "lark_md", content: line } });

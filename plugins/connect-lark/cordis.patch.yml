@@ -25,7 +25,7 @@
         permissionPreset: ''
         # restricted = only explicitly granted chats (recommended for a bot that can run code);
         # open = allow every chat (personal/private use).
-        accessMode: restricted
+        accessMode: app
         # In restricted mode an empty list denies that chat kind.
         senderAllowlist: []
         groupAllowlist: []

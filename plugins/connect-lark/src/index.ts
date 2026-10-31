@@ -22,6 +22,8 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel, type LarkChannel } from "@larksuite/channel";
 import { richCard, streamMarkdown } from "./cards.js";
 import { RunManager, type RunSlot } from "./run.js";
+import { fetchDirectory, fetchDirectoryUsers, type Directory } from "./users.js";
+import { startDirectoryService, type DirectoryService } from "./directory-service.js";
 import { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage, MAX_IMAGES_PER_MESSAGE } from "./images.js";
 
 // ---- Config schema (schemastery, not plain zod — ARCHITECTURE §10.6) ----
@@ -39,7 +41,7 @@ export interface Config {
   attachSessionId?: string;
   provider?: string;
   model?: string;
-  accessMode?: "open" | "restricted";
+  accessMode?: "app" | "list" | "open" | "restricted";
   senderAllowlist?: string[];
   groupAllowlist?: string[];
   thinkingPolicy?: "cot-visible" | "cot-discard" | "stream-only";
@@ -66,7 +68,7 @@ export type ResolvedConfig = {
   attachSessionId: string;
   provider: string;
   model: string;
-  accessMode: "open" | "restricted";
+  accessMode: "app" | "list" | "open" | "restricted";
   senderAllowlist: readonly string[];
   groupAllowlist: readonly string[];
   thinkingPolicy: "cot-visible" | "cot-discard" | "stream-only";
@@ -97,7 +99,7 @@ export const Config = z.object({
   attachSessionId: z.string().default("").volatile().comment("attach-gui 时的目标 session id（无全局 current agent 可读）"),
   provider: z.string().default("").volatile().comment("owned-per-chat 时必填；默认空串是占位"),
   model: z.string().default("").volatile().comment("owned-per-chat 时必填"),
-  accessMode: z.union(["open", "restricted"]).default("restricted").volatile().comment("访问模式：restricted=只允许显式授权的聊天（推荐，空列表拒绝）；open=允许所有聊天（个人自用）"),
+  accessMode: z.union(["app", "list", "open", "restricted"]).default("app").volatile().comment("访问模式：app=跟随飞书应用的可用范围（默认，插件不额外限制）；list=只允许授权名单与租户管理员"),
   senderAllowlist: z.array(z.string()).default([]).volatile().comment("私聊用户限制；restricted 模式下为空则拒绝所有私聊"),
   groupAllowlist: z.array(z.string()).default([]).volatile().comment("群聊限制；restricted 模式下为空则拒绝所有群聊"),
   thinkingPolicy: z.union(["cot-visible", "cot-discard", "stream-only"]).default("cot-visible").volatile().comment("思考展示：cot-visible=在卡片中显示思考过程；cot-discard/stream-only=不显示"),
@@ -107,17 +109,48 @@ export const Config = z.object({
 
 type AnyCtx = any;
 
-// ---- Helpers ----
+/**
+ * Run a promise with a deadline.
+ *
+ * The result is a tagged outcome rather than the bare value: a resolved
+ * Promise&lt;void&gt; carries undefined, so undefined cannot double as "timed out".
+ */
+type Timed<T> = { ok: true; value: T } | { ok: false };
 
-/** Bound a promise; resolve false when the timer fires instead of hanging. */
-function withTimeout(promise: Promise<unknown>, ms: number): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+/** Send a reply with a deadline so a hung request cannot stall the chat. */
+async function sendBounded(chan: LarkChannel, chatId: string, markdown: string): Promise<void> {
+  const sent = await withTimeout(chan.send(chatId, { markdown }), 15000);
+  if (!sent.ok) throw new Error("send timed out");
+}
+
+/** 这个 DSH 实例对外公布的地址（隧道域名等），浏览器页面的 origin 就是它。 */
+function advertisedOrigin(ctx: AnyCtx): string {
+  try {
+    const url = ctx?.get?.("webApp")?.getAdvertisedUrl?.();
+    if (typeof url !== "string") return "";
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+}
+
+/** 本机回环地址：直接用 http://127.0.0.1:8083 打开页面时也该能用。 */
+function loopbackOrigins(): string[] {
+  const origins: string[] = [];
+  for (let port = 3000; port <= 9200; port++) {
+    origins.push("http://127.0.0.1:" + String(port), "http://localhost:" + String(port));
+  }
+  return origins;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<Timed<T>> {
+  return new Promise<Timed<T>>((resolve) => {
     let settled = false;
-    const timer = setTimeout(() => { if (!settled) { settled = true; resolve(false); } }, ms);
+    const timer = setTimeout(() => { if (!settled) { settled = true; resolve({ ok: false }); } }, ms);
     timer.unref?.();
     Promise.resolve(promise).then(
-      () => { if (!settled) { settled = true; clearTimeout(timer); resolve(true); } },
-      () => { if (!settled) { settled = true; clearTimeout(timer); resolve(false); } },
+      (value) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ ok: true, value }); } },
+      () => { if (!settled) { settled = true; clearTimeout(timer); resolve({ ok: false }); } },
     );
   });
 }
@@ -158,23 +191,32 @@ export function buildUserMessage(
 
 // ---- Optional per-chat-kind access restrictions ----
 
-export function passesWhitelist(plain: ResolvedConfig, chatId: string, senderId: string, chatType: "p2p" | "group" = "p2p"): boolean {
-  // openId is a hard DM restriction: the owner always passes, anyone else never does.
-  if (chatType !== "group" && plain.openId) {
-    if (plain.openId !== senderId) return false;
+export function passesWhitelist(
+  plain: ResolvedConfig,
+  chatId: string,
+  senderId: string,
+  chatType: "p2p" | "group" = "p2p",
+  managerOpenId = "",
+): boolean {
+  // "app" defers entirely to the Feishu app's own 可用范围: whoever can
+  // already DM the bot is the audience, so the plugin adds no second gate.
+  if (plain.accessMode === "app") return true;
+  // The legacy "open" meant "unrestricted DMs" while groups and openId still
+  // applied. Keep that narrowing so an upgrade does not widen access.
+  if (plain.accessMode === "open") {
+    if (chatType === "group") {
+      return plain.groupAllowlist.length === 0 || plain.groupAllowlist.includes(chatId);
+    }
+    if (plain.openId) return plain.openId === senderId;
     return true;
   }
-  if (plain.accessMode === "restricted") {
-    // Fail-closed: an empty list denies, so a bot reachable by others must be
-    // explicitly granted access instead of defaulting to everyone.
-    if (chatType === "group") return plain.groupAllowlist.includes(chatId);
-    return plain.senderAllowlist.includes(senderId);
-  }
-  // Explicit opt-in to the permissive default for personal/private use.
-  if (chatType === "group") {
-    return plain.groupAllowlist.length === 0 || plain.groupAllowlist.includes(chatId);
-  }
-  return plain.senderAllowlist.length === 0 || plain.senderAllowlist.includes(senderId);
+  // "list" (and the legacy "restricted") narrows to the explicit grants.
+  if (chatType === "group") return plain.groupAllowlist.includes(chatId);
+  if (plain.senderAllowlist.includes(senderId)) return true;
+  if (plain.openId && plain.openId === senderId) return true;
+  // The tenant manager is always allowed: the app administrator must not be
+  // locked out of the bot they administer.
+  return Boolean(managerOpenId) && managerOpenId === senderId;
 }
 
 /** Resolve model and effort from explicit overrides or the DSH new-session default. */
@@ -250,26 +292,88 @@ export async function createOrResumeAgent(ctx: AnyCtx, sessionId: string, meta: 
   throw new Error("unreachable");
 }
 
-/** Update one streaming rich card with the latest answer and optional CoT. */
-async function updateRunCard(slot: RunSlot, thinkingPolicy: ResolvedConfig["thinkingPolicy"]): Promise<void> {
+/** 终稿思考面板保留的尾部字符数：CardKit 单卡有 ~30KB 上限，长思考截尾防更新失败。 */
+const FINAL_THINKING_TAIL = 4000;
+/** 卡片更新节流：每个 token 一次 PATCH 会被飞书限流，卡片反而像冻结。 */
+const CARD_UPDATE_INTERVAL_MS = 900;
+
+/** 把运行失败翻译成用户能行动的话：上游不可达 = DSH 服务没开。 */
+function friendlyRunFailure(error: Error): string {
+  const m = String(error.message || error);
+  if (/ECONNREFUSED|fetch failed|connect|socket|hang/i.test(m)) {
+    return "DSH 服务未开启——请先启动本机 DSH，再发送消息。";
+  }
+  return "**运行失败：** " + m;
+}
+
+/** Update one streaming rich card with the latest answer and optional CoT.
+ * final=true 时思考过程收进折叠面板（截尾）；legacyThinking=true 渲染旧版引用块，
+ * 作为折叠面板被飞书拒绝时的回退版式。 */
+async function updateRunCard(
+  slot: RunSlot,
+  thinkingPolicy: ResolvedConfig["thinkingPolicy"],
+  opts: { final?: boolean; legacyThinking?: boolean } = {},
+): Promise<void> {
   if (!slot.streamController) return;
   const lines: string[] = [];
-  if (slot.failedWith) lines.push("**运行失败：** " + slot.failedWith.message);
-  else if (slot.accumulatedText) lines.push(slot.accumulatedText);
-  else if (slot.state === "done" || slot.state === "finishing") lines.push("本次回复没有文本输出。");
-  else lines.push("正在生成回复…");
-  if (thinkingPolicy === "cot-visible" && slot.thinkingText) {
-    lines.push("---", "**思考过程**");
-    lines.push(slot.thinkingText.split("\n").map((line) => "> " + line).join("\n"));
+  const thinkingQuoted = () => slot.thinkingText.split("\n").map((line) => "> " + line).join("\n");
+  const showThinking = thinkingPolicy === "cot-visible" && Boolean(slot.thinkingText);
+  const bodyStarted = Boolean(slot.accumulatedText) || Boolean(opts.final);
+  // 标题栏即状态：thinking→正在思考… tool→正在调用工具… text→正在生成… 终稿→DSH 回复（绿头）
+  const phaseTitle = slot.phase === "tool" ? "正在调用工具…"
+    : slot.phase === "text" ? "正在生成…"
+    : "正在思考…";
+  const title = slot.failedWith ? "DSH 回复" : opts.final ? "DSH 回复" : phaseTitle;
+  // 流式思考只滚动最近 3 行（完整过程终稿折叠后可看）
+  const thinkingTail = (maxLines: number) => {
+    const all = slot.thinkingText.split("\n");
+    return (all.length > maxLines ? "…（上文略）\n" : "") + all.slice(-maxLines).join("\n");
+  };
+  // 终稿面板标题带思考用时（runStartedAt→thinkingEndedAt）
+  const thinkingSeconds = slot.thinkingEndedAt && slot.runStartedAt
+    ? Math.max(1, Math.round((slot.thinkingEndedAt - slot.runStartedAt) / 1000))
+    : null;
+  let panels: Array<{ title: string; content: string }> | undefined;
+  if (slot.failedWith) {
+    lines.push("**" + friendlyRunFailure(slot.failedWith) + "**");
+  } else if (showThinking && !bodyStarted && !opts.legacyThinking) {
+    // 纯思考阶段：最近 3 行实时滚动（终稿折叠后可看完整过程）
+    lines.push("**思考过程**", thinkingTail(3));
+  } else if (showThinking && !opts.legacyThinking) {
+    // 正文已开始：思考折叠为置顶面板（标题带思考用时），正文在其下
+    const body = slot.thinkingText.length > FINAL_THINKING_TAIL
+      ? "…（仅保留最近 " + FINAL_THINKING_TAIL + " 字，完整过程见会话）\n" + slot.thinkingText.slice(-FINAL_THINKING_TAIL)
+      : slot.thinkingText;
+    panels = [{ title: thinkingSeconds ? "思考过程 · " + thinkingSeconds + "s" : "思考过程", content: thinkingQuoted() }];
+    lines.push(slot.accumulatedText || "本次回复没有文本输出。");
+  } else if (showThinking) {
+    // 折叠面板被飞书拒绝时的回退版式：思考同样在正文上方
+    lines.push("**思考过程**", thinkingQuoted(), "---", slot.accumulatedText || "正在生成回复…");
+  } else if (slot.accumulatedText) {
+    lines.push(slot.accumulatedText);
+  } else if (opts.final) {
+    lines.push("本次回复没有文本输出。");
   }
   const timestamp = new Date().toISOString();
   await slot.streamController.update(richCard({
-    title: "DSH 回复",
-    color: "blue",
+    title,
+    color: opts.final ? "green" : "blue",
     lines,
+    panels,
     note: "connect-lark · by @oh-summy · " + timestamp,
     buttons: [{ text: "dsh-nano-market", url: "https://github.com/oh-summy/dsh-nano-market" }],
   }));
+}
+
+/** 终稿更新：先试折叠面板版式，被飞书拒绝时回退旧版引用块。 */
+async function finalizeRunCard(slot: RunSlot, thinkingPolicy: ResolvedConfig["thinkingPolicy"]): Promise<void> {
+  if (!slot.streamController) return;
+  try {
+    await updateRunCard(slot, thinkingPolicy, { final: true });
+  } catch (panelError) {
+    try { await updateRunCard(slot, thinkingPolicy, { final: true, legacyThinking: true }); }
+    catch { throw panelError; }
+  }
 }
 
 // ---- apply() ----
@@ -279,6 +383,9 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   let channel: LarkChannel | null = null;
   let runManager: RunManager | null = null;
   let unsubMessage: (() => void) | null = null;
+  let directoryService: DirectoryService | null = null;
+  // 租户管理员（应用的可用范围里的 owner）自动放行，不必手填 open_id。
+  let managerOpenId = "";
   let unsubEvents: Array<() => void> = [];
   let generation = 0;
   let transition: Promise<void> = Promise.resolve();
@@ -320,7 +427,69 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       if (!currentAlive()) { try { await chan.disconnect(); } catch { /* gone */ } return; }
       ctx.logger?.info?.("[connect-lark] channel connected");
 
+      // 2.5) 探测租户管理员：可用范围里的 owner 默认可用，不必手填 open_id。
+      // 每次连接探测一次（volatile 重连会重跑 boot，天然不带上一代残留）；
+      // 飞书不可达时按「没有管理员」继续——不卡启动，也不给每条消息加一次通讯录 RTT。
+      managerOpenId = "";
+      try {
+        const probe = await withTimeout(
+          fetchDirectoryUsers((chan as any).rawClient),
+          5000,
+        );
+        const directory = probe.ok ? probe.value : undefined;
+        if (directory && directory.ok && directory.manager) {
+          managerOpenId = directory.manager.openId;
+          ctx.logger?.info?.("[connect-lark] tenant manager detected");
+        }
+      } catch (e) {
+        ctx.logger?.warn?.("[connect-lark] manager lookup failed: " + (e as Error).message);
+      }
+      if (!currentAlive()) return;
+
+      // 3) 授权用户目录（本机只读 HTTP 面）：配置页用同一个搜索框找人、找群。
+      //    允许的来源 = 这个 DSH 实例自己的广告地址（隧道域名等）+ 回环地址。
+      //    之前写死一份清单，Cloudflare 域名一换就 403，选择器直接废了。
+      try {
+        const allowed = new Set<string>(["null"]);
+        for (const candidate of [advertisedOrigin(ctx), ...loopbackOrigins()]) {
+          if (candidate) allowed.add(candidate);
+        }
+        directoryService = await startDirectoryService({
+          allowedOrigins: allowed,
+          directory: () => fetchDirectory((chan as any).rawClient),
+        });
+        ctx.logger?.info?.("[connect-lark] user directory on 127.0.0.1:" + directoryService.port);
+      } catch (e) {
+        ctx.logger?.warn?.("[connect-lark] user directory unavailable: " + (e as Error).message);
+      }
+      if (!currentAlive()) { try { await directoryService?.close(); } catch { /* gone */ } return; }
+
       // 4) Create run manager.
+      // 卡片更新节流：先到期的 PATCH 立即发；窗口内的后续变更记脏标记，
+      // 上一次 PATCH 落地后再补一发——流式期间最多 ~1 次/秒，终稿绕过节流直出。
+      const scheduleCardUpdate = (slot: RunSlot) => {
+        if (!slot.streamController) return;
+        if (slot.cardUpdateTimer) { slot.cardDirty = true; return; }
+        const fire = () => {
+          slot.cardUpdateTimer = null;
+          slot.lastCardUpdateAt = Date.now();
+          void updateRunCard(slot, plain.thinkingPolicy)
+            .catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + (e as Error).message))
+            .finally(() => {
+              if (slot.cardDirty && slot.streamController) {
+                slot.cardDirty = false;
+                scheduleCardUpdate(slot);
+              }
+            });
+        };
+        const elapsed = Date.now() - (slot.lastCardUpdateAt ?? 0);
+        if (elapsed >= CARD_UPDATE_INTERVAL_MS) fire();
+        else {
+          const timer = setTimeout(fire, CARD_UPDATE_INTERVAL_MS - elapsed);
+          timer.unref?.();
+          slot.cardUpdateTimer = timer;
+        }
+      };
       runManager = new RunManager({
         resolveAgent: async (chatId, title) => {
           // Reuse existing agent from slot if already created (owned-per-chat).
@@ -342,7 +511,16 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             return { agent: existing.agent, sessionId: existing.sessionId, handle: existing.handle };
           }
           if (plain.agentOwnership === "owned-per-chat") {
-            const sessionId = "connect-lark:" + chatId;
+            // 会话 ID 带默认工作区指纹：cwd 是会话的出身属性，resume 不改出身——
+            // 改默认工作区必须换新会话才能生效。指纹用简单多项式即可（只做缓存失效）。
+            const cwdTag = (() => {
+              const path = plain.defaultPath || "";
+              if (!path) return "";
+              let h = 5381;
+              for (let i = 0; i < path.length; i++) h = ((h << 5) + h + path.charCodeAt(i)) >>> 0;
+              return "@" + h.toString(36);
+            })();
+            const sessionId = "connect-lark:" + chatId + cwdTag;
             const catalog = await ctx.sessionController.modelCatalog();
             const agentOptions = resolveAgentModelOptions(plain, catalog);
             const { agent, sessionId: resolvedSessionId, handle } = await createOrResumeAgent(
@@ -385,6 +563,10 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               onDelta(frame.chunk.text, "text");
             } else if (frame?.type === "chunk" && frame.chunk?.type === "reasoning-delta") {
               onDelta(frame.chunk.text, "reasoning");
+            } else if (frame?.type === "chunk" && frame.chunk?.type === "tool-call-delta") {
+              onDelta("", "tool");
+            } else if (frame?.type === "chunk" && frame.chunk?.type === "tool-call-delta") {
+              onDelta("", "tool");
             }
           }));
           const unsubTurn = ctx.on("session/event", (session: any, event: any) => {
@@ -412,6 +594,11 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         },
         onStart: (slot) => {
           const done = new Promise<void>((resolve) => { slot.streamDone = resolve; });
+          // 心跳：每 3s 刷新一次状态行（用时计数），工具静默执行期间用户也能看到「还活着」
+          slot.cardHeartbeat = setInterval(() => {
+            if (slot.streamController) scheduleCardUpdate(slot);
+          }, 3000);
+          slot.cardHeartbeat.unref?.();
           slot.streamReady = new Promise<void>((resolve) => { slot.streamReadyResolve = resolve; });
           const thisTurn = slot.turnId;
           slot.streamPromise = chan.stream(slot.chatId, {
@@ -419,7 +606,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               initial: richCard({
                 title: "DSH 回复",
                 color: "blue",
-                lines: ["正在连接 DSH Agent…"],
+                lines: ["正在思考…"],
                 note: "connect-lark · by @oh-summy · " + new Date().toISOString(),
                 buttons: [{ text: "dsh-nano-market", url: "https://github.com/oh-summy/dsh-nano-market" }],
               }),
@@ -445,33 +632,42 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           });
         },
         onDelta: (slot) => {
-          void updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + (e as Error).message));
+          scheduleCardUpdate(slot);
         },
         onThinking: (slot) => {
-          void updateRunCard(slot, plain.thinkingPolicy).catch((e) => ctx.logger?.warn?.("[connect-lark] card update failed: " + (e as Error).message));
+          scheduleCardUpdate(slot);
+        },
+        onPhase: (slot) => {
+          scheduleCardUpdate(slot);
         },
         onComplete: async (slot) => {
           try {
+            // 终稿直出，绕过节流；挂起的节流定时器先撤掉
+            if (slot.cardUpdateTimer) { clearTimeout(slot.cardUpdateTimer); slot.cardUpdateTimer = null; }
+            slot.cardDirty = false;
             if (!slot.streamController && !slot.streamFailed) {
               // Bound the wait so a channel that never starts the producer cannot
               // leave this chat stuck in "finishing" forever.
               const ready = await withTimeout(slot.streamReady ?? Promise.resolve(), streamReadyTimeoutMs());
-              if (!ready) {
+              if (!ready.ok) {
                 slot.streamFailed = new Error("stream producer did not start within " + streamReadyTimeoutMs() + "ms");
               }
             }
             if (slot.streamFailed || !slot.streamController) {
-              const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
-              await chan.send(slot.chatId, { markdown: reply });
+              const reply = slot.accumulatedText || (slot.failedWith ? friendlyRunFailure(slot.failedWith) : "[connect-lark] 回复未生成");
+              // Bound the send: a hung Feishu request would otherwise keep the
+              // slot in "finishing" and stall every later message in this chat.
+              await sendBounded(chan, slot.chatId, reply);
               return;
             }
             try {
-              await updateRunCard(slot, plain.thinkingPolicy);
+              await finalizeRunCard(slot, plain.thinkingPolicy);
             } catch (e) {
-              const reply = slot.accumulatedText || (slot.failedWith ? "[connect-lark] 运行失败：" + slot.failedWith.message : "[connect-lark] 回复未生成");
-              await chan.send(slot.chatId, { markdown: reply });
+              const reply = slot.accumulatedText || (slot.failedWith ? friendlyRunFailure(slot.failedWith) : "[connect-lark] 回复未生成");
+              await sendBounded(chan, slot.chatId, reply);
             }
           } finally {
+            if (slot.cardHeartbeat) { clearInterval(slot.cardHeartbeat); slot.cardHeartbeat = null; }
             slot.streamDone?.();
           }
         },
@@ -480,7 +676,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       // 5) Subscribe to messages.
       unsubMessage = chan.on("message", async (msg: any) => {
         if (!currentAlive()) return;
-        if (!passesWhitelist(plain, msg.chatId, msg.senderId, msg.chatType)) return;
+        if (!passesWhitelist(plain, msg.chatId, msg.senderId, msg.chatType, managerOpenId)) return;
 
         const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
         if (!text) return;
@@ -561,9 +757,12 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       // cancel a reply mid-flight. Drain has a bounded timeout; what remains
       // is then cancelled and disposed.
       await Promise.resolve(manager?.drain(3000)).catch(() => {});
+      const directory = directoryService;
+      directoryService = null;
       await Promise.allSettled([
         chan ? Promise.resolve(chan.disconnect()) : Promise.resolve(),
         manager ? Promise.resolve(manager.disposeAll()) : Promise.resolve(),
+        directory ? Promise.resolve(directory.close()) : Promise.resolve(),
       ]);
     };
 
@@ -618,6 +817,10 @@ function extractImages(msg: any): Array<{ fileKey: string }> {
 export { richCard, streamMarkdown } from "./cards.js";
 export { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage, MAX_IMAGE_BYTES, FEISHU_CDN_HOSTS } from "./images.js";
 export { RunManager } from "./run.js";
+export { fetchDirectoryUsers, listDirectoryUsers } from "./users.js";
+export type { DirectoryUser, DirectoryResult } from "./users.js";
+export { startDirectoryService, DIRECTORY_PORT } from "./directory-service.js";
+export type { DirectoryService } from "./directory-service.js";
 export type { RunSlot, RunState, RunManagerOptions } from "./run.js";
 
 // ---- Contract notes ----
@@ -631,6 +834,6 @@ export const CONTRACT_NOTES = {
   credentialField: "z.string().role(\"credential-ref\").default(...).volatile(), then credentialRef(...)",
   parsedUnwrap: "plainConfig(parsed) before reading any field — volatile fields are wrapper objects",
   failClosed: "throw on unusable ref name / blank resolved value; never return an empty secret",
-  whitelistFailClosed: "accessMode=restricted (default) + empty senderAllowlist/groupAllowlist = deny all messages; openId always restricts DMs when set",
+  whitelistFailClosed: "accessMode=app (default) defers to the Feishu app scope; accessMode=list allows only the grants plus the tenant manager",
   streaming: "channel.stream(to, { markdown: async (c) => { c.append(delta) } }) — SDK-owned CardKit",
 };

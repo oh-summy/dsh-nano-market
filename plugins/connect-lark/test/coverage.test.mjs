@@ -1,60 +1,44 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { passesWhitelist, downloadInboundImage, MAX_IMAGE_BYTES, RunManager, resolveAgentModelOptions, createOrResumeAgent } from "../lib/index.mjs";
+import { passesWhitelist, downloadInboundImage, MAX_IMAGE_BYTES, RunManager, resolveAgentModelOptions, createOrResumeAgent, fetchDirectoryUsers, listDirectoryUsers, startDirectoryService } from "../lib/index.mjs";
+
 
 // ---- passesWhitelist ----
 
-test("passesWhitelist: open mode allows everyone by default", () => {
-  const plain = { accessMode: "open", senderAllowlist: [], groupAllowlist: [] };
+test("passesWhitelist: app scope defers to the Feishu app availability scope", () => {
+  const plain = { accessMode: "app", openId: "", senderAllowlist: [], groupAllowlist: [] };
   assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "p2p"), true);
   assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "group"), true);
 });
 
-test("passesWhitelist: restricted mode denies empty lists (fail-closed)", () => {
-  const plain = { accessMode: "restricted", senderAllowlist: [], groupAllowlist: [] };
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "p2p"), false);
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "group"), false);
+test("passesWhitelist: legacy open mode keeps the permissive behaviour", () => {
+  const plain = { accessMode: "open", openId: "", senderAllowlist: [], groupAllowlist: [] };
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_1", "p2p"), true);
 });
 
-test("passesWhitelist: restricted mode requires explicit grants", () => {
-  const plain = { accessMode: "restricted", senderAllowlist: ["ou_a"], groupAllowlist: ["oc_a"] };
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_a", "p2p"), true);
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_b", "p2p"), false);
-  assert.equal(passesWhitelist(plain, "oc_a", "ou_1", "group"), true);
-  assert.equal(passesWhitelist(plain, "oc_b", "ou_1", "group"), false);
-});
-
-test("passesWhitelist: openId hard-restricts DMs even in open mode", () => {
-  const plain = { accessMode: "open", openId: "ou_owner", senderAllowlist: [], groupAllowlist: [] };
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_owner", "p2p"), true);
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p"), false);
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "group"), true);
-});
-
-test("passesWhitelist: openId alone authorizes the owner in restricted mode", () => {
-  const plain = { accessMode: "restricted", openId: "ou_owner", senderAllowlist: [], groupAllowlist: [] };
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_owner", "p2p"), true, "owner must pass with openId alone");
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p"), false);
-});
-
-test("passesWhitelist: default restricted config denies everything", () => {
-  const plain = { accessMode: "restricted", openId: "", senderAllowlist: [], groupAllowlist: [] };
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_any", "p2p"), false);
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_any", "group"), false);
-});
-
-test("passesWhitelist: sender list optionally restricts only private chats", () => {
-  const plain = { accessMode: "open", senderAllowlist: ["ou_allowed"], groupAllowlist: [] };
+test("passesWhitelist: list mode denies anyone not granted", () => {
+  const plain = { accessMode: "list", openId: "", senderAllowlist: ["ou_allowed"], groupAllowlist: [] };
   assert.equal(passesWhitelist(plain, "chat-1", "ou_allowed", "p2p"), true);
   assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p"), false);
-  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "group"), true);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "group"), false);
 });
 
-test("passesWhitelist: group list optionally restricts only group chats", () => {
-  const plain = { accessMode: "open", senderAllowlist: [], groupAllowlist: ["oc_allowed"] };
+test("passesWhitelist: list mode always allows the tenant manager", () => {
+  const plain = { accessMode: "list", openId: "", senderAllowlist: [], groupAllowlist: [] };
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_manager", "p2p", "ou_manager"), true);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p", "ou_manager"), false);
+});
+
+test("passesWhitelist: list mode honours the openId field", () => {
+  const plain = { accessMode: "list", openId: "ou_owner", senderAllowlist: [], groupAllowlist: [] };
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_owner", "p2p"), true);
+  assert.equal(passesWhitelist(plain, "chat-1", "ou_other", "p2p"), false);
+});
+
+test("passesWhitelist: list mode gates groups by the group allowlist", () => {
+  const plain = { accessMode: "list", openId: "", senderAllowlist: [], groupAllowlist: ["oc_allowed"] };
   assert.equal(passesWhitelist(plain, "oc_allowed", "ou_1", "group"), true);
   assert.equal(passesWhitelist(plain, "oc_other", "ou_1", "group"), false);
-  assert.equal(passesWhitelist(plain, "oc_other", "ou_1", "p2p"), true);
 });
 
 // ---- downloadInboundImage SSRF ----
@@ -224,4 +208,133 @@ test("createOrResumeAgent: creates a fresh session when writer stays held", asyn
   assert.equal(result.handle, created);
   assert.notEqual(result.sessionId, "session-live");
   assert.ok(result.sessionId.startsWith("session-live:"));
+});
+
+
+// ---- 授权用户目录 ----
+
+test("fetchDirectoryUsers: marks the tenant manager and lists users", async () => {
+  const client = {
+    contact: { v3: { user: { findByDepartment: async () => ({
+      code: 0,
+      data: { items: [
+        { name: "陈鑫", open_id: "ou_owner", is_tenant_manager: true, email: "a@b.c" },
+        { name: "李四", open_id: "ou_other", is_tenant_manager: false },
+      ] },
+    }) } } },
+  };
+  const result = await fetchDirectoryUsers(client);
+  assert.equal(result.ok, true);
+  assert.equal(result.users.length, 2);
+  assert.equal(result.manager.openId, "ou_owner");
+  assert.equal(result.manager.isManager, true);
+  assert.equal(result.users[1].isManager, false);
+});
+
+test("fetchDirectoryUsers: reports permission failures without throwing", async () => {
+  const client = {
+    contact: { v3: { user: { findByDepartment: async () => ({ code: 99992402, msg: "field validation failed" }) } } },
+  };
+  const result = await fetchDirectoryUsers(client);
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /field validation/);
+  assert.equal(result.users.length, 0);
+});
+
+test("fetchDirectoryUsers: survives a thrown SDK error", async () => {
+  const client = {
+    contact: { v3: { user: { findByDepartment: async () => { throw new Error("network down"); } } } },
+  };
+  const result = await fetchDirectoryUsers(client);
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /network down/);
+});
+
+test("listDirectoryUsers: rejects a non-zero Feishu code", async () => {
+  const fetchImpl = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ code: 99992402, msg: "no permission" }) });
+  const result = await listDirectoryUsers("token", fetchImpl);
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /no permission/);
+});
+
+test("directory service serves the user list over loopback", async () => {
+  const service = await startDirectoryService({
+    directory: async () => ({ ok: true, users: [{ name: "陈鑫", openId: "ou_owner", isManager: true }], chats: [], manager: { name: "陈鑫", openId: "ou_owner", isManager: true } }),
+    port: 0,
+  });
+  try {
+    const response = await fetch("http://127.0.0.1:" + service.port + "/lark-api/directory");
+    const body = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, true);
+    assert.equal(body.manager.openId, "ou_owner");
+  } finally {
+    await service.close();
+  }
+});
+
+test("directory service rejects unknown paths", async () => {
+  const service = await startDirectoryService({ directory: async () => ({ ok: true, users: [], chats: [] }), port: 0 });
+  try {
+    const response = await fetch("http://127.0.0.1:" + service.port + "/other");
+    assert.equal(response.status, 404);
+  } finally {
+    await service.close();
+  }
+});
+
+
+
+
+
+test("directory service refuses a foreign origin and allows a local one", async () => {
+  const service = await startDirectoryService({
+    directory: async () => ({ ok: true, users: [{ name: "Owner", openId: "ou_owner", isManager: true }], chats: [] }),
+    allowedOrigins: new Set(["http://127.0.0.1:3080"]),
+    port: 0,
+  });
+  try {
+    // A page on any other site must not be able to read the tenant directory.
+    const foreign = await fetch("http://127.0.0.1:" + service.port + "/lark-api/directory", {
+      headers: { Origin: "https://evil.example" },
+    });
+    assert.equal(foreign.status, 403);
+    const foreignBody = await foreign.json();
+    assert.equal(foreignBody.ok, false);
+    assert.equal(foreignBody.users.length, 0);
+
+    // The DSH page itself may read it.
+    const local = await fetch("http://127.0.0.1:" + service.port + "/lark-api/directory", {
+      headers: { Origin: "http://127.0.0.1:3080" },
+    });
+    assert.equal(local.status, 200);
+    assert.equal(local.headers.get("access-control-allow-origin"), "http://127.0.0.1:3080");
+  } finally {
+    await service.close();
+  }
+});
+
+test("fetchDirectoryUsers follows page_token so pages do not repeat", async () => {
+  const seen = [];
+  const client = {
+    contact: { v3: { user: { findByDepartment: async ({ params }) => {
+      seen.push(params.page_token ?? "");
+      if (!params.page_token) {
+        return { code: 0, data: {
+          has_more: true,
+          page_token: "p2",
+          items: [{ name: "A", open_id: "ou_a", is_tenant_manager: false }],
+        } };
+      }
+      return { code: 0, data: {
+        has_more: false,
+        items: [{ name: "B", open_id: "ou_b", is_tenant_manager: true }],
+      } };
+    } } } },
+  };
+  const result = await fetchDirectoryUsers(client);
+  assert.equal(result.ok, true);
+  assert.deepEqual(seen, ["", "p2"], "the second round must carry the page token");
+  assert.equal(result.users.length, 2);
+  assert.equal(result.manager.openId, "ou_b");
 });

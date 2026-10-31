@@ -6,7 +6,7 @@ Secure remote access to **DeepSeek Harness (DSH)** from anywhere — **Cloudflar
 
 1. **安装**：从市场 Discover 页或直接 `dsh plugin --profile web add @oh-summy/dsh-remote`
 2. **启用**：Plugins 页找到 dsh-remote，打开 `enabled` 开关，重启宿主
-3. **配置**：在管理页填入飞书通知凭据（可选，用于地址变更推送）
+3. **配置**：在 Plugins → Nano Market → dsh-remote → 「配置」打开详情页，里面就是完整的远程访问管理面（隧道地址、密码门、飞书通知）
 4. **验证**：访问 Cloudflare 隧道地址，输入密码门进入 DSH
 
 > **注意**：旧版独立脚本网关在旧仓库 oh-summy/dsh-remote-control。两者不要同时启用——端口 4080 冲突时插件会明确报错。
@@ -30,7 +30,9 @@ dsh plugin --profile web add @oh-summy/dsh-remote
 
 ## Enable
 
-The bundle ships disabled (`cordis.patch.yml`: `enabled: false`). Flip it to `true` and restart the host — the plugin starts the chain and opens its management page inside DSH (Settings → Built-in plugins → 远程访问), showing the entry URL, the password gate, and the notification configuration.
+The bundle ships disabled (`cordis.patch.yml`: `enabled: false`). Flip it to `true` and restart the host — the plugin starts the chain and its management page appears on the plugin's own detail page (Plugins → Nano Market → dsh-remote → 配置), showing the entry URL, the password gate, and the notification configuration.
+
+> v0.3.0 起，管理页从 Plugins 页的独立页签迁到插件详情页；页签由 @oh-summy/nano-market 提供的「Nano Market」市场页承担。
 
 ## How it works
 
@@ -59,7 +61,7 @@ Credentials never land in configuration files — they go through DSH's credenti
 ## Requirements
 
 - macOS (x86_64 / arm64) or Linux (x86_64 / arm64); `cloudflared` + `caddy` must be installed beforehand — the plugin probes `~/.remote-control/bin/` then `PATH` at startup, and missing binaries are flagged by the management page's environment check.
-- DSH web profile (engines.dsh: `>=0.2.1-rc.2 || >=0.2.2-0`). Windows is not officially supported — PRs welcome with real test evidence.
+- DSH web profile (engines.dsh: `>=0.2.1-rc.4 || >=0.2.2-0`). Windows is not officially supported — PRs welcome with real test evidence.
 
 ## Security notes
 

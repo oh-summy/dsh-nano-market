@@ -57,9 +57,10 @@ jobs:
               echo "ERROR: $pkg has no lib/ directory (market installs lib/; run a build or remove the plugin)"
               exit 1
             fi
-            if [ -n "$(git status --porcelain -- "$pkg/lib")" ]; then
-              echo "lib/ is dirty or untracked in $pkg — commit the build output (or delete lib/)"
-              git status --porcelain -- "$pkg/lib"
+            # 生成物（市场快照）同样要判：它被提交进仓库，漂了就说明 lib/ 与源码不同源。
+            if [ -n "$(git status --porcelain -- "$pkg/lib" "$pkg/src/market-snapshot.json")" ]; then
+              echo "lib/ or the generated market snapshot is dirty or untracked in $pkg — commit the build output (or delete lib/)"
+              git status --porcelain -- "$pkg/lib" "$pkg/src/market-snapshot.json"
               exit 1
             fi
           done

@@ -1,14 +1,17 @@
 {
   "name": "@oh-summy/connect-lark",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "icon": "./icon.svg",
   "private": true,
-  "description": "Feishu/Lark long-connection channel for DSH: chats drive the local agent, replies stream as rich cards. Registered in the dsh-nano-market.",
+  "description": "Feishu/Lark long-connection bridge for DSH: forwards messages to local DSH agents with streaming rich cards, image support, and workspace-aware replies.",
   "license": "MIT",
   "type": "module",
   "main": "./lib/index.mjs",
   "exports": {
     ".": "./lib/index.mjs",
-    "./client": "./lib/client.js"
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "engines": {
     "node": ">=24",
@@ -52,5 +55,12 @@
   },
   "overrides": {
     "zod": "^4.6.7"
-  }
+  },
+  "files": [
+    "README.md",
+    "cordis.patch.yml",
+    "icon.svg",
+    "lib",
+    "locale/*.json"
+  ]
 }

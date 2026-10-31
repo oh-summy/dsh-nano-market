@@ -1,0 +1,52 @@
+{
+  "entries": [
+    {
+      "name": "@oh-summy/dsh-remote",
+      "title": {
+        "en": "dsh-remote",
+        "zh": "dsh-remote 远程访问"
+      },
+      "description": {
+        "en": "Remote access to your local DSH via a Cloudflare quick tunnel with a password gate and Feishu notifications (group or DM).",
+        "zh": "通过 Cloudflare 临时隧道 + 密码门远程访问本机 DSH；链接变化自动推送到飞书（群聊/私聊），内置权限体检与环境自检。"
+      },
+      "icon": "https://oh-summy.github.io/dsh-nano-market/icons/dsh-remote.svg",
+      "versions": [
+        {
+          "version": "0.2.0",
+          "engines": {
+            "dsh": ">=0.2.1-rc.2 || >=0.2.2-0"
+          },
+          "install": {
+            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#4d03c081c3e79cf500f79412b4e1281efbc521d0"
+          }
+        }
+      ],
+      "defaultVersion": "0.2.0"
+    },
+    {
+      "name": "@oh-summy/connect-lark",
+      "title": {
+        "en": "connect-lark",
+        "zh": "connect-lark 飞书桥接"
+      },
+      "description": {
+        "en": "Feishu/Lark long-connection bridge for DSH: forwards messages to local DSH agents with streaming rich cards, image support, and workspace-aware replies.",
+        "zh": "飞书/Lark 长连接桥接 DSH：把飞书消息接到本地 DSH agent，流式富卡片回复，支持图片和工作区。"
+      },
+      "icon": "https://oh-summy.github.io/dsh-nano-market/icons/connect-lark.svg",
+      "versions": [
+        {
+          "version": "0.1.0",
+          "engines": {
+            "dsh": ">=0.2.1-rc.4 || >=0.2.2-0"
+          },
+          "install": {
+            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#3bf790ef09e8d83a0347a2956ec9d646f089af5e"
+          }
+        }
+      ],
+      "defaultVersion": "0.1.0"
+    }
+  ]
+}

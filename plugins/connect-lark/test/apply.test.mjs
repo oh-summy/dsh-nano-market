@@ -80,7 +80,7 @@ test("apply connects and disconnects on volatile enabled updates", async () => {
 });
 
 
-async function makeMessageHarness({ failStream = false, failUpdate = false, ownedPerChat = false, imageDownloadFails = false } = {}) {
+async function makeMessageHarness({ failStream = false, failUpdate = false, ownedPerChat = false, imageDownloadFails = false, managerOpenId = "", accessMode = "app" } = {}) {
   const calls = { streams: 0, sends: [], followups: [], cards: [], savedImages: 0, modelGates: 0 };
   const handlers = new Map();
   const channelHandlers = new Map();
@@ -107,6 +107,14 @@ async function makeMessageHarness({ failStream = false, failUpdate = false, owne
           await fs.promises.writeFile(destPath, Buffer.from([0xff, 0xd8, 0xff, 0x00]));
         },
         async downloadResource() { throw new Error("must stream to file"); },
+        rawClient: {
+          contact: { v3: { user: { findByDepartment: async () => ({
+            code: 0,
+            data: { items: managerOpenId
+              ? [{ name: "Owner", open_id: managerOpenId, is_tenant_manager: true }]
+              : [] },
+          }) } } },
+        },
       };
     },
   };
@@ -142,6 +150,7 @@ async function makeMessageHarness({ failStream = false, failUpdate = false, owne
     agentOwnership: ownedPerChat ? "owned-per-chat" : "attach-gui",
     attachSessionId: "session-test", provider: "", model: "", permissionPreset: "",
     senderAllowlist: [], groupAllowlist: [], thinkingPolicy: "cot-visible",
+    accessMode: accessMode,
   };
   const { apply } = await import("../lib/index.mjs");
   apply(ctx, config);
@@ -331,4 +340,18 @@ test("apply falls back when stream producer never starts (timeout)", async () =>
     process.env.CONNECT_LARK_STREAM_TIMEOUT_MS = originalTimeout;
     delete globalThis.__connectLarkTestChannel;
   }
+});
+
+
+test("apply lets the tenant manager through in list mode with an empty allowlist", async () => {
+  const h = await makeMessageHarness({ managerOpenId: "ou_manager", accessMode: "list" });
+  try {
+    // Someone not granted is ignored.
+    await h.message({ chatId: "oc-1", senderId: "ou_other", chatType: "p2p", messageId: "m1", content: "hi" });
+    assert.equal(h.calls.followups.length, 0, "an ungranted sender must be ignored");
+
+    // The tenant manager always gets through, without being listed.
+    await h.message({ chatId: "oc-1", senderId: "ou_manager", chatType: "p2p", messageId: "m2", content: "hello" });
+    assert.equal(h.calls.followups.length, 1, "the tenant manager must always be allowed");
+  } finally { await h.dispose(); }
 });

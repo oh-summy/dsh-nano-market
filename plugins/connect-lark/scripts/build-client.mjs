@@ -13,6 +13,7 @@ const out = `window.__ModuleLoader__.load({
 		${body}
 		exports.apply = apply;
 		exports.inject = inject;
+		exports.grantToList = grantToList;
 		return module.exports;
 	}
 });

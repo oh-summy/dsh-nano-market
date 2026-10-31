@@ -41,6 +41,7 @@ const APP_SECRET_REF = credentialRef("DSH_REMOTE_APP_SECRET");
 const inject = ["credentials"];
 const Config = z.object({
 	enabled: z.boolean().default(false).describe("启用远程访问（关闭即回收隧道；开启产生新的临时链接）"),
+	autoStart: z.boolean().default(false).describe("跟随 DSH 启动：每次宿主启动时自动拉起隧道并经飞书推送新链接（关闭则只能手动启动）"),
 	cloudflaredPath: z.string().default("").describe("cloudflared 路径（留空自动探测）"),
 	caddyPath: z.string().default("").describe("caddy 路径（留空自动探测）"),
 	notifyChannel: z.preprocess((v) => v === "webhook" || v === "app" ? "group" : v, z.enum([
@@ -467,6 +468,7 @@ function startLoginServer(ctx) {
 						running: !!cloudflaredChild?.pid && pidAlive(cloudflaredChild.pid),
 						url: currentUrl,
 						passwordMask: password.slice(0, 4) + "••••••••",
+						autoStart: cfg.autoStart === true,
 						autoRestart: cfg.autoRestart !== false,
 						sessionDays: Number(cfg.sessionDays) || 7,
 						channel: cfg.notifyChannel || "off",
@@ -527,7 +529,9 @@ function startLoginServer(ctx) {
 						res.end(JSON.stringify({ error: "操作过于频繁，60s 一次" }));
 						return;
 					}
-					revealAt.set(ip, Date.now());
+					const now = Date.now();
+					for (const [k, v] of revealAt) if (now - v >= REVEAL_FREQ_MS) revealAt.delete(k);
+					revealAt.set(ip, now);
 					res.writeHead(200, { "Content-Type": "application/json" });
 					res.end(JSON.stringify({ password }));
 					return;
@@ -618,6 +622,7 @@ function startLoginServer(ctx) {
 					if (json.notifyChatId !== void 0) fields.notifyChatId = String(json.notifyChatId);
 					if (json.notifyChatName !== void 0) fields.notifyChatName = String(json.notifyChatName);
 					if (json.autoRestart !== void 0) fields.autoRestart = !!json.autoRestart;
+					if (json.autoStart !== void 0) fields.autoStart = !!json.autoStart;
 					if (json.sessionDays !== void 0) fields.sessionDays = Math.min(Math.max(parseInt(String(json.sessionDays), 10) || 7, 1), 30);
 					cfg = {
 						...cfg,
@@ -802,12 +807,14 @@ function loadSettings() {
 		}
 	})();
 	s.notifyChannel = migrateChannel(s.notifyChannel);
+	if (s.autoStart === void 0) s.autoStart = s.enabled === true;
 	if (!s.notifyChatId && s.notifyChannel === "group" && s.notifyOpenId) s.notifyChannel = "dm";
 	return s;
 }
 function saveSettings() {
 	const s = {
 		enabled: cfg.enabled === true,
+		autoStart: cfg.autoStart === true,
 		autoRestart: cfg.autoRestart !== false,
 		notifyChannel: cfg.notifyChannel || "off",
 		notifyAppId: cfg.notifyAppId || "",
@@ -1089,7 +1096,7 @@ function apply(ctx, config = {}) {
 				return;
 			}
 			say(ctx, "info", `[dsh-remote] login/api listening on 127.0.0.1:${LOGIN_PORT}`);
-			if (!cfg.enabled) return;
+			if (cfg.autoStart !== true) return;
 			await reapOrphans(ctx);
 			if (!isAlive()) return;
 			spawnCaddy(ctx);

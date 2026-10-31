@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "dsh-remote 远程访问",
+    "description": "通过 Cloudflare 临时隧道 + 密码门远程访问本机 DSH；链接变化自动推送到飞书（群聊/私聊），内置权限体检与环境自检。"
+  }
+}
