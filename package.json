@@ -1,6 +1,6 @@
 {
   "name": "dsh-nano-market",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "oh-summy's DSH nano-market: a personal DSH plugin market (index format 1) — catalog, build tooling, GitHub Pages hosting.",

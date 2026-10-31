@@ -1,6 +1,6 @@
 {
   "name": "@oh-summy/dsh-remote",
-  "version": "0.3.0-beta.1",
+  "version": "0.3.0",
   "icon": "./icon.svg",
   "private": true,
   "description": "Remote access to your local DSH via a Cloudflare quick tunnel with a password gate and Feishu notifications (group or DM).",

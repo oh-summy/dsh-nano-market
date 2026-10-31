@@ -1,6 +1,6 @@
 {
   "name": "@oh-summy/connect-lark",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "icon": "./icon.svg",
   "private": true,
   "description": "Feishu/Lark long-connection bridge for DSH: forwards messages to local DSH agents with streaming rich cards, image support, and workspace-aware replies.",
