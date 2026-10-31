@@ -26,6 +26,7 @@ const zh = {
   workspaceHint: "默认沿用 DSH 当前的工作方式，需要时再覆盖。",
   feishu: "飞书 · 国内",
   lark: "Lark · 海外",
+  appName: "飞书",
   appId: "App ID",
   appIdHint: "应用信息仅保存在本机 DSH 配置中，页面默认掩码显示。",
   defaultPath: "默认工作区",
@@ -78,15 +79,144 @@ const zh = {
   useManager: "用管理员",
   managerPrefix: "管理员",
   selectedUser: "已选",
+  secretHint: "完整 Secret 只存进 DSH 凭据缝；这里只写新值，旧值不会回显。",
+  secretConfigured: "已配置",
+  secretNotSet: "未配置",
+  dshDefault: "DSH 默认",
+  close: "关闭",
+  cancel: "取消",
+  browserTitle: "选择工作区目录",
+  browserHome: "主目录",
+  browserPathLabel: "目录路径",
+  browserLoading: "正在读取目录…",
+  browserNewFolder: "新建文件夹",
+  browserFolderName: "文件夹名称",
+  browserCreate: "创建",
+  browserOpen: "打开",
+  browserShowHidden: "显示隐藏文件",
+  browserHideHidden: "隐藏系统文件",
+  browserTruncated: "文件夹过多，仅显示开头部分。",
+  permissionLabel: "权限模式",
+  permissionHint: "控制机器人可以读取、修改或执行哪些操作。",
+  permissionFollow: "跟随 DSH 默认",
+  permissionFollowDesc: "使用 DSH 当前的权限配置，不单独覆盖。",
+  permissionReadOnly: "仅可查看",
+  permissionReadOnlyDesc: "只读取和分析，不修改文件或执行写操作。",
+  permissionWorkspaceWrite: "工作区内修改",
+  permissionWorkspaceWriteDesc: "允许修改当前工作区，敏感操作仍需要确认。",
+  permissionFullAccess: "完全权限",
+  permissionFullAccessDesc: "直接执行更多操作，请只在你信任的任务中使用。",
+  permissionAuto: "自动审查",
+  permissionAutoDesc: "每次工具调用前由模型审查，可能消耗额外 token。",
+  guideCapability: "机器人",
+  guideConnection: "WebSocket 长连接",
 };
-const en = { ...zh };
+const en = {
+  heroTitle: "Hand Feishu messages to DSH",
+  heroDescription: "Once the app is connected, direct messages and group chats reach the DSH workspace you pick.",
+  heroStatus: "Connects automatically when enabled",
+  connection: "Connect Feishu",
+  domain: "Endpoint",
+  connectionHint: "Only app credentials are needed; switch between CN and overseas anytime.",
+  workspace: "Workspace & model",
+  workspaceHint: "Follows how DSH currently works by default; override only when needed.",
+  feishu: "Feishu · China",
+  lark: "Lark · Global",
+  appName: "Feishu",
+  appId: "App ID",
+  appIdHint: "App credentials stay in local DSH config; the page masks them by default.",
+  defaultPath: "Default workspace",
+  defaultPathHint: "Pick from DSH workspaces; the button on the right browses for another folder.",
+  addWorkspace: "Add workspace",
+  customPath: "Custom folder",
+  model: "Model",
+  modelHint: "Uses DSH's model for new sessions by default; override only when needed.",
+  reasoningEffort: "Reasoning effort",
+  reasoningEffortHint: "Uses DSH's reasoning effort for new sessions by default.",
+  followDsh: "Follow DSH",
+  followModel: "Follow model default",
+  searchModels: "Search models or providers…",
+  noModels: "No matching models",
+  catalogError: "The model list is unavailable; you can still follow DSH's current configuration.",
+  retry: "Retry",
+  save: "Save changes",
+  saving: "Saving…",
+  saveFailed: "Changes were not saved; check the fields and try again.",
+  readOnly: "The configuration on this deployment is read-only.",
+  unavailable: "connect-lark is not running, so it cannot be configured right now.",
+  appIdPlaceholder: "cli_xxxxxxxx",
+  guideButton: "Create the app & permissions",
+  guideTitle: "Create a Feishu app",
+  guideIntro: "Complete these steps on the Feishu open platform, then come back to fill in the app credentials.",
+  guideStep1: "Create a custom app",
+  guideStep1Text: "Open the Feishu open platform, create a custom enterprise app, and find the App ID and App Secret under \"Credentials & basic info\".",
+  guideStep2: "Enable bot capability",
+  guideStep2Text: "Add the bot capability under \"App capabilities\". Whether direct chats work is decided by the Feishu app's own availability settings.",
+  guideStep3: "Configure permissions & events",
+  guideStep3Text: "Enable the permissions below under \"Permissions\"; under \"Events\" choose the WebSocket long connection and add the message-receive event.",
+  guideOpen: "Open the Feishu open platform",
+  guideCopy: "Copy the checklist",
+  guideCopied: "Copied",
+  guideClose: "Close",
+  guideJsonLabel: "Minimal permission checklist",
+  guideNote: "This is a minimal configuration checklist, not a secret; share it with your app admin to double-check.",
+  guideCapability: "bot",
+  guideConnection: "WebSocket long connection",
+  access: "Access control",
+  accessHint: "Who may message this bot. Only users you authorize are allowed by default, so nobody else can drive the local agent.",
+  accessApp: "Follow app scope",
+  accessAppHint: "Who can DM the bot is decided by the Feishu app's availability scope; the plugin adds no extra restriction and needs no ids. Group chats still require @-mentioning the bot, and group members are not limited by this — tighten groups with \"Specific people\" instead.",
+  accessList: "Specific people",
+  accessListHint: "Only people on the list may DM, and only listed groups may chat; the tenant manager always can.",
+  pickUser: "People & groups to authorize",
+  pickUserHint: "Search by name, open_id, or group name; a click on a result adds it to the allowlist.",
+  searchPlaceholder: "Search names / open_id / groups…",
+  loadingUsers: "Reading the directory…",
+  noUsers: "No matching people or groups",
+  directoryUnavailable: "The Feishu directory cannot be read — the app may lack directory permission, or the directory service on local port 9092 is not running.",
+  useManager: "Use manager",
+  managerPrefix: "Manager",
+  selectedUser: "Selected",
+  secretHint: "The full secret is stored only in the DSH credential vault; type a new value here — existing values are never shown back.",
+  secretConfigured: "Configured",
+  secretNotSet: "Not set",
+  dshDefault: "DSH default",
+  close: "Close",
+  cancel: "Cancel",
+  browserTitle: "Choose a workspace folder",
+  browserHome: "Home",
+  browserPathLabel: "Folder path",
+  browserLoading: "Reading the folder…",
+  browserNewFolder: "New folder",
+  browserFolderName: "Folder name",
+  browserCreate: "Create",
+  browserOpen: "Open",
+  browserShowHidden: "Show hidden files",
+  browserHideHidden: "Hide hidden files",
+  browserTruncated: "Too many folders; only the beginning is shown.",
+  permissionLabel: "Permission mode",
+  permissionHint: "Controls what the bot may read, modify, or run.",
+  permissionFollow: "Follow DSH default",
+  permissionFollowDesc: "Uses DSH's current permission settings without an override.",
+  permissionReadOnly: "Read-only",
+  permissionReadOnlyDesc: "Reads and analyzes only; no file changes or write operations.",
+  permissionWorkspaceWrite: "Workspace writes",
+  permissionWorkspaceWriteDesc: "May modify the current workspace; sensitive operations still ask for confirmation.",
+  permissionFullAccess: "Full access",
+  permissionFullAccessDesc: "Runs more operations directly; use only with tasks you trust.",
+  permissionAuto: "Auto review",
+  permissionAutoDesc: "The model reviews every tool call first, which may cost extra tokens.",
+};
 
-const GUIDE_JSON = JSON.stringify({
-  capability: "机器人",
-  permissions: ["im:message", "im:message:send_as_bot", "im:resource"],
-  event: "im.message.receive_v1",
-  connection: "WebSocket 长连接",
-}, null, 2);
+// 最小权限清单随界面语言生成；权限与事件 id 本身是开放平台的英文标识。
+function guideJson(t) {
+  return JSON.stringify({
+    capability: t("guideCapability"),
+    permissions: ["im:message", "im:message:send_as_bot", "im:resource"],
+    event: "im.message.receive_v1",
+    connection: t("guideConnection"),
+  }, null, 2);
+}
 
 const FIELDS = [
   { path: "appId", kind: "text" },
@@ -222,19 +352,21 @@ class LarkSettingsModel {
 }
 
 const styles = `
-.cl-wrap{--cl-blue:#3370ff;--cl-ink:var(--dsw-alias-label-primary,#1f2329);--cl-muted:var(--dsw-alias-label-secondary,#646a73);--cl-faint:var(--dsw-alias-label-tertiary,#8f959e);--cl-border:var(--dsw-alias-border-l3,#e5e7eb);--cl-border-strong:var(--dsw-alias-border-l4,#d8dde5);--cl-surface:var(--dsw-alias-bg-layer-2,#fff);--cl-surface-2:var(--dsw-alias-bg-layer-3,#fafbfc);--cl-hover:var(--dsw-alias-interactive-bg-hover,#f2f4f7);--cl-radius:12px;--cl-radius-lg:16px;--cl-shadow:var(--dsw-elevation-prominent,0 6px 24px rgba(16,24,40,.12));color:var(--cl-ink);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Segoe UI",sans-serif;max-width:780px;padding:2px 0 8px}
+/* 颜色一律走宿主令牌（--dsw-*），品牌蓝（--cl-blue）与凭据缝文案除外；
+   字面量只允许出现在 fallback 里，暗色主题下跟着宿主走。 */
+.cl-wrap{--cl-blue:#3370ff;--cl-ink:var(--dsw-alias-label-primary,#1f2329);--cl-muted:var(--dsw-alias-label-secondary,#646a73);--cl-faint:var(--dsw-alias-label-tertiary,#8f959e);--cl-border:var(--dsw-alias-border-l3,#e5e7eb);--cl-border-strong:var(--dsw-alias-border-l4,#d8dde5);--cl-surface:var(--dsw-alias-bg-layer-2,#fff);--cl-surface-2:var(--dsw-alias-bg-layer-3,#fafbfc);--cl-hover:var(--dsw-alias-interactive-bg-hover,#f2f4f7);--cl-radius:12px;--cl-radius-lg:16px;--cl-shadow:var(--dsw-elevation-prominent,0 6px 24px rgba(16,24,40,.12));--cl-soft:var(--dsw-elevation-soft,0 1px 3px rgba(16,24,40,.08));--cl-warn:var(--dsw-alias-state-warn-primary,#8a5a00);--cl-ok:var(--dsw-alias-state-success-primary,#16a34a);color:var(--cl-ink);font-family:var(--dsw-font-family,-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Segoe UI",sans-serif);max-width:780px;padding:2px 0 8px}
 .cl-hero{border:1px solid var(--cl-border);border-radius:var(--cl-radius-lg);padding:22px 24px;background:var(--cl-surface);margin-bottom:18px}
 .cl-hero-top{display:flex;align-items:center;justify-content:space-between;gap:16px}
 .cl-hero h4{margin:0;font-size:20px;line-height:1.35;letter-spacing:-.02em;font-weight:680}
 .cl-hero p{margin:8px 0 0;color:var(--cl-muted);font-size:13px;line-height:1.65;max-width:560px}
 .cl-status{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;color:var(--cl-blue);background:color-mix(in srgb,var(--cl-blue) 10%,transparent);border-radius:999px;padding:6px 10px;font-size:11px;font-weight:600}
 .cl-status:before{content:"";width:6px;height:6px;border-radius:50%;background:var(--cl-blue)}
-.cl-path{display:flex;align-items:center;gap:10px;margin-top:18px;font-size:12px;color:#445066}
-.cl-node{padding:6px 10px;border:1px solid #dbe4f5;background:rgba(255,255,255,.8);border-radius:8px}
-.cl-arrow{color:#8a94a6;letter-spacing:2px}
-.cl-card{border:1px solid var(--cl-border);border-radius:14px;background:#fff;padding:20px 22px;margin-top:14px}
+.cl-path{display:flex;align-items:center;gap:10px;margin-top:18px;font-size:12px;color:var(--cl-muted)}
+.cl-node{padding:6px 10px;border:1px solid var(--cl-border);background:var(--cl-surface-2);border-radius:8px}
+.cl-arrow{color:var(--cl-faint);letter-spacing:2px}
+.cl-card{border:1px solid var(--cl-border);border-radius:14px;background:var(--cl-surface);padding:20px 22px;margin-top:14px}
 .cl-section{display:flex;gap:12px;align-items:flex-start;margin-bottom:18px}
-.cl-number{display:inline-flex;align-items:center;justify-content:center;min-width:27px;height:22px;border-radius:6px;background:#edf3ff;color:var(--cl-blue);font-size:11px;font-weight:700;letter-spacing:.04em}
+.cl-number{display:inline-flex;align-items:center;justify-content:center;min-width:27px;height:22px;border-radius:6px;background:color-mix(in srgb,var(--cl-blue) 8%,transparent);color:var(--cl-blue);font-size:11px;font-weight:700;letter-spacing:.04em}
 .cl-section h5{margin:1px 0 0;font-size:14px;font-weight:650}
 .cl-section p{margin:5px 0 0;color:var(--cl-muted);font-size:12px;line-height:1.55}
 .cl-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
@@ -243,55 +375,54 @@ const styles = `
 .cl-triple{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:18px}
 .cl-triple>*{min-width:0}
 @media(max-width:900px){.cl-triple{grid-template-columns:1fr}}
-.cl-segment-inline{display:inline-grid;grid-auto-flow:column;grid-auto-columns:max-content;gap:2px;background:var(--cl-hover);border:1px solid #eef0f3;border-radius:9px;padding:3px}
+.cl-segment-inline{display:inline-grid;grid-auto-flow:column;grid-auto-columns:max-content;gap:2px;background:var(--cl-hover);border:1px solid var(--cl-border);border-radius:9px;padding:3px}
 .cl-segment-inline button{border:0;border-radius:7px;background:transparent;padding:7px 18px;font:inherit;font-size:12.5px;font-weight:500;color:var(--cl-muted);cursor:pointer;transition:background .12s,color .12s,box-shadow .12s;white-space:nowrap}
-.cl-segment-inline button:hover:not(:disabled){color:#1f2329}
-.cl-segment-inline button[aria-checked="true"]{background:#fff;color:#1f2329;font-weight:600;box-shadow:0 1px 3px rgba(31,35,41,.08)}
+.cl-segment-inline button:hover:not(:disabled){color:var(--cl-ink)}
+.cl-segment-inline button[aria-checked="true"]{background:var(--cl-surface);color:var(--cl-ink);font-weight:600;box-shadow:var(--cl-soft)}
 .cl-segment-inline button:disabled{opacity:.5;cursor:not-allowed}
 .cl-field{min-width:0;margin-bottom:16px}
 .cl-field:last-child{margin-bottom:0}
 .cl-label{display:block;font-size:11.5px;font-weight:600;margin-bottom:6px;color:var(--cl-muted);letter-spacing:.01em}
-.cl-input,.cl-picker-trigger,.cl-textarea{box-sizing:border-box;width:100%;border:1px solid var(--cl-border-strong);border-radius:var(--cl-radius);background:#fff;color:var(--cl-ink);padding:9px 11px;font:inherit;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s}
+.cl-input,.cl-picker-trigger,.cl-textarea{box-sizing:border-box;width:100%;border:1px solid var(--cl-border-strong);border-radius:var(--cl-radius);background:var(--cl-surface);color:var(--cl-ink);padding:9px 11px;font:inherit;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s}
 .cl-textarea{resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
-.cl-input:focus,.cl-picker-trigger:focus-visible,.cl-textarea:focus,.cl-segment button:focus-visible{outline:none;border-color:var(--cl-blue);box-shadow:0 0 0 3px rgba(51,112,255,.12)}
+.cl-input:focus,.cl-picker-trigger:focus-visible,.cl-textarea:focus,.cl-segment button:focus-visible{outline:none;border-color:var(--cl-blue);box-shadow:0 0 0 3px color-mix(in srgb,var(--cl-blue) 15%,transparent)}
 .cl-input:disabled,.cl-picker-trigger:disabled,.cl-textarea:disabled{background:var(--cl-surface-2);color:var(--cl-faint)}
 .cl-hint{margin:6px 0 0;color:var(--cl-faint);font-size:11px;line-height:1.55}
 .cl-segment{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:var(--cl-hover);border-radius:10px;padding:4px;margin-bottom:18px}
-.cl-segment button{border:1px solid transparent;border-radius:7px;background:transparent;color:#5f6672;padding:8px 12px;font:inherit;font-size:12px;cursor:pointer}
-.cl-segment button[aria-checked="true"]{background:#fff;color:var(--cl-blue);border-color:#cfdcff;box-shadow:0 1px 4px rgba(31,35,41,.06);font-weight:600}
+.cl-segment button{border:1px solid transparent;border-radius:7px;background:transparent;color:var(--cl-muted);padding:8px 12px;font:inherit;font-size:12px;cursor:pointer}
+.cl-segment button[aria-checked="true"]{background:var(--cl-surface);color:var(--cl-blue);border-color:color-mix(in srgb,var(--cl-blue) 22%,transparent);box-shadow:var(--cl-soft);font-weight:600}
 .cl-workspace-field{margin-bottom:18px}
 .cl-users{border:1px solid var(--cl-border);border-radius:var(--cl-radius);padding:14px 16px;background:var(--cl-surface-2);transition:border-color .15s}
 .cl-users:hover{border-color:var(--cl-border-strong)}
-.cl-users-label{font-size:12px;font-weight:600;color:#30343b;margin-bottom:9px;display:block}
+.cl-users-label{font-size:12px;font-weight:600;color:var(--cl-ink);margin-bottom:9px;display:block}
 .cl-users-head{display:flex;gap:8px;align-items:center;margin-bottom:10px}
-.cl-users-search{flex:1;min-width:0;border:1px solid #dde1e8;border-radius:8px;padding:8px 11px;font:inherit;font-size:13px;background:#fff;color:#1f2329;transition:border-color .12s,box-shadow .12s}
+.cl-users-search{flex:1;min-width:0;border:1px solid var(--cl-border-strong);border-radius:8px;padding:8px 11px;font:inherit;font-size:13px;background:var(--cl-surface);color:var(--cl-ink);transition:border-color .12s,box-shadow .12s}
 .cl-users-search:focus{outline:none;border-color:var(--cl-blue);box-shadow:0 0 0 3px color-mix(in srgb,var(--cl-blue) 18%,transparent)}
 .cl-users-list{max-height:190px;overflow:auto;display:flex;flex-direction:column;gap:2px}
-.cl-user{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;border-radius:8px;padding:9px 10px;font:inherit;font-size:13px;cursor:pointer;color:#1f2329;text-align:left;transition:background .12s}
+.cl-user{display:flex;align-items:center;gap:9px;width:100%;border:0;background:transparent;border-radius:8px;padding:9px 10px;font:inherit;font-size:13px;cursor:pointer;color:var(--cl-ink);text-align:left;transition:background .12s}
 .cl-user:hover:not(:disabled){background:color-mix(in srgb,var(--cl-blue) 8%,transparent)}
 .cl-user:disabled{opacity:.6;cursor:not-allowed}
 .cl-user-name{font-weight:550;display:block}
 .cl-user-body{min-width:0;flex:1;text-align:left}
-.cl-avatar{flex:0 0 auto;width:28px;height:28px;border-radius:8px;overflow:hidden;background:#eef2f8;display:flex;align-items:center;justify-content:center}
+.cl-avatar{flex:0 0 auto;width:28px;height:28px;border-radius:8px;overflow:hidden;background:var(--cl-hover);display:flex;align-items:center;justify-content:center}
 .cl-avatar img{width:100%;height:100%;object-fit:cover;display:block}
-.cl-avatar-text{font-size:12px;font-weight:600;color:#5b6472}
-.cl-avatar-chat{background:color-mix(in srgb,#0e9384 12%,transparent)}
-.cl-avatar-chat .cl-avatar-text{color:#0e9384}
-.cl-user-id{font-size:11px;color:#9ca3af;font-family:ui-monospace,monospace}
-.cl-user-badge{font-size:10px;background:#eef2ff;color:#4f46e5;border-radius:999px;padding:2px 7px;font-weight:600;flex-shrink:0}
-.cl-user-picked{margin-left:auto;font-size:11px;color:#16a34a;font-weight:600;flex-shrink:0}
-.cl-users-note{font-size:11.5px;color:#8b949e;line-height:1.65;margin:9px 0 0}
-.cl-users-note.warn{color:#8a5a00;background:#fff8e8;border-radius:7px;padding:8px 10px;margin-top:10px}
+.cl-avatar-text{font-size:12px;font-weight:600;color:var(--cl-muted)}
+.cl-avatar-chat{background:color-mix(in srgb,var(--cl-ok) 12%,transparent)}
+.cl-avatar-chat .cl-avatar-text{color:var(--cl-ok)}
+.cl-user-id{font-size:11px;color:var(--cl-faint);font-family:ui-monospace,monospace}
+.cl-user-badge{font-size:10px;background:color-mix(in srgb,var(--cl-blue) 10%,transparent);color:var(--cl-blue);border-radius:999px;padding:2px 7px;font-weight:600;flex-shrink:0}
+.cl-user-picked{margin-left:auto;font-size:11px;color:var(--cl-ok);font-weight:600;flex-shrink:0}
+.cl-users-note{font-size:11.5px;color:var(--cl-faint);line-height:1.65;margin:9px 0 0}
+.cl-users-note.warn{color:var(--cl-warn);background:color-mix(in srgb,var(--cl-warn) 10%,transparent);border-radius:7px;padding:8px 10px;margin-top:10px}
 .cl-path-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:stretch}
 .cl-path-row .cl-picker-trigger{height:100%}
-.cl-workspace-add{display:inline-flex;align-items:center;justify-content:center;width:38px;border:1px solid var(--cl-border-strong);border-radius:var(--cl-radius);background:#fff;color:var(--cl-muted);font:inherit;cursor:pointer;transition:background .12s,border-color .12s,color .12s}
-.cl-workspace-add:hover:not(:disabled){background:#f5f7fa;border-color:#c9d2e0;color:var(--cl-blue)}
+.cl-workspace-add{display:inline-flex;align-items:center;justify-content:center;width:38px;border:1px solid var(--cl-border-strong);border-radius:var(--cl-radius);background:var(--cl-surface);color:var(--cl-muted);font:inherit;cursor:pointer;transition:background .12s,border-color .12s,color .12s}
+.cl-workspace-add:hover:not(:disabled){background:var(--cl-hover);border-color:var(--cl-border-strong);color:var(--cl-blue)}
 
 .cl-workspace-add:disabled{opacity:.45;cursor:not-allowed}
-.cl-browser-modal{width:min(680px,100%)}
-.cl-browser-path{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin:18px 0 12px}
-.cl-browser-list{height:340px;overflow:auto;border:1px solid #e9ecf2;border-radius:12px;padding:6px;background:#fcfdfe}
-.cl-browser-entry{display:block;width:100%;border:0;border-radius:7px;background:transparent;color:#374151;text-align:left;padding:8px 10px;font:inherit;font-size:12px;cursor:pointer}
+.cl-browser-path{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;margin:0 0 12px}
+.cl-browser-list{height:340px;overflow:auto;border:1px solid var(--cl-border);border-radius:12px;padding:6px;background:var(--cl-surface-2)}
+.cl-browser-entry{display:block;width:100%;border:0;border-radius:7px;background:transparent;color:var(--cl-ink);text-align:left;padding:8px 10px;font:inherit;font-size:12px;cursor:pointer}
 
 .cl-browser-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px}
 .cl-browser-tools{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -321,37 +452,28 @@ const styles = `
 .cl-option-name{display:block;font-size:12px;font-weight:550}
 .cl-option-desc{display:block;color:var(--cl-muted);font-size:10px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cl-empty{padding:18px;text-align:center;color:var(--cl-muted);font-size:12px}
-.cl-catalog-error{display:flex;align-items:center;gap:10px;color:#8a5a00;background:#fff8e8;border-radius:8px;padding:8px 10px;font-size:11px;margin-bottom:12px}
+.cl-catalog-error{display:flex;align-items:center;gap:10px;color:var(--cl-warn);background:color-mix(in srgb,var(--cl-warn) 10%,transparent);border-radius:8px;padding:8px 10px;font-size:11px;margin-bottom:12px}
 .cl-retry{border:0;background:transparent;color:var(--cl-blue);font:inherit;font-weight:600;cursor:pointer;padding:2px}
-.cl-modal-backdrop{position:fixed;inset:0;z-index:1000;background:rgba(14,18,26,.44);display:flex;align-items:center;justify-content:center;padding:24px;backdrop-filter:blur(3px) saturate(120%)}
-.cl-modal{width:min(600px,100%);max-height:min(760px,90vh);overflow:auto;background:var(--cl-surface);border:1px solid var(--cl-border);border-radius:var(--cl-radius-lg);box-shadow:var(--cl-shadow);padding:26px}
-.cl-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
-.cl-modal h3{margin:0;font-size:17px;font-weight:650;letter-spacing:-.01em}
-.cl-modal-intro{margin:8px 0 20px;color:var(--cl-muted);font-size:12px;line-height:1.65}
-.cl-close{border:0;background:transparent;color:var(--cl-faint);border-radius:50%;width:30px;height:30px;font-size:17px;line-height:1;font:inherit;cursor:pointer;flex-shrink:0;transition:background .12s,color .12s}
-.cl-close:hover{background:var(--cl-hover);color:var(--cl-ink)}
+.cl-modal-intro{margin:0 0 20px;color:var(--cl-muted);font-size:12px;line-height:1.65}
 .cl-steps{position:relative;margin:20px 0 22px;padding-left:2px}
 .cl-step{position:relative;display:flex;gap:14px;padding:0 0 18px 0}
 .cl-step:last-child{padding-bottom:0}
-.cl-step::before{content:"";position:absolute;left:7px;top:22px;bottom:0;width:2px;background:linear-gradient(180deg,#d9e3fb,#eaeff8);border-radius:2px}
+.cl-step::before{content:"";position:absolute;left:7px;top:22px;bottom:0;width:2px;background:linear-gradient(180deg,color-mix(in srgb,var(--cl-blue) 26%,transparent),color-mix(in srgb,var(--cl-blue) 8%,transparent));border-radius:2px}
 .cl-step:last-child::before{display:none}
-.cl-step-node{position:relative;z-index:1;display:block;flex:0 0 auto;width:16px;height:16px;margin-top:3px;border-radius:5px;background:#fff;border:2px solid var(--cl-blue);box-shadow:0 1px 2px rgba(51,112,255,.18)}
+.cl-step-node{position:relative;z-index:1;display:block;flex:0 0 auto;width:16px;height:16px;margin-top:3px;border-radius:5px;background:var(--cl-surface);border:2px solid var(--cl-blue);box-shadow:0 1px 2px color-mix(in srgb,var(--cl-blue) 18%,transparent)}
 .cl-step-node::after{content:"";position:absolute;inset:3px;border-radius:2px;background:var(--cl-blue)}
-.cl-step:first-child .cl-step-node{border-color:#1f6bff}
 .cl-step-body{min-width:0}
 .cl-step h4{margin:0 0 4px;font-size:13.5px;font-weight:600;letter-spacing:-.005em}
 .cl-step p{margin:0;color:var(--cl-muted);font-size:12px;line-height:1.7}
-.cl-code-label{display:block;margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#8a929e}
+.cl-code-label{display:block;margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--cl-faint)}
 .cl-code{position:relative;background:#111826;color:#c9d6ea;border:1px solid #1d2942;border-left:3px solid var(--cl-blue);border-radius:12px;padding:16px 18px;font:11.5px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow:auto;box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
 .cl-modal-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:20px;flex-wrap:wrap}
-.cl-primary,.cl-secondary{display:inline-flex;align-items:center;justify-content:center;border-radius:8px;padding:9px 13px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none}
-.cl-primary{border:1px solid var(--cl-blue);background:var(--cl-blue);color:#fff}
-.cl-secondary{border:1px solid #d8dde5;background:#fff;color:#374151}
-.cl-modal-note{color:#4a5568;font-size:11.5px;margin:14px 0 0;line-height:1.65;padding:9px 12px;border-radius:9px;background:#f4f7fd;border:1px solid #e3ebfa;display:flex;gap:8px}
+.cl-primary{display:inline-flex;align-items:center;justify-content:center;border-radius:8px;padding:9px 13px;font:inherit;font-size:12px;font-weight:600;cursor:pointer;text-decoration:none;border:1px solid var(--cl-blue);background:var(--cl-blue);color:#fff}
+.cl-modal-note{color:var(--cl-muted);font-size:11.5px;margin:14px 0 0;line-height:1.65;padding:9px 12px;border-radius:9px;background:color-mix(in srgb,var(--cl-blue) 5%,transparent);border:1px solid color-mix(in srgb,var(--cl-blue) 14%,transparent);display:flex;gap:8px}
 .cl-modal-note::before{content:"";flex:0 0 auto;width:5px;height:5px;margin-top:6px;border-radius:50%;background:var(--cl-blue);opacity:.55}
-@media(max-width:560px){.cl-hero{padding:18px}.cl-hero-top{align-items:flex-start;flex-direction:column}.cl-card{padding:17px}.cl-status{white-space:normal}.cl-modal{padding:20px}.cl-section-head{flex-direction:column}.cl-guide-link{align-self:flex-start}}
+@media(max-width:560px){.cl-hero{padding:18px}.cl-hero-top{align-items:flex-start;flex-direction:column}.cl-card{padding:17px}.cl-status{white-space:normal}.cl-section-head{flex-direction:column}.cl-guide-link{align-self:flex-start}}
 @keyframes clMenuIn{from{opacity:0;transform:scaleY(.96) translateY(-3px)}to{opacity:1;transform:none}}
-@media(prefers-reduced-motion:reduce){.cl-input,.cl-picker-trigger{transition:none}.cl-modal-backdrop{backdrop-filter:none}.cl-menu{animation:none}}
+@media(prefers-reduced-motion:reduce){.cl-input,.cl-picker-trigger{transition:none}.cl-menu{animation:none}}
 `;
 
 function Field({ label, hint, children }) {
@@ -379,15 +501,19 @@ function ListField({ id, label, hint, value, placeholder, disabled, onEdit }) {
 }
 
 function SecretField({ state, onEdit, t, disabled }) {
-  const [focused, setFocused] = React.useState(false);
   const preview = state.fields.appSecretPreview.text;
-  const text = focused ? state.secretDraft : preview ? preview + "*****" : "";
-  return jsx(Field, { label: "App Secret", hint: "完整 Secret 只保存在 DSH 凭据缝；页面只显示前 5 位 + 掩码。", children: jsx("input", {
-    id: "connect-lark-appSecret", className: "cl-input", type: focused ? "password" : "text",
-    value: text, placeholder: "输入新的 App Secret 以更换", disabled,
-    onFocus: () => setFocused(true), onBlur: () => setFocused(false),
-    onChange: (event) => onEdit(event.target.value),
-  }) });
+  // 宿主的密钥字段语义：只写不回显，右侧徽标说明是否已配置；
+  // 真值仍走 DSH 凭据缝（model.saveSecret），这里永远只拿草稿。
+  return jsx(P.SettingsSecretField, {
+    id: "connect-lark-appSecret",
+    label: "App Secret",
+    hint: t("secretHint"),
+    configured: preview.length > 0,
+    stateLabel: preview ? t("secretConfigured") : t("secretNotSet"),
+    text: state.secretDraft,
+    disabled,
+    onEdit,
+  });
 }
 
 function Section({ number, title, hint, action, children }) {
@@ -419,7 +545,7 @@ function AgentRow({ state, value, edit, t, disabled }) {
   return jsx("div", { className: "cl-triple", children: [
     jsx(ModelPicker, { state, value, edit, t, disabled, open, setOpen }),
     jsx(EffortPicker, { state, value, edit, t, disabled, open, setOpen }),
-    jsx(PermissionPicker, { value: value("permissionPreset"), onEdit: edit("permissionPreset"), disabled, open, setOpen }),
+    jsx(PermissionPicker, { value: value("permissionPreset"), onEdit: edit("permissionPreset"), disabled, open, setOpen, t }),
   ] });
 }
 
@@ -440,7 +566,7 @@ function ModelPicker({ state, value, edit, t, disabled, open, setOpen }) {
     jsxs("button", { type: "button", className: "cl-picker-trigger", disabled: disabled || state.catalog.status === "loading", onClick: () => setOpen(isOpen ? null : "model"), children: [
       jsxs("span", { className: "cl-picker-text", children: [
         jsx("span", { className: "cl-picker-title", children: currentName }),
-        jsx("span", { className: "cl-picker-sub", children: route ? value("provider").text : defaultName ? "DSH 默认 · " + defaultName : t("followDsh") }),
+        jsx("span", { className: "cl-picker-sub", children: route ? value("provider").text : defaultName ? t("dshDefault") + " · " + defaultName : t("followDsh") }),
       ] }),
       jsx("span", { className: "cl-chevron", children: isOpen ? "▲" : "▼" }),
     ] }),
@@ -451,7 +577,7 @@ function ModelPicker({ state, value, edit, t, disabled, open, setOpen }) {
         jsx("input", { className: "cl-search", value: query, placeholder: t("searchModels"), autoFocus: true, onChange: (event) => setQuery(event.target.value) }),
         query.trim() === "" ? jsx("button", { className: "cl-option", role: "option", "aria-selected": !route, onClick: () => { edit("provider")(""); edit("model")(""); edit("reasoningEffort")(""); close(); }, children: jsxs("span", { className: "cl-option-text", children: [
           jsx("span", { className: "cl-option-name", children: t("followDsh") }),
-          defaultName ? jsx("span", { className: "cl-option-desc", children: "DSH 默认 · " + defaultName }) : null,
+          defaultName ? jsx("span", { className: "cl-option-desc", children: t("dshDefault") + " · " + defaultName }) : null,
         ] }) }) : null,
         filteredGroups.map((group) => jsxs("div", { children: [
           jsx("div", { className: "cl-group-label", children: group.name }),
@@ -504,20 +630,23 @@ function EffortPicker({ state, value, edit, t, disabled, open, setOpen }) {
   ] });
 }
 
-const PERMISSION_OPTIONS = [
-  { value: "", label: "跟随 DSH 默认", description: "使用 DSH 当前的权限配置，不单独覆盖。" },
-  { value: "read-only", label: "仅可查看", description: "只读取和分析，不修改文件或执行写操作。" },
-  { value: "workspace-write", label: "工作区内修改", description: "允许修改当前工作区，敏感操作仍需要确认。" },
-  { value: "danger-full-access", label: "完全权限", description: "直接执行更多操作，请只在你信任的任务中使用。" },
-  { value: "auto", label: "自动审查", description: "每次工具调用前由模型审查，可能消耗额外 token。" },
-];
+function permissionOptions(t) {
+  return [
+    { value: "", label: t("permissionFollow"), description: t("permissionFollowDesc") },
+    { value: "read-only", label: t("permissionReadOnly"), description: t("permissionReadOnlyDesc") },
+    { value: "workspace-write", label: t("permissionWorkspaceWrite"), description: t("permissionWorkspaceWriteDesc") },
+    { value: "danger-full-access", label: t("permissionFullAccess"), description: t("permissionFullAccessDesc") },
+    { value: "auto", label: t("permissionAuto"), description: t("permissionAutoDesc") },
+  ];
+}
 
-function PermissionPicker({ value, onEdit, disabled, open, setOpen }) {
-  const current = PERMISSION_OPTIONS.find((option) => option.value === value.text) || PERMISSION_OPTIONS[0];
+function PermissionPicker({ value, onEdit, disabled, open, setOpen, t }) {
+  const options = permissionOptions(t);
+  const current = options.find((option) => option.value === value.text) || options[0];
   const isOpen = open === "permission";
   const close = () => setOpen(null);
   return jsxs("div", { className: "cl-picker", children: [
-    jsx("span", { className: "cl-label", children: "权限模式" }),
+    jsx("span", { className: "cl-label", children: t("permissionLabel") }),
     jsxs("button", { type: "button", className: "cl-picker-trigger", disabled, onClick: () => setOpen(isOpen ? null : "permission"), children: [
       jsxs("span", { className: "cl-picker-text", children: [
         jsx("span", { className: "cl-picker-title", children: current.label }),
@@ -525,10 +654,10 @@ function PermissionPicker({ value, onEdit, disabled, open, setOpen }) {
       ] }),
       jsx("span", { className: "cl-chevron", children: isOpen ? "▲" : "▼" }),
     ] }),
-    jsx("p", { className: "cl-hint", children: "控制机器人可以读取、修改或执行哪些操作。" }),
+    jsx("p", { className: "cl-hint", children: t("permissionHint") }),
     isOpen ? jsxs(React.Fragment, { children: [
       jsx("div", { className: "cl-menu-shield", onClick: () => setOpen(false) }),
-      jsx("div", { className: "cl-menu", role: "listbox", children: PERMISSION_OPTIONS.map((option) => jsx("button", {
+      jsx("div", { className: "cl-menu", role: "listbox", children: options.map((option) => jsx("button", {
         type: "button", className: "cl-option", role: "option", "aria-selected": option.value === current.value,
         onClick: () => { onEdit(option.value); setOpen(false); },
         children: jsxs("span", { className: "cl-option-text", children: [
@@ -573,38 +702,38 @@ function WorkspaceDialog({ listDirectory, createDirectory, onPick, onClose, t })
       setLoading(false);
     }
   };
-  return jsx("div", { className: "cl-modal-backdrop", onClick: onClose, children: jsxs("div", {
-    className: "cl-modal cl-browser-modal", role: "dialog", "aria-modal": "true", "aria-label": "选择工作区目录", onClick: (event) => event.stopPropagation(),
-    children: [
-      jsxs("div", { className: "cl-modal-head", children: [
-        jsx("h3", { children: "选择工作区目录" }),
-        jsx("button", { className: "cl-close", type: "button", "aria-label": "关闭", onClick: onClose, children: "×" }),
-      ] }),
+  // 外壳交给宿主的 Modal：层级、Esc、点外部关闭、焦点都归它管，本组件只画内容。
+  return jsx(P.Modal, {
+    open: true,
+    onClose,
+    title: t("browserTitle"),
+    closeLabel: t("close"),
+    children: jsxs("div", { className: "cl-browser", children: [
       jsxs("div", { className: "cl-browser-path", children: [
-        jsx("input", { className: "cl-input", value: pathInput, "aria-label": "目录路径", onChange: (event) => setPathInput(event.target.value), onKeyDown: (event) => { if (event.key === "Enter") load(pathInput); } }),
-        listing?.home ? jsx("button", { type: "button", className: "cl-secondary", onClick: () => load(listing.home), children: "主目录" }) : null,
+        jsx("input", { className: "cl-input", value: pathInput, "aria-label": t("browserPathLabel"), onChange: (event) => setPathInput(event.target.value), onKeyDown: (event) => { if (event.key === "Enter") load(pathInput); } }),
+        listing?.home ? jsx(P.Button, { variant: "outline", size: "sm", onClick: () => load(listing.home), children: t("browserHome") }) : null,
       ] }),
       error ? jsx("p", { className: "cl-hint", role: "alert", children: error }) : null,
-      jsx("div", { className: "cl-browser-list", children: loading ? jsx("div", { className: "cl-empty", children: "正在读取目录…" }) : (listing?.entries || []).filter((entry) => showHidden || !entry.hidden).map((entry) => jsx("button", {
+      jsx("div", { className: "cl-browser-list", children: loading ? jsx("div", { className: "cl-empty", children: t("browserLoading") }) : (listing?.entries || []).filter((entry) => showHidden || !entry.hidden).map((entry) => jsx("button", {
         type: "button", className: "cl-browser-entry", onClick: () => load(entry.path), children: jsxs("span", { children: [jsx("span", { className: "cl-browser-entry-mark", children: "▸" }), jsx("span", { children: entry.name })] }),
       }, entry.path)) }),
-      listing?.truncated ? jsx("p", { className: "cl-hint", children: "文件夹过多，仅显示开头部分。" }) : null,
-      jsxs("div", { className: "cl-browser-footer", children: [
-        jsxs("div", { className: "cl-browser-tools", children: [
-          jsx("button", { type: "button", className: "cl-secondary", onClick: () => setCreating(!creating), children: "+ 新建文件夹" }),
-          jsx("button", { type: "button", className: "cl-guide-link", onClick: () => setShowHidden(!showHidden), children: showHidden ? "隐藏系统文件" : "显示隐藏文件" }),
-        ] }),
-        jsxs("div", { className: "cl-modal-actions", children: [
-          jsx("button", { type: "button", className: "cl-secondary", onClick: onClose, children: "取消" }),
-          jsx("button", { type: "button", className: "cl-primary", disabled: !listing, onClick: () => onPick(listing.path), children: "打开" }),
-        ] }),
-      ] }),
+      listing?.truncated ? jsx("p", { className: "cl-hint", children: t("browserTruncated") }) : null,
       creating ? jsxs("div", { className: "cl-browser-create", children: [
-        jsx("input", { className: "cl-input", value: folderName, placeholder: "文件夹名称", onChange: (event) => setFolderName(event.target.value) }),
-        jsx("button", { type: "button", className: "cl-primary", onClick: create, children: "创建" }),
+        jsx("input", { className: "cl-input", value: folderName, placeholder: t("browserFolderName"), onChange: (event) => setFolderName(event.target.value) }),
+        jsx(P.Button, { variant: "primary", size: "sm", onClick: create, children: t("browserCreate") }),
       ] }) : null,
-    ],
-  }) });
+    ] }),
+    footer: jsxs("div", { className: "cl-browser-footer", children: [
+      jsxs("div", { className: "cl-browser-tools", children: [
+        jsx(P.Button, { variant: "outline", size: "sm", onClick: () => setCreating(!creating), children: t("browserNewFolder") }),
+        jsx(P.Button, { variant: "ghost", size: "sm", onClick: () => setShowHidden(!showHidden), children: showHidden ? t("browserHideHidden") : t("browserShowHidden") }),
+      ] }),
+      jsxs("div", { className: "cl-modal-actions", children: [
+        jsx(P.Button, { variant: "outline", size: "sm", onClick: onClose, children: t("cancel") }),
+        jsx(P.Button, { variant: "primary", size: "sm", disabled: !listing, onClick: () => onPick(listing.path), children: t("browserOpen") }),
+      ] }),
+    ] }),
+  });
 }
 
 function WorkspacePicker({ state, value, onEdit, onBrowse, onCreateDirectory, t, disabled }) {
@@ -671,21 +800,16 @@ function WorkspacePicker({ state, value, onEdit, onBrowse, onCreateDirectory, t,
 
 function GuideDialog({ onClose, t }) {
   const [copied, setCopied] = React.useState(false);
-  React.useEffect(() => {
-    const listener = (event) => { if (event.key === "Escape") onClose(); };
-    document.addEventListener("keydown", listener);
-    return () => document.removeEventListener("keydown", listener);
-  }, [onClose]);
   const copy = async () => {
-    try { await navigator.clipboard.writeText(GUIDE_JSON); setCopied(true); } catch { setCopied(false); }
+    try { await navigator.clipboard.writeText(guideJson(t)); setCopied(true); } catch { setCopied(false); }
   };
-  return jsx("div", { className: "cl-modal-backdrop", onClick: onClose, children: jsxs("div", {
-    className: "cl-modal", role: "dialog", "aria-modal": "true", "aria-label": t("guideTitle"), onClick: (event) => event.stopPropagation(),
-    children: [
-      jsxs("div", { className: "cl-modal-head", children: [
-        jsx("h3", { children: t("guideTitle") }),
-        jsx("button", { className: "cl-close", type: "button", "aria-label": t("guideClose"), onClick: onClose, children: "×" }),
-      ] }),
+  // 同 WorkspaceDialog：外壳用宿主 Modal，Esc/遮罩/层级由宿主接管。
+  return jsx(P.Modal, {
+    open: true,
+    onClose,
+    title: t("guideTitle"),
+    closeLabel: t("guideClose"),
+    children: jsxs("div", { children: [
       jsx("p", { className: "cl-modal-intro", children: t("guideIntro") }),
       jsx("div", { className: "cl-steps", children: [
         [
@@ -698,14 +822,14 @@ function GuideDialog({ onClose, t }) {
         ] }, title)),
       ] }),
       jsx("span", { className: "cl-code-label", children: t("guideJsonLabel") }),
-      jsx("pre", { className: "cl-code", children: GUIDE_JSON }),
-      jsxs("div", { className: "cl-modal-actions", children: [
-        jsx("a", { className: "cl-primary", href: "https://open.feishu.cn/app", target: "_blank", rel: "noreferrer", children: t("guideOpen") + " ↗" }),
-        jsx("button", { className: "cl-secondary", type: "button", onClick: copy, children: copied ? t("guideCopied") + " ✓" : t("guideCopy") }),
-      ] }),
+      jsx("pre", { className: "cl-code", children: guideJson(t) }),
       jsx("p", { className: "cl-modal-note", children: t("guideNote") }),
-    ],
-  }) });
+    ] }),
+    footer: jsxs("div", { className: "cl-modal-actions", children: [
+      jsx("a", { className: "cl-primary", href: "https://open.feishu.cn/app", target: "_blank", rel: "noreferrer", children: t("guideOpen") + " ↗" }),
+      jsx(P.Button, { variant: "outline", size: "sm", onClick: copy, children: copied ? t("guideCopied") + " ✓" : t("guideCopy") }),
+    ] }),
+  });
 }
 
 /** 统一搜索：一个人、一个群、一个 id 都能搜到，命中即授权。 */
@@ -862,7 +986,7 @@ function LarkConfigCard(props) {
         jsx("span", { className: "cl-status", children: t("heroStatus") }),
       ] }),
       jsxs("div", { className: "cl-path", "aria-hidden": "true", children: [
-        jsx("span", { className: "cl-node", children: value("domain").text === "lark" ? "Lark" : "飞书" }),
+        jsx("span", { className: "cl-node", children: value("domain").text === "lark" ? "Lark" : t("appName") }),
         jsx("span", { className: "cl-arrow", children: "→" }),
         jsx("span", { className: "cl-node", children: "DSH Agent" }),
       ] }),

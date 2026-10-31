@@ -126,6 +126,11 @@ function loadClient() {
     settingsTextField: (path) => ({ path, format: (t) => typeof t === "string" ? t : "" }),
     SettingsForm: ({ children }) => children,
     SettingsValueField: ({ children }) => children,
+    // Host shape: Modal renders body + footer (chrome omitted in tests),
+    // SettingsSecretField renders label + hint, Button renders a real button element.
+    Button: ({ children, ...props }) => ({ type: "button", props: { ...props, children } }),
+    Modal: ({ children, footer }) => ({ type: "div", props: { children: [children, footer].filter(Boolean) } }),
+    SettingsSecretField: ({ label, hint }) => ({ type: "span", props: { children: [label, hint] } }),
   };
   const sandbox = {
     window,
@@ -259,7 +264,9 @@ test("client renders the actual configuration card and domain controls", () => {
   const text = collectText(tree).join(" ");
   assert.match(text, /heroTitle/);
   assert.match(text, /appId/);
-  assert.match(text, /权限模式/);
+  // 权限选择器已全部走字典（t 在测试里返回键名），不再有字典外的中文硬编码。
+  assert.match(text, /permissionLabel/);
+  assert.doesNotMatch(text, /权限模式/);
   const larkButton = collectButtons(tree).find((button) =>
     button.props.role === "radio" && collectText(button).includes("lark"));
   assert.ok(larkButton, "rendered Lark domain radio button missing");
