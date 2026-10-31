@@ -90,6 +90,21 @@ test("the tab uses the host's own components and tokens, not a look of its own",
   assert.doesNotMatch(source, /jsx[s]?\([^)]*\},\s*\[/);
 });
 
+test("the read-failure state keeps controls in place, says it once, and offers a retry", () => {
+  const source = readFileSync(join(pkgDir, "client-src/client.js"), "utf8");
+  // 行内只放短标签，长解释只在横幅里出现一次
+  assert.match(source, /stateUnknownShort/);
+  assert.match(source, /t\("unknownState"\)/);
+  // 清单读不到时开关留在原位但禁用，悬停给原因
+  assert.match(source, /status === "unknown"\s*\n\s*\? jsx\(P\.Switch/);
+  assert.match(source, /title: t\("unknownState"\)/);
+  // 横幅带重试入口，且重试有进行中文案
+  assert.match(source, /nmk-retry/);
+  assert.match(source, /t\("retrying"\)/);
+  // 图标加载失败回退宿主默认图形，不留碎图
+  assert.match(source, /onError: \(\) => setFailed\(true\)/);
+});
+
 test("bundle patch inserts the plugin without a second enable switch", () => {
   const patch = readFileSync(join(pkgDir, "cordis.patch.yml"), "utf8");
   assert.match(patch, /name: "@oh-summy\/nano-market"/);
