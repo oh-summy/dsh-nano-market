@@ -54,6 +54,21 @@ const zh = {
   disableFailed: "停用失败",
   readOnlyManagement: "这个插件由宿主管理，不能从这里启停。",
   readOnlyUnaddressable: "这个插件读取不到，不能从这里启停。",
+  noCompatibleVersion: "没有与运行中的 DSH（{runtime}）兼容的版本。",
+  overridden: "变更已保存；运行中的实例由其他机制接管，重启 DSH 后按配置生效。",
+  reasonManagementRequired: "这个插件由宿主管理，不能这样启停。",
+  reasonUnaddressable: "读不到这个插件，无法启停。",
+  reasonUnknownPlugin: "DSH 不认识这个插件，它可能已被卸载。",
+  reasonInvalidSpec: "安装规格无效。",
+  reasonAlreadyInstalled: "这个插件已经安装过了。",
+  reasonAmbiguousInstall: "这个规格对应的插件不止一个，无法确定装哪个。",
+  reasonNotBundle: "这个包不声明 dsh.bundle，不能作为插件安装。",
+  reasonNotRemovable: "这个插件由 DSH 安装自带，不能移除。",
+  reasonStopProfile: "先停止正在运行的会话或任务，再试一次。",
+  reasonBundleInUse: "这个插件正在被使用，暂时不能这样操作。",
+  reasonStaleApproval: "构建脚本授权已过期，请重新授权后重试。",
+  reasonIncompatibleVersion: "运行中的 DSH 版本不满足这个插件的版本要求。",
+  reasonOperationError: "操作没有完成。",
 };
 const en = {
   title: "Nano Market",
@@ -82,6 +97,21 @@ const en = {
   disableFailed: "Could not disable",
   readOnlyManagement: "The Host manages this plugin; it cannot be toggled here.",
   readOnlyUnaddressable: "This plugin cannot be read, so it cannot be toggled here.",
+  noCompatibleVersion: "No version is compatible with the running DSH ({runtime}).",
+  overridden: "Saved. The running instance is managed elsewhere; it takes effect after DSH restarts.",
+  reasonManagementRequired: "The Host manages this plugin; it cannot be toggled here.",
+  reasonUnaddressable: "This plugin cannot be read, so it cannot be toggled.",
+  reasonUnknownPlugin: "DSH does not know this plugin; it may have been uninstalled.",
+  reasonInvalidSpec: "The install spec is invalid.",
+  reasonAlreadyInstalled: "This plugin is already installed.",
+  reasonAmbiguousInstall: "The spec matches more than one plugin; none was chosen.",
+  reasonNotBundle: "The package declares no dsh.bundle, so it cannot install as a plugin.",
+  reasonNotRemovable: "This plugin ships with the DSH installation and cannot be removed.",
+  reasonStopProfile: "Stop the running sessions or tasks first, then try again.",
+  reasonBundleInUse: "This plugin is in use right now; try again later.",
+  reasonStaleApproval: "The build-script approval is stale; approve the scripts again and retry.",
+  reasonIncompatibleVersion: "The running DSH version does not satisfy this plugin's requirement.",
+  reasonOperationError: "The operation did not finish.",
 };
 
 // 版式与宿主「已安装」页签的卡片一致：扁平列表、48px 图标、标题一行、描述一行、右侧开关。
@@ -122,11 +152,13 @@ function localized(text, lang) {
 }
 
 // 快照与宿主搜索结果归一成同一形状：名字、描述、图标、版本与安装规格。
+// versions[].compatibility 必须保留——宿主用它说明该版本与运行中的 DSH 是否兼容。
 function normalizeEntry(raw) {
   const versions = (raw?.versions || []).map((version) => ({
     version: version.version,
     engines: version.engines,
     install: version.install,
+    compatibility: version.compatibility,
   }));
   return {
     name: raw?.name,
@@ -134,6 +166,8 @@ function normalizeEntry(raw) {
     description: raw?.description,
     icon: raw?.icon,
     versions,
+    // 宿主的 defaultVersion 缺席 = 没有任何兼容版本；回退 versions[0] 只为把
+    // 该版本（连同它的 compatibility=false）摆上台面，安装按钮会被门控禁用。
     defaultVersion: raw?.defaultVersion || versions[0]?.version,
     // 宿主算好的安装状态（权威）：有它就用它，没有（快照路径）才自己按本机清单推。
     installation: raw?.installation,
@@ -149,6 +183,38 @@ function readOnlyText(code, t) {
   if (code === "management-required") return t("readOnlyManagement");
   if (code === "unaddressable") return t("readOnlyUnaddressable");
   return t("errorUnknown");
+}
+
+// ChangeResult.error.code（ManagementError）的全集，逐码给一句人话；
+// 与宿主 managementText 同一判定次序：operation-error 优先说宿主的 diagnostic。
+const ERROR_CODE_KEYS = {
+  "management-required": "reasonManagementRequired",
+  "unaddressable": "reasonUnaddressable",
+  "unknown-plugin": "reasonUnknownPlugin",
+  "invalid-spec": "reasonInvalidSpec",
+  "already-installed": "reasonAlreadyInstalled",
+  "ambiguous-install": "reasonAmbiguousInstall",
+  "not-bundle": "reasonNotBundle",
+  "not-removable": "reasonNotRemovable",
+  "stop-profile": "reasonStopProfile",
+  "bundle-in-use": "reasonBundleInUse",
+  "stale-approval": "reasonStaleApproval",
+  "incompatible-version": "reasonIncompatibleVersion",
+  "operation-error": "reasonOperationError",
+};
+
+function managementText(error, t) {
+  const code = error?.code;
+  if (code === "operation-error") return error.diagnostic || t("reasonOperationError");
+  const key = ERROR_CODE_KEYS[code];
+  if (key === undefined) return error?.diagnostic || t("errorUnknown");
+  return t(key);
+}
+
+// 官方 Discover 的 installable() 同规则：兼容，或该精确组合已被豁免。
+// 快照路径没有 compatibility 字段（构建期无法判定），交给宿主安装弹窗把关。
+function installable(compatibility) {
+  return compatibility === undefined || compatibility.compatible === true || compatibility.exempted === true;
 }
 
 /** 一张市场卡片：与宿主「已安装」页签的卡片同构。 */
@@ -181,6 +247,8 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
         : status === "unknown"
             ? t("unknownState")
             : t("stateNotInstalled");
+  // 与官方 Discover 同规则：不兼容（且未豁免）的版本不给安装，说明原因。
+  const canInstall = installable(version?.compatibility);
   const statusTone = status === "enabled"
     ? "success"
     : status === "installed-off"
@@ -201,7 +269,15 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
     jsx("p", { className: "nmk-cardDesc", children: resolve(entry.description) }),
   ] });
   const end = status === "not-installed"
-    ? jsx(P.Button, { variant: "primary", size: "sm", disabled: working || !stateKnown, onClick: onInstall, children: t("install") })
+    ? (canInstall
+      ? jsx(P.Button, { variant: "primary", size: "sm", disabled: working || !stateKnown, onClick: onInstall, children: t("install") })
+      : jsx(P.Tooltip, {
+          label: t("noCompatibleVersion", { runtime: version?.compatibility?.runtimeVersion ?? "" }),
+          side: "bottom",
+          portal: true,
+          delayMs: 300,
+          children: jsx(P.Button, { variant: "primary", size: "sm", "aria-disabled": "true", "aria-label": t("install"), children: t("install") }),
+        }))
     : status === "provided" || status === "unknown"
       ? null
       : jsx(P.Switch, {
@@ -312,13 +388,27 @@ function NanoMarketTab(props) {
     void refreshMarket();
   }, [refreshBundles, refreshMarket]);
 
-  // 宿主装完/启停完会发 plugin-manager/changed：跟着它刷新，卡片才不会停在旧状态。
+  // 让卡片不停在旧状态的整组事件：装完/启停完（plugin-manager/changed）、
+  // 索引源配置变了（plugin-market/changed，官方 Discover 也订它）、
+  // 连接重置后本机清单可能过期（connection/reset，与官方已安装页同款）。
   useEffect(() => {
-    const dispose = ctx.remote.$on("plugin-manager/changed", () => {
-      void refreshBundles();
-      void refreshMarket();
-    });
-    return typeof dispose === "function" ? dispose : undefined;
+    const disposers = [
+      ctx.remote.$on("plugin-manager/changed", () => {
+        void refreshBundles();
+        void refreshMarket();
+      }),
+      ctx.remote.$on("plugin-market/changed", () => {
+        void refreshMarket();
+      }),
+      typeof ctx.on === "function"
+        ? ctx.on("connection/reset", () => {
+            void refreshBundles();
+          })
+        : undefined,
+    ];
+    return () => {
+      for (const dispose of disposers) if (typeof dispose === "function") dispose();
+    };
   }, [ctx, refreshBundles, refreshMarket]);
 
   async function run(name, task, failKey) {
@@ -326,19 +416,20 @@ function NanoMarketTab(props) {
     setMessage(null);
     try {
       const result = await task();
-      // 宿主契约：失败是 {ok:false,error}，没有 application 可言。
+      // 宿主契约：传输层失败是 {ok:false,error}；业务结局看 value.application。
       if (!result || result.ok === false) {
-        const reason = result?.error?.message || result?.error?.code || t("errorUnknown");
+        const reason = result?.error?.message || t("errorUnknown");
         setMessage({ text: t(failKey) + "：" + reason, tone: "error" });
         return;
       }
       const outcome = result.value?.application;
       if (outcome === "failed") {
-        const code = result.value?.error?.code;
-        setMessage({ text: t(failKey) + "：" + (code ? t("errorUnknown") : t("errorUnknown")), tone: "error" });
+        setMessage({ text: t(failKey) + "：" + managementText(result.value?.error, t), tone: "error" });
         return;
       }
-      if (outcome === "restart-required") setMessage({ text: t("restartRequired"), tone: "info" });
+      if (outcome === "cancelled") setMessage({ text: t("cancelled"), tone: "info" });
+      else if (outcome === "overridden") setMessage({ text: t("overridden"), tone: "info" });
+      else if (outcome === "restart-required") setMessage({ text: t("restartRequired"), tone: "info" });
       else setMessage({ text: t("done"), tone: "info" });
     } catch (error) {
       setMessage({ text: t(failKey) + "：" + (error?.message || t("errorUnknown")), tone: "error" });
