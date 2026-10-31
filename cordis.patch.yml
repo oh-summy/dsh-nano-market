@@ -1,0 +1,7 @@
+# bundle layer for @oh-summy/nano-market: adds the "Nano Market" tab to the
+# Plugins page. The tab lists every plugin registered in this market and can
+# install, enable, disable, and uninstall them. The page itself is browser-side;
+# this bundle only makes the plugin installed and listed.
+- insert:
+    - id: nano-market
+      name: "@oh-summy/nano-market"
