@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "connect-lark",
-    "description": "Feishu/Lark long-connection bridge for DSH: forwards messages to local DSH agents with streaming rich cards, image support, and workspace-aware replies."
+    "description": "Feishu/Lark long-connection bridge for DSH: forwards messages to local DSH agents with streaming rich cards, image support, and workspace-aware replies. Card-based quick settings require the app to subscribe to the \"card.action.trigger\" callback (Developer console > Events & callbacks > Callback configuration, long-connection mode) — see README \"Card settings prerequisites\"."
   }
 }
