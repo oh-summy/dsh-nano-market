@@ -151,7 +151,7 @@ test("modelOptions flattens provider groups; effortOptions follow the current mo
 
 // ============ apply 集成（cardAction 流程） ============
 
-async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", senderAllowlist = [], resolveAgentReturnsAgent = false, catalog: catalogOverride, defaultPermission = "workspace-write", persistFails = false, historySessions = [] } = {}) {
+async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", senderAllowlist = [], resolveAgentReturnsAgent = false, catalog: catalogOverride, defaultPermission = "workspace-write", persistFails = false, historySessions = [], historyTitleOf = (sid) => sid } = {}) {
   const calls = { sends: [], cards: [], selects: [], presetSets: [], disposes: [], followups: [], resolveSessions: [], registered: [], updates: [], creates: [], sessionCreates: [], boots: 0, configEditorEdits: 0, createSeq: 0, prepended: [] };
   // per-chat 状态文件（一等公民维度的持久化落点）——插件经 CONNECT_LARK_SESSION_MAP 指向这里
   const stateFile = makeStateFile();
@@ -202,6 +202,14 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
     llm: { resolveModelInfo: async () => ({ inputModalities: ["text"], reasoning: { efforts: [{ id: "low", name: "低" }, { id: "high", name: "高" }], defaultEffort: "low" } }) },
     // 一等公民改造后：configEditor 只用于断言「插件确实没碰配置」——真调 edit 就计数 + 抛错
     get(key) {
+      if (key === "sessionQuery") {
+        return {
+          // 冷读会话标题（真机 root cause：rc.2 的 sessionListMetadata 只有 {blank, lastPromptAt}）
+          readSession: async (sid) => ({
+            events: [{ type: "session/title", data: { title: historyTitleOf(sid) } }],
+          }),
+        };
+      }
       if (key === "profileContext") return { dir: stateFile.dir };
       if (key === "configEditor") {
         return {
@@ -870,6 +878,22 @@ test("apply: approval for a non-owned agent delegates via next() (P5)", async ()
     assert.equal(outcome, "rejected", "next() result returned");
     assert.ok(nextCalled, "next() was called");
     assert.ok(!h.calls.sends.some((s) => s.input?.card && String(s.input.card.header?.title?.content || "").includes("审批")), "no approval card for non-owned agent");
+  } finally { await h.dispose(); }
+});
+
+test("apply: history card options show real session titles, not raw ids", async () => {
+  const h = await makeSettingsHarness({
+    historySessions: [{ sessionId: "sess-a", title: "对话A" }],
+    historyTitleOf: () => "请在 /tmp/dsh-approval-probe.txt 写",
+  });
+  try {
+    await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { value: { value: "open-history" } } });
+    await settle();
+    const historySend = h.calls.sends.find((s) => s.input?.card && String(s.input.card.header?.title?.content || "").includes("历史对话"));
+    assert.ok(historySend, "history card sent");
+    const sel = historySend.input.card.body.elements.find((e) => e.tag === "select_static");
+    // 标题来自冷读的 session/title 事件（rc.2 的 list 行没有标题）
+    assert.equal(sel.options[0].text.content, "请在 /tmp/dsh-approval-probe.txt 写", "real title from cold read");
   } finally { await h.dispose(); }
 });
 

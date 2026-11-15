@@ -1410,6 +1410,25 @@ async function ensureFirstClass(ctx, sessionId, cwd, title) {
 */
 /** 历史卡最多展示的会话条数（真机实测：实例里 ~300 会话时全量下拉会让飞书建卡超时）。 */
 const HISTORY_LIMIT = 20;
+/** 冷读一个会话的标题（session/title 事件的最后一个值）。
+*  优先用 sessionQuery.readSession（完整日志）；不可用时 inspectSession 读投影。
+*  读不到 → 空串（调用方用占位标题）。 */
+async function readColdSessionTitle(query, sessionId) {
+	if (!query) return "";
+	if (typeof query.readSession === "function") {
+		const titles = ((await query.readSession(sessionId))?.events ?? []).filter((e) => e?.type === "session/title" && typeof e?.data?.title === "string");
+		return titles[titles.length - 1]?.data?.title ?? "";
+	}
+	if (typeof query.inspectSession === "function") return String(await query.inspectSession(sessionId, (session) => {
+		try {
+			const titles = (session?.snapshotEvents?.() ?? []).filter((e) => e?.type === "session/title" && typeof e?.data?.title === "string");
+			return titles[titles.length - 1]?.data?.title ?? "";
+		} catch {
+			return "";
+		}
+	}) ?? "");
+	return "";
+}
 async function listSessions(ctx, limit = HISTORY_LIMIT) {
 	try {
 		const ctrl = ctx.sessionController;
@@ -1425,8 +1444,19 @@ async function listSessions(ctx, limit = HISTORY_LIMIT) {
 			updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0
 		})).sort((a, b) => b.updatedAt - a.updatedAt);
 		const total = mapped.length;
+		const page = mapped.slice(0, limit);
+		const titles = /* @__PURE__ */ new Map();
+		const query = ctx.get?.("sessionQuery");
+		const probeTitle = async (sessionId) => {
+			try {
+				const result = await withTimeout(readColdSessionTitle(query, sessionId), 5e3);
+				if (result.ok && result.value) titles.set(sessionId, result.value);
+			} catch {}
+		};
+		await Promise.all(page.map((s) => probeTitle(s.sessionId)));
+		for (const s of page) s.title = titles.get(s.sessionId) ?? "未命名对话（" + s.sessionId.slice(0, 12) + "…）";
 		return {
-			sessions: mapped.slice(0, limit),
+			sessions: page,
 			total
 		};
 	} catch (e) {

@@ -299,6 +299,30 @@ async function ensureFirstClass(ctx: AnyCtx, sessionId: string, cwd: string, tit
 /** 历史卡最多展示的会话条数（真机实测：实例里 ~300 会话时全量下拉会让飞书建卡超时）。 */
 const HISTORY_LIMIT = 20;
 
+/** 冷读一个会话的标题（session/title 事件的最后一个值）。
+ *  优先用 sessionQuery.readSession（完整日志）；不可用时 inspectSession 读投影。
+ *  读不到 → 空串（调用方用占位标题）。 */
+async function readColdSessionTitle(query: any, sessionId: string): Promise<string> {
+  if (!query) return "";
+  if (typeof query.readSession === "function") {
+    const loaded: any = await query.readSession(sessionId);
+    const events: any[] = loaded?.events ?? [];
+    const titles = events.filter((e) => e?.type === "session/title" && typeof e?.data?.title === "string");
+    const last = titles[titles.length - 1];
+    return last?.data?.title ?? "";
+  }
+  if (typeof query.inspectSession === "function") {
+    return String(await query.inspectSession(sessionId, (session: any) => {
+      try {
+        const events = session?.snapshotEvents?.() ?? [];
+        const titles = events.filter((e: any) => e?.type === "session/title" && typeof e?.data?.title === "string");
+        return titles[titles.length - 1]?.data?.title ?? "";
+      } catch { return ""; }
+    }) ?? "");
+  }
+  return "";
+}
+
 async function listSessions(ctx: AnyCtx, limit: number = HISTORY_LIMIT): Promise<{ sessions: Array<{ sessionId: string; title: string; cwd?: string; updatedAt: number }>; total: number }> {
   try {
     const ctrl = ctx.sessionController;
@@ -322,7 +346,24 @@ async function listSessions(ctx: AnyCtx, limit: number = HISTORY_LIMIT): Promise
       .sort((a, b) => b.updatedAt - a.updatedAt);
     // 限量：卡片最多展示 limit 条（其余在卡片上注明总数）；校验场景传大 limit 取全集
     const total = mapped.length;
-    return { sessions: mapped.slice(0, limit), total };
+    const page = mapped.slice(0, limit);
+    // 真实标题：rc.2 的 sessionListMetadata 只有 {blank, lastPromptAt}，**不含标题**
+    // （真机实测：历史卡选项显示成裸 sessionId）。标题在会话日志的 session/title 事件里，
+    // 通过 dsh-session-query 冷读（readSession 或 inspectSession）取出；只读本页，
+    // 有限并发 + 每条有超时，任何失败回退到"未命名对话（id 前缀）"。
+    const titles = new Map<string, string>();
+    const query = ctx.get?.("sessionQuery");
+    const probeTitle = async (sessionId: string): Promise<void> => {
+      try {
+        const result = await withTimeout(readColdSessionTitle(query, sessionId), 5_000);
+        if (result.ok && result.value) titles.set(sessionId, result.value);
+      } catch { /* 读不到就留空，外层用占位标题 */ }
+    };
+    await Promise.all(page.map((s) => probeTitle(s.sessionId)));
+    for (const s of page) {
+      s.title = titles.get(s.sessionId) ?? "未命名对话（" + s.sessionId.slice(0, 12) + "…）";
+    }
+    return { sessions: page, total };
   } catch (e) {
     ctx.logger?.warn?.("[connect-lark] list sessions failed: " + (e as Error).message);
     return { sessions: [], total: 0 };
