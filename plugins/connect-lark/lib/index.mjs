@@ -1242,7 +1242,8 @@ const inject = [
 	"credentials",
 	"sessionController",
 	"permissionPresets",
-	"workspaceRegistry"
+	"workspaceRegistry",
+	"sessionQuery"
 ];
 const Config = z.object({
 	enabled: z.boolean().default(false).volatile().comment("启用飞书连接（关闭即断连）"),

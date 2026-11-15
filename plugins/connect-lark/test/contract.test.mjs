@@ -152,7 +152,7 @@ test("buildUserMessage: accepts an explicit source", () => {
 test("inject declares every service the plugin touches", () => {
   assert.deepEqual(
     [...inject].sort(),
-    ["agents", "attachments", "credentials", "llm", "permissionPresets", "sessionController", "workspaceRegistry"].sort(),
+    ["agents", "attachments", "credentials", "llm", "permissionPresets", "sessionController", "sessionQuery", "workspaceRegistry"].sort(),
   );
 });
 

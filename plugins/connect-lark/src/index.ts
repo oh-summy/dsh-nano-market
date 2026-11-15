@@ -102,7 +102,14 @@ export function plainConfig(input: Config | ParsedConfig): ResolvedConfig {
   return out as ResolvedConfig;
 }
 
-export const inject = ["agents", "llm", "attachments", "credentials", "sessionController", "permissionPresets", "workspaceRegistry"];
+export const inject = [
+  "agents", "llm", "attachments", "credentials",
+  "sessionController", "permissionPresets", "workspaceRegistry",
+  // 标题冷读需要：rc.2 的 sessionListMetadata 只有 {blank, lastPromptAt}（不含标题），
+  // 真实标题在会话日志的 session/title 事件里，经 dsh-session-query 冷读取出。
+  // cordis 的 inject 是拦截器配置（可选），服务不存在时 ctx.get 返回 undefined，不会崩。
+  "sessionQuery",
+];
 
 export const Config = z.object({
   enabled: z.boolean().default(false).volatile().comment("启用飞书连接（关闭即断连）"),
