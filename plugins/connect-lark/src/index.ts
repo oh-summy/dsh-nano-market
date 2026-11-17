@@ -16,6 +16,7 @@
 //   session/event turn/start + turn/end, agent/error, agent/inbox/claimed.
 
 import { stat } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import z from "@deepseek-ai/schemastery";
@@ -109,6 +110,9 @@ export const inject = [
   // 真实标题在会话日志的 session/title 事件里，经 dsh-session-query 冷读取出。
   // cordis 的 inject 是拦截器配置（可选），服务不存在时 ctx.get 返回 undefined，不会崩。
   "sessionQuery",
+  // 卡片与 Web 设置页共用同一份插件配置：卡片经 ctx.settings.mutate 写回宿主配置，
+  // 与 Web 页面走同一条保存路径（settings → configEditor → profile patch）。
+  "settings",
 ];
 
 export const Config = z.object({
@@ -578,19 +582,40 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   const APPROVAL_TTL_MS = 5 * 60_000;
   // 已注册过媒体工具的 sessionId（agent 域 ctx 重复注册会抛错，按会话幂等）
   const mediaRegistered = new Set<string>();
-  // per-chat 状态（一等公民维度的单一事实源，持久化到 DSH home 下，重启恢复）：
-  // 该 chat 当前会话 id + 显式选的模型/强度/权限/工作区。卡片「当前值」读它（同步），
-  // 会话投影（agent.model.select / permissionPresets.set）是运行时事实源，二者保持一致。
+  // per-chat 状态（**只**记会话绑定，持久化到 DSH home 下，重启恢复）：
+  // 该 chat 绑定的会话 id + 该会话所在工作区。
+  // 模型/强度/权限/工作区**不在这里**——它们是插件配置（cordis.patch.yml 的 connect-lark 条目），
+  // 卡片与 Web 设置页读写的是同一份，不存在第二套「卡片专属配置」。
   const statePath = process.env.CONNECT_LARK_SESSION_MAP || defaultStatePath();
   const chatStates: ChatStateMap = loadStates(statePath);
+  // 旧版状态文件可能还带着模型/强度/权限字段（= 第二套配置事实源）。loadStates 已在内存剥掉；
+  // 检测到磁盘文件仍有遗留就回写一次，让文件也收敛为「只存会话绑定」（单一事实源 = 插件配置）。
+  try {
+    if (existsSync(statePath) && /"(provider|model|reasoningEffort|permissionPreset)"/.test(readFileSync(statePath, "utf8"))) {
+      saveStates(statePath, chatStates);
+      ctx.logger?.info?.("[connect-lark] sanitized legacy per-chat settings from state file (single source = plugin config)");
+    }
+  } catch { /* 非致命：下次 touchState 时会再收敛 */ }
   const chatState = (chatId: string): ChatState => chatStates[chatId] ?? { updatedAt: 0 };
   const touchState = (chatId: string, patch: Partial<ChatState>): void => {
     const cur = chatStates[chatId] ?? { updatedAt: 0 };
     chatStates[chatId] = { ...cur, ...patch, updatedAt: Date.now() };
     try { saveStates(statePath, chatStates); } catch (e) { ctx.logger?.warn?.("[connect-lark] save per-chat state: " + (e as Error).message); }
   };
-  /** 该 chat 当前的工作区 cwd：per-chat 显式选择 > 插件默认 > 宿主 cwd。 */
+  /** 该 chat 当前的工作区 cwd：绑定会话的工作区 > 插件配置的 defaultPath > 宿主 cwd。 */
   const currentCwd = (chatId: string): string => chatState(chatId).cwd || plain.defaultPath || process.cwd();
+  /** 默认会话 id：chat + 工作区指纹（工作区变了 → 新会话；切回原工作区 → 继续原会话）。 */
+  const deterministicSessionId = (chatId: string, cwd: string): string =>
+    "connect-lark:" + chatId + cwdTag(cwd);
+  /** 解除会话绑定（换工作区/重开会话）：下一条消息按配置重新推导默认会话。 */
+  const clearSessionBinding = (chatId: string): void => {
+    const cur = chatStates[chatId];
+    if (!cur) return;
+    delete cur.sessionId;
+    delete cur.cwd;
+    cur.updatedAt = Date.now();
+    try { saveStates(statePath, chatStates); } catch (e) { ctx.logger?.warn?.("[connect-lark] save per-chat state: " + (e as Error).message); }
+  };
   /** 给 owned-per-chat 的 agent 注册桥内发媒体工具：agent 生成图片/文件后
    *  直接经当前 bot 发给用户，而不是绕道 lark-cli 等其他应用（真机反馈 2026-11-13）。 */
   const registerMediaTool = (agent: any, chatId: string, sessionId: string): void => {
@@ -730,15 +755,16 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   };
 
   const settingsCardArgs = (chatId: string, overrides?: { provider?: string; model?: string; reasoningEffort?: string }): SettingsCardOptions => {
-    // 一等公民：当前值来自 per-chat 状态（会话投影 + 映射），不再是插件配置（避免多处生效同一件事）。
-    // overrides 用于「用户刚选的模型」尚未落投影时，面板先按新模型渲染（档位跟随所选模型）。
+    // 唯一事实源 = 插件配置（cordis.patch.yml 的 connect-lark 条目）。
+    // 卡片与 Web 设置页读写的是同一份配置，因此这里显示的就是 Web 页面上看到的值。
+    // overrides 用于「用户刚选的模型」尚未落配置时，面板先按新模型渲染（档位跟随所选模型）。
     const st = chatState(chatId);
     const wsPath = st.cwd || plain.defaultPath;
     const ws = wsPath ? settingsData?.workspaces.find((w) => w.path === wsPath) : undefined;
     const defaultTitle = wsPath ? "工作区（" + wsPath.split("/").filter(Boolean).pop() + "）" : "默认工作区";
-    const provider = overrides?.provider ?? st.provider ?? "";
-    const model = overrides?.model ?? st.model ?? "";
-    const effort = overrides?.reasoningEffort !== undefined ? overrides.reasoningEffort : (st.reasoningEffort ?? "");
+    const provider = overrides?.provider ?? plain.provider ?? "";
+    const model = overrides?.model ?? plain.model ?? "";
+    const effort = overrides?.reasoningEffort !== undefined ? overrides.reasoningEffort : (plain.reasoningEffort ?? "");
     const hasModel = Boolean(provider && model);
     return {
       catalog: settingsData?.catalog ?? { groups: [] },
@@ -750,7 +776,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         provider: hasModel ? provider : undefined,
         model: hasModel ? model : undefined,
         reasoningEffort: effort || undefined,
-        permission: st.permissionPreset || undefined,
+        permission: plain.permissionPreset || undefined,
       },
       hasPendingPermission: pendingConfirms.has(chatId), // 只提示本 chat 的待确认（P2-5）
       defaultWorkspaceTitle: defaultTitle,
@@ -837,37 +863,52 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
     return { error: "未知控件" };
   };
 
-  /** 同步：把本次选择落到 per-chat 状态（卡片「当前值」立即反映 + 持久化供重启恢复）。 */
+  /** 同步：把本次选择落到 per-chat 状态（只记工作区；模型/强度/权限在插件配置里）。 */
   const applyDimState = (chatId: string, partial: Partial<ResolvedConfig>): void => {
     const patch: Partial<ChatState> = {};
     if (partial.defaultPath !== undefined) patch.cwd = partial.defaultPath || undefined;
-    if (partial.provider !== undefined) patch.provider = partial.provider || undefined;
-    if (partial.model !== undefined) patch.model = partial.model || undefined;
-    if (partial.reasoningEffort !== undefined) patch.reasoningEffort = partial.reasoningEffort || undefined;
-    if (partial.permissionPreset !== undefined) patch.permissionPreset = partial.permissionPreset || undefined;
     touchState(chatId, patch);
   };
 
-  /** 后台：把本次选择写进该 chat 会话的【投影】（一等公民；不写配置/patch/HMR）。
-   *  模型/强度 → agent.model.select（会话 model/selection，重启重放）；权限 → permissionPresets.set。
+  /** 配置写入口：**唯一**的配置保存路径（与 Web 设置页同一处）。
+   *  走宿主 settings 服务 → configEditor → profile patch → loader 热更新，
+   *  与 Web 设置页的 form.actions().save() 完全同源（同一份 cordis.patch.yml 配置）。
+   *  绝不自己写 patch 文件：那会绕过宿主的原子写 + HMR 序列化（曾导致配置被截断）。 */
+  const writePluginConfig = async (patch: Partial<ResolvedConfig>): Promise<void> => {
+    const settings = ctx.get?.("settings") as any;
+    if (!settings?.mutate) throw new Error("宿主 settings 服务不可用，无法保存配置");
+    const ns = "connect-lark";
+    const ops = Object.entries(patch).map(([field, value]) => ({
+      op: "set" as const,
+      path: [field],
+      value: value === "" ? undefined : value,
+    }));
+    await settings.mutate(ns, ops);
+  };
+
+  /** 后台：把本次选择**写入插件配置**（与 Web 设置页同一份），并让当前会话立即生效。
+   *  - 配置写：writePluginConfig → 宿主 settings.mutate → profile patch → loader 热更新；
+   *  - 会话生效：模型/强度 → agent.model.select（会话投影，重启重放）；权限 → permissionPresets.set。
    *  失败发一条飞书通知（不能只报成功 toast）。 */
   const applyDimension = async (chan: LarkChannel, chatId: string, controlName: string, partial: Partial<ResolvedConfig>): Promise<void> => {
     try {
-      applyDimState(chatId, partial);
-      if (controlName === "workspace") return; // cwd 是会话出身属性，靠会话 id 变化体现
+      // 1) 写配置（唯一事实源）。工作区变了 → 解除会话绑定（下一条消息起是新工作区的新会话）。
+      await writePluginConfig(partial);
+      if (controlName === "workspace") {
+        clearSessionBinding(chatId);
+        return; // cwd 是会话出身属性，靠会话 id 变化体现
+      }
+      // 2) 让当前会话立刻用上新配置（配置本身已由 loader 热更新；这里补会话投影）
       const cwd = currentCwd(chatId);
-      const id = chatState(chatId).sessionId || ("connect-lark:" + chatId + cwdTag(cwd));
+      const id = chatState(chatId).sessionId || deterministicSessionId(chatId, cwd);
       await ensureFirstClass(ctx, id, cwd);
-      const { agent } = await createOrResumeAgent(ctx, id, { cwd }, {}, "");
+      const { agent } = await createOrResumeAgent(ctx, id, { cwd }, {}, plain.permissionPreset);
       if (controlName === "model" || controlName === "effort") {
-        const st = chatState(chatId);
-        const sel = st.provider && st.model
-          ? { provider: st.provider, model: st.model, ...(st.reasoningEffort ? { reasoningEffort: st.reasoningEffort } : {}) }
-          : resolveAgentModelOptions(plain, await ctx.sessionController.modelCatalog());
+        const sel = resolveAgentModelOptions(plain, await ctx.sessionController.modelCatalog());
         agent.model?.select?.(sel);
       }
       if (controlName === "permission") {
-        const p = chatState(chatId).permissionPreset || (settingsData?.defaultPermission ?? "");
+        const p = plain.permissionPreset || (settingsData?.defaultPermission ?? "");
         if (p) ctx.permissionPresets?.set?.(agent.session, p);
       }
     } catch (e) {
@@ -877,9 +918,9 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   };
 
 
-  /** 终稿卡片底部状态行的展示值（读该 chat 的 per-chat 状态——一等公民单一事实源）。 */
+  /** 终稿卡片底部状态行的展示值（读插件配置——与 Web 设置页同一份）。 */
   const buildDisplay = (chatId?: string): SettingsDisplay | undefined => {
-    // 一等公民：展示值来自 per-chat 状态（该 chat 会话的实际投影），非插件全局配置。
+    // 唯一事实源 = 插件配置：卡片显示的就是 Web 页面上看到的值。
     const st = chatId ? chatState(chatId) : ({} as ChatState);
     const d: SettingsDisplay = {};
     const wsPath = st.cwd || plain.defaultPath;
@@ -887,20 +928,20 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       const ws = settingsData?.workspaces.find((w) => w.path === wsPath);
       d.workspace = ws?.title ?? wsPath;
     }
-    if (st.model) {
-      const group = (settingsData?.catalog?.groups ?? []).find((g) => g.id === st.provider);
-      const m = group?.models?.find((mm) => mm.id === st.model);
-      d.model = (group?.name ? group.name + " · " : "") + (m?.name ?? st.model);
+    if (plain.model) {
+      const group = (settingsData?.catalog?.groups ?? []).find((g) => g.id === plain.provider);
+      const m = group?.models?.find((mm) => mm.id === plain.model);
+      d.model = (group?.name ? group.name + " · " : "") + (m?.name ?? plain.model);
     }
-    if (st.reasoningEffort) {
-      const group = (settingsData?.catalog?.groups ?? []).find((g) => g.id === st.provider);
-      const m = group?.models?.find((mm) => mm.id === st.model);
-      const e = m?.reasoning?.efforts?.find((x) => x.id === st.reasoningEffort);
-      d.effort = e?.name ?? st.reasoningEffort;
+    if (plain.reasoningEffort) {
+      const group = (settingsData?.catalog?.groups ?? []).find((g) => g.id === plain.provider);
+      const m = group?.models?.find((mm) => mm.id === plain.model);
+      const e = m?.reasoning?.efforts?.find((x) => x.id === plain.reasoningEffort);
+      d.effort = e?.name ?? plain.reasoningEffort;
     }
-    if (st.permissionPreset) {
-      const p = settingsData?.permissions.find((x) => x.value === st.permissionPreset);
-      d.permission = p?.name ?? st.permissionPreset;
+    if (plain.permissionPreset) {
+      const p = settingsData?.permissions.find((x) => x.value === plain.permissionPreset);
+      d.permission = p?.name ?? plain.permissionPreset;
     }
     return d;
   };
@@ -1041,7 +1082,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           // owned-per-chat：会话 id = 该 chat 的显式会话（「新对话/选历史」= host-uuid，存于 per-chat 状态）
           // > 确定性默认 connect-lark:<chatId>@<cwdTag(cwd)>。cwd 来自 per-chat 状态（一等公民）。
           const cwd = currentCwd(chatId);
-          const expectedSessionId = chatState(chatId).sessionId || ("connect-lark:" + chatId + cwdTag(cwd));
+          const expectedSessionId = chatState(chatId).sessionId || deterministicSessionId(chatId, cwd);
           // 一等公民：宿主标准 create + 工作区归属（幂等；不再依赖启动时一次性 bootstrap）。
           await ensureFirstClass(ctx, expectedSessionId, cwd, title);
           const present = async (sessionId: string) => {
@@ -1067,7 +1108,17 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             existing.agent = null;
             existing.sessionId = "";
           }
-          const { agent, sessionId: resolvedSessionId, handle } = await createOrResumeAgent(ctx, expectedSessionId, { cwd }, {}, "");
+          // 新建/恢复会话时带上**插件配置里的模型与权限**（与 Web 设置页同一份配置）：
+          // provider/model 留空 = 跟随 DSH 新会话默认；permissionPreset 留空 = 跟随 DSH 权限。
+          const catalog = await ctx.sessionController.modelCatalog();
+          const agentOptions = resolveAgentModelOptions(plain, catalog);
+          const { agent, sessionId: resolvedSessionId, handle } = await createOrResumeAgent(
+            ctx,
+            expectedSessionId,
+            { cwd },
+            agentOptions,
+            plain.permissionPreset,
+          );
           await present(resolvedSessionId);
           registerMediaTool(agent, chatId, resolvedSessionId);
           return { agent, sessionId: resolvedSessionId, handle };
@@ -1255,10 +1306,9 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         if (images.length > 0) {
           // Gate against the model this chat will actually use. attach-gui lets
           // the host pick the model, so skip the gate there.
-          // 按该 chat 实际使用的模型 gate（per-chat 状态；未选则跟随 DSH 默认路由）
-          const gateSt = chatState(msg.chatId);
-          let gateProvider = gateSt.provider ?? "";
-          let gateModel = gateSt.model ?? "";
+          // 按该 chat 实际使用的模型 gate（插件配置里的模型；未配置则跟随 DSH 默认路由）
+          let gateProvider = plain.provider ?? "";
+          let gateModel = plain.model ?? "";
           let modelCatalogFailed = false;
           if (plain.agentOwnership === "owned-per-chat" && (!gateProvider || !gateModel)) {
             try {
@@ -1361,11 +1411,11 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           // 校验用「已生效配置 + 本次待写候选」的合并视图——不能只看配置：
           // 持久化是异步的（fire-and-forget），刚选的模型尚未落盘时按旧模型校验会误拒。
           if (controlName === "effort" && result.partial.reasoningEffort) {
-            // 校验用该 chat 当前的模型视图（per-chat 状态；刚切的模型已反映）
-            const st = chatState(chatId);
+            // 校验用「已生效配置 + 本次待写候选」的合并视图（刚切的模型已反映在候选里）
             const allowed = effortOptionsFor(settingsCardArgs(chatId, {
-              provider: st.provider,
-              model: st.model,
+              provider: result.partial.provider ?? plain.provider,
+              model: result.partial.model ?? plain.model,
+              reasoningEffort: result.partial.reasoningEffort,
             })).map((o) => o.value);
             // 只有在「catalog 已知该模型的档位」时才拦截；catalog 缺失（未刷新/
             // 未知模型）时放行 —— 由 DSH 自己在请求时给出明确错误，比误拒更好。
@@ -1374,15 +1424,14 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               return { toast: { type: "error", content: "当前模型不支持该思考强度，请先切换模型" } };
             }
           }
-          // 一等公民：不写配置/patch/HMR。同步落 per-chat 状态（当前值立即反映）+
-          // 后台写会话投影（agent.model.select / permissionPresets.set，失败发通知）。
+          // 写插件配置（与 Web 设置页同一份）+ 让当前会话立即生效（失败发通知）。
           void applyDimension(chan, chatId, controlName, result.partial);
           const dimLabels: Record<string, string> = { workspace: "工作区", model: "模型", effort: "思考强度", permission: "权限" };
           const field: string = controlName;
           const prevLabel = (prevDisplay as any)?.[field] ?? "跟随 DSH 默认";
           const switchToast = { type: "success", content: prevLabel === nextLabelOf(field, result.partial)
-            ? "✅ 已设置（本对话；会话级，重启保留）"
-            : "✅ " + dimLabels[controlName] + "已切换：" + prevLabel + " → " + nextLabelOf(field, result.partial) + "（本对话；会话级，重启保留）" };
+            ? "✅ 已设置（已保存到插件配置，Web 设置页同步可见）"
+            : "✅ " + dimLabels[controlName] + "已切换：" + prevLabel + " → " + nextLabelOf(field, result.partial) + "（已保存到插件配置，Web 设置页同步可见）" };
           // 模型切换：面板按新模型同步重建（档位立刻跟随所选模型）→ 就地返回卡片（零 await、零网络）
           let panel: object | undefined;
           if (controlName === "model" && result.partial.provider && result.partial.model) {
@@ -1531,12 +1580,11 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       });
     };
 
-    // 配置热更新分流（配置页编辑触发；卡片修改不写配置，走会话投影，不经过这里）：
+    // 配置热更新分流（**卡片与 Web 设置页写的是同一份配置**，都走这里）：
     // - 连接级字段（appId/密钥/域名/所有权等）→ queueBoot 全量重连；
-    // - 其余字段（如 defaultPath）→ 热应用：只更新 plain 快照，不重连
-    //   （避免重连窗口丢失消息/回调）。provider/model/强度/权限四字段已退休
-    //   （一等公民：由 per-chat 状态 + 会话投影承载），热应用后不再驱动会话行为；
-    //   defaultPath 仍是「新对话起始工作区」的默认值，下一条新 chat 的消息即生效。
+    // - 其余字段（defaultPath / provider / model / 思考强度 / 权限）→ 热应用：
+    //   只更新 plain 快照，不重连（避免重连窗口丢失消息/回调）。
+    //   这五个字段是插件配置本身：下一条新会话按它们创建，卡片显示的也是它们。
     const unsubVolatile = ctx.on("loader/volatile-update", (paths: readonly (readonly string[])[]) => {
       const fields = new Set((paths ?? []).map((p) => Array.isArray(p) ? p[p.length - 1] : String(p)));
       const RECONNECT_FIELDS = new Set(["enabled", "appId", "appSecretRef", "domain", "agentOwnership", "attachSessionId", "requireMention"]);
@@ -1642,6 +1690,7 @@ export {
 } from "./cards.js";
 export type { HistorySessionOption, SettingsCardOptions, SettingsDisplay } from "./cards.js";
 export { cwdTag } from "./overrides.js";
+export { loadStates, saveStates, defaultStatePath, type ChatState, type ChatStateMap } from "./session-map.js";
 export { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage, MAX_IMAGE_BYTES, FEISHU_CDN_HOSTS } from "./images.js";
 export { RunManager } from "./run.js";
 export { fetchDirectoryUsers, listDirectoryUsers } from "./users.js";

@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path, { dirname, join } from "node:path";
 import os, { homedir, tmpdir } from "node:os";
 import z from "@deepseek-ai/schemastery";
@@ -6,7 +7,6 @@ import { credentialRef, isCredentialRefName } from "@deepseek-ai/dsh-credentials
 import { isVolatile } from "@deepseek-ai/cosmokit";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel } from "@larksuite/channel";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 // src/cards.ts
 /**
@@ -482,12 +482,30 @@ function defaultStatePath() {
 	const home = process.env.DSH_HOME || join(homedir(), ".dsh");
 	return join(home, "connect-lark-sessions.json");
 }
-/** 读状态文件（不存在/损坏 → 空对象；绝不因坏文件崩插件）。 */
+/** 旧版遗留字段（曾把模型/强度/权限存在 per-chat 状态里 = 第二套配置）。
+*  2026-11-17 起事实源只有插件配置，这些字段一律丢弃并在下次写回时抹掉。 */
+const LEGACY_FIELDS = [
+	"provider",
+	"model",
+	"reasoningEffort",
+	"permissionPreset"
+];
+/** 读状态文件（不存在/损坏 → 空对象；绝不因坏文件崩插件）。
+*  顺手清掉旧版遗留的设置字段——它们曾构成第二套配置事实源，不能继续留在文件里。 */
 function loadStates(path) {
 	try {
 		if (!existsSync(path)) return {};
 		const parsed = JSON.parse(readFileSync(path, "utf8"));
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+		const out = {};
+		for (const [chatId, raw] of Object.entries(parsed)) {
+			if (!raw || typeof raw !== "object") continue;
+			const state = { ...raw };
+			const bag = state;
+			for (const field of LEGACY_FIELDS) delete bag[field];
+			out[chatId] = state;
+		}
+		return out;
 	} catch {
 		return {};
 	}
@@ -1243,7 +1261,8 @@ const inject = [
 	"sessionController",
 	"permissionPresets",
 	"workspaceRegistry",
-	"sessionQuery"
+	"sessionQuery",
+	"settings"
 ];
 const Config = z.object({
 	enabled: z.boolean().default(false).volatile().comment("启用飞书连接（关闭即断连）"),
@@ -1649,6 +1668,12 @@ function apply(ctx, config = {}) {
 	const mediaRegistered = /* @__PURE__ */ new Set();
 	const statePath = process.env.CONNECT_LARK_SESSION_MAP || defaultStatePath();
 	const chatStates = loadStates(statePath);
+	try {
+		if (existsSync(statePath) && /"(provider|model|reasoningEffort|permissionPreset)"/.test(readFileSync(statePath, "utf8"))) {
+			saveStates(statePath, chatStates);
+			ctx.logger?.info?.("[connect-lark] sanitized legacy per-chat settings from state file (single source = plugin config)");
+		}
+	} catch {}
 	const chatState = (chatId) => chatStates[chatId] ?? { updatedAt: 0 };
 	const touchState = (chatId, patch) => {
 		const cur = chatStates[chatId] ?? { updatedAt: 0 };
@@ -1663,8 +1688,23 @@ function apply(ctx, config = {}) {
 			ctx.logger?.warn?.("[connect-lark] save per-chat state: " + e.message);
 		}
 	};
-	/** 该 chat 当前的工作区 cwd：per-chat 显式选择 > 插件默认 > 宿主 cwd。 */
+	/** 该 chat 当前的工作区 cwd：绑定会话的工作区 > 插件配置的 defaultPath > 宿主 cwd。 */
 	const currentCwd = (chatId) => chatState(chatId).cwd || plain.defaultPath || process.cwd();
+	/** 默认会话 id：chat + 工作区指纹（工作区变了 → 新会话；切回原工作区 → 继续原会话）。 */
+	const deterministicSessionId = (chatId, cwd) => "connect-lark:" + chatId + cwdTag(cwd);
+	/** 解除会话绑定（换工作区/重开会话）：下一条消息按配置重新推导默认会话。 */
+	const clearSessionBinding = (chatId) => {
+		const cur = chatStates[chatId];
+		if (!cur) return;
+		delete cur.sessionId;
+		delete cur.cwd;
+		cur.updatedAt = Date.now();
+		try {
+			saveStates(statePath, chatStates);
+		} catch (e) {
+			ctx.logger?.warn?.("[connect-lark] save per-chat state: " + e.message);
+		}
+	};
 	/** 给 owned-per-chat 的 agent 注册桥内发媒体工具：agent 生成图片/文件后
 	*  直接经当前 bot 发给用户，而不是绕道 lark-cli 等其他应用（真机反馈 2026-11-13）。 */
 	const registerMediaTool = (agent, chatId, sessionId) => {
@@ -1837,13 +1877,12 @@ function apply(ctx, config = {}) {
 		}
 	};
 	const settingsCardArgs = (chatId, overrides) => {
-		const st = chatState(chatId);
-		const wsPath = st.cwd || plain.defaultPath;
+		const wsPath = chatState(chatId).cwd || plain.defaultPath;
 		const ws = wsPath ? settingsData?.workspaces.find((w) => w.path === wsPath) : void 0;
 		const defaultTitle = wsPath ? "工作区（" + wsPath.split("/").filter(Boolean).pop() + "）" : "默认工作区";
-		const provider = overrides?.provider ?? st.provider ?? "";
-		const model = overrides?.model ?? st.model ?? "";
-		const effort = overrides?.reasoningEffort !== void 0 ? overrides.reasoningEffort : st.reasoningEffort ?? "";
+		const provider = overrides?.provider ?? plain.provider ?? "";
+		const model = overrides?.model ?? plain.model ?? "";
+		const effort = overrides?.reasoningEffort !== void 0 ? overrides.reasoningEffort : plain.reasoningEffort ?? "";
 		const hasModel = Boolean(provider && model);
 		return {
 			catalog: settingsData?.catalog ?? { groups: [] },
@@ -1855,7 +1894,7 @@ function apply(ctx, config = {}) {
 				provider: hasModel ? provider : void 0,
 				model: hasModel ? model : void 0,
 				reasoningEffort: effort || void 0,
-				permission: st.permissionPreset || void 0
+				permission: plain.permissionPreset || void 0
 			},
 			hasPendingPermission: pendingConfirms.has(chatId),
 			defaultWorkspaceTitle: defaultTitle
@@ -1937,38 +1976,42 @@ function apply(ctx, config = {}) {
 		}
 		return { error: "未知控件" };
 	};
-	/** 同步：把本次选择落到 per-chat 状态（卡片「当前值」立即反映 + 持久化供重启恢复）。 */
-	const applyDimState = (chatId, partial) => {
-		const patch = {};
-		if (partial.defaultPath !== void 0) patch.cwd = partial.defaultPath || void 0;
-		if (partial.provider !== void 0) patch.provider = partial.provider || void 0;
-		if (partial.model !== void 0) patch.model = partial.model || void 0;
-		if (partial.reasoningEffort !== void 0) patch.reasoningEffort = partial.reasoningEffort || void 0;
-		if (partial.permissionPreset !== void 0) patch.permissionPreset = partial.permissionPreset || void 0;
-		touchState(chatId, patch);
+	/** 配置写入口：**唯一**的配置保存路径（与 Web 设置页同一处）。
+	*  走宿主 settings 服务 → configEditor → profile patch → loader 热更新，
+	*  与 Web 设置页的 form.actions().save() 完全同源（同一份 cordis.patch.yml 配置）。
+	*  绝不自己写 patch 文件：那会绕过宿主的原子写 + HMR 序列化（曾导致配置被截断）。 */
+	const writePluginConfig = async (patch) => {
+		const settings = ctx.get?.("settings");
+		if (!settings?.mutate) throw new Error("宿主 settings 服务不可用，无法保存配置");
+		const ns = "connect-lark";
+		const ops = Object.entries(patch).map(([field, value]) => ({
+			op: "set",
+			path: [field],
+			value: value === "" ? void 0 : value
+		}));
+		await settings.mutate(ns, ops);
 	};
-	/** 后台：把本次选择写进该 chat 会话的【投影】（一等公民；不写配置/patch/HMR）。
-	*  模型/强度 → agent.model.select（会话 model/selection，重启重放）；权限 → permissionPresets.set。
+	/** 后台：把本次选择**写入插件配置**（与 Web 设置页同一份），并让当前会话立即生效。
+	*  - 配置写：writePluginConfig → 宿主 settings.mutate → profile patch → loader 热更新；
+	*  - 会话生效：模型/强度 → agent.model.select（会话投影，重启重放）；权限 → permissionPresets.set。
 	*  失败发一条飞书通知（不能只报成功 toast）。 */
 	const applyDimension = async (chan, chatId, controlName, partial) => {
 		try {
-			applyDimState(chatId, partial);
-			if (controlName === "workspace") return;
+			await writePluginConfig(partial);
+			if (controlName === "workspace") {
+				clearSessionBinding(chatId);
+				return;
+			}
 			const cwd = currentCwd(chatId);
-			const id = chatState(chatId).sessionId || "connect-lark:" + chatId + cwdTag(cwd);
+			const id = chatState(chatId).sessionId || deterministicSessionId(chatId, cwd);
 			await ensureFirstClass(ctx, id, cwd);
-			const { agent } = await createOrResumeAgent(ctx, id, { cwd }, {}, "");
+			const { agent } = await createOrResumeAgent(ctx, id, { cwd }, {}, plain.permissionPreset);
 			if (controlName === "model" || controlName === "effort") {
-				const st = chatState(chatId);
-				const sel = st.provider && st.model ? {
-					provider: st.provider,
-					model: st.model,
-					...st.reasoningEffort ? { reasoningEffort: st.reasoningEffort } : {}
-				} : resolveAgentModelOptions(plain, await ctx.sessionController.modelCatalog());
+				const sel = resolveAgentModelOptions(plain, await ctx.sessionController.modelCatalog());
 				agent.model?.select?.(sel);
 			}
 			if (controlName === "permission") {
-				const p = chatState(chatId).permissionPreset || (settingsData?.defaultPermission ?? "");
+				const p = plain.permissionPreset || (settingsData?.defaultPermission ?? "");
 				if (p) ctx.permissionPresets?.set?.(agent.session, p);
 			}
 		} catch (e) {
@@ -1976,19 +2019,19 @@ function apply(ctx, config = {}) {
 			Promise.resolve(chan.send(chatId, { markdown: "⚠️ 设置未生效：" + e.message + "（请重试）" })).catch(() => {});
 		}
 	};
-	/** 终稿卡片底部状态行的展示值（读该 chat 的 per-chat 状态——一等公民单一事实源）。 */
+	/** 终稿卡片底部状态行的展示值（读插件配置——与 Web 设置页同一份）。 */
 	const buildDisplay = (chatId) => {
 		const st = chatId ? chatState(chatId) : {};
 		const d = {};
 		const wsPath = st.cwd || plain.defaultPath;
 		if (wsPath) d.workspace = (settingsData?.workspaces.find((w) => w.path === wsPath))?.title ?? wsPath;
-		if (st.model) {
-			const group = (settingsData?.catalog?.groups ?? []).find((g) => g.id === st.provider);
-			const m = group?.models?.find((mm) => mm.id === st.model);
-			d.model = (group?.name ? group.name + " · " : "") + (m?.name ?? st.model);
+		if (plain.model) {
+			const group = (settingsData?.catalog?.groups ?? []).find((g) => g.id === plain.provider);
+			const m = group?.models?.find((mm) => mm.id === plain.model);
+			d.model = (group?.name ? group.name + " · " : "") + (m?.name ?? plain.model);
 		}
-		if (st.reasoningEffort) d.effort = (((settingsData?.catalog?.groups ?? []).find((g) => g.id === st.provider)?.models?.find((mm) => mm.id === st.model))?.reasoning?.efforts?.find((x) => x.id === st.reasoningEffort))?.name ?? st.reasoningEffort;
-		if (st.permissionPreset) d.permission = (settingsData?.permissions.find((x) => x.value === st.permissionPreset))?.name ?? st.permissionPreset;
+		if (plain.reasoningEffort) d.effort = (((settingsData?.catalog?.groups ?? []).find((g) => g.id === plain.provider)?.models?.find((mm) => mm.id === plain.model))?.reasoning?.efforts?.find((x) => x.id === plain.reasoningEffort))?.name ?? plain.reasoningEffort;
+		if (plain.permissionPreset) d.permission = (settingsData?.permissions.find((x) => x.value === plain.permissionPreset))?.name ?? plain.permissionPreset;
 		return d;
 	};
 	/** 思考强度选项——同步计算，零网络（catalog 的档位由宿主用 resolveModelInfo 精确路由解析
@@ -2109,7 +2152,7 @@ function apply(ctx, config = {}) {
 						};
 					}
 					const cwd = currentCwd(chatId);
-					const expectedSessionId = chatState(chatId).sessionId || "connect-lark:" + chatId + cwdTag(cwd);
+					const expectedSessionId = chatState(chatId).sessionId || deterministicSessionId(chatId, cwd);
 					await ensureFirstClass(ctx, expectedSessionId, cwd, title);
 					const present = async (sessionId) => {
 						if (existing?.titleSet) return;
@@ -2140,7 +2183,9 @@ function apply(ctx, config = {}) {
 						existing.agent = null;
 						existing.sessionId = "";
 					}
-					const { agent, sessionId: resolvedSessionId, handle } = await createOrResumeAgent(ctx, expectedSessionId, { cwd }, {}, "");
+					const catalog = await ctx.sessionController.modelCatalog();
+					const agentOptions = resolveAgentModelOptions(plain, catalog);
+					const { agent, sessionId: resolvedSessionId, handle } = await createOrResumeAgent(ctx, expectedSessionId, { cwd }, agentOptions, plain.permissionPreset);
 					await present(resolvedSessionId);
 					registerMediaTool(agent, chatId, resolvedSessionId);
 					return {
@@ -2312,9 +2357,8 @@ function apply(ctx, config = {}) {
 				}];
 				const images = extractImages(msg);
 				if (images.length > 0) {
-					const gateSt = chatState(msg.chatId);
-					let gateProvider = gateSt.provider ?? "";
-					let gateModel = gateSt.model ?? "";
+					let gateProvider = plain.provider ?? "";
+					let gateModel = plain.model ?? "";
 					let modelCatalogFailed = false;
 					if (plain.agentOwnership === "owned-per-chat" && (!gateProvider || !gateModel)) try {
 						const cat = await ctx.sessionController.modelCatalog();
@@ -2414,10 +2458,10 @@ function apply(ctx, config = {}) {
 					} };
 					if (!result.partial) return;
 					if (controlName === "effort" && result.partial.reasoningEffort) {
-						const st = chatState(chatId);
 						const allowed = effortOptionsFor(settingsCardArgs(chatId, {
-							provider: st.provider,
-							model: st.model
+							provider: result.partial.provider ?? plain.provider,
+							model: result.partial.model ?? plain.model,
+							reasoningEffort: result.partial.reasoningEffort
 						})).map((o) => o.value);
 						if (allowed.length > 1 && !allowed.includes(result.partial.reasoningEffort)) return { toast: {
 							type: "error",
@@ -2435,7 +2479,7 @@ function apply(ctx, config = {}) {
 					const prevLabel = prevDisplay?.[field] ?? "跟随 DSH 默认";
 					const switchToast = {
 						type: "success",
-						content: prevLabel === nextLabelOf(field, result.partial) ? "✅ 已设置（本对话；会话级，重启保留）" : "✅ " + dimLabels[controlName] + "已切换：" + prevLabel + " → " + nextLabelOf(field, result.partial) + "（本对话；会话级，重启保留）"
+						content: prevLabel === nextLabelOf(field, result.partial) ? "✅ 已设置（已保存到插件配置，Web 设置页同步可见）" : "✅ " + dimLabels[controlName] + "已切换：" + prevLabel + " → " + nextLabelOf(field, result.partial) + "（已保存到插件配置，Web 设置页同步可见）"
 					};
 					let panel;
 					if (controlName === "model" && result.partial.provider && result.partial.model) panel = rebuildReplyCard(chatId, {
@@ -2684,4 +2728,4 @@ const CONTRACT_NOTES = {
 	whitelistFailClosed: "accessMode=app (default) defers to the Feishu app scope; accessMode=list allows only the grants plus the tenant manager",
 	streaming: "channel.stream(to, { markdown: async (c) => { c.append(delta) } }) — SDK-owned CardKit"
 };
-export { CANCEL_SETTINGS_VALUE, CONTRACT_NOTES, Config, DEFAULT_OPTION_VALUE, DIRECTORY_PORT, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildApprovalCard, buildApprovalFinalCard, buildHistoryCard, buildImageContent, buildSettingsPanel, buildUserMessage, createOrResumeAgent, currentModelValue, cwdTag, downloadImageBounded, downloadInboundImage, effortOptions, fetchDirectoryUsers, inject, listDirectoryUsers, modelOptions, passesWhitelist, plainConfig, resolveAgentModelOptions, resolveAppSecret, richCard, settingsStatusLine, startDirectoryService, streamMarkdown };
+export { CANCEL_SETTINGS_VALUE, CONTRACT_NOTES, Config, DEFAULT_OPTION_VALUE, DIRECTORY_PORT, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildApprovalCard, buildApprovalFinalCard, buildHistoryCard, buildImageContent, buildSettingsPanel, buildUserMessage, createOrResumeAgent, currentModelValue, cwdTag, defaultStatePath, downloadImageBounded, downloadInboundImage, effortOptions, fetchDirectoryUsers, inject, listDirectoryUsers, loadStates, modelOptions, passesWhitelist, plainConfig, resolveAgentModelOptions, resolveAppSecret, richCard, saveStates, settingsStatusLine, startDirectoryService, streamMarkdown };

@@ -151,8 +151,8 @@ test("modelOptions flattens provider groups; effortOptions follow the current mo
 
 // ============ apply 集成（cardAction 流程） ============
 
-async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", senderAllowlist = [], resolveAgentReturnsAgent = false, catalog: catalogOverride, defaultPermission = "workspace-write", persistFails = false, historySessions = [], historyTitleOf = (sid) => sid } = {}) {
-  const calls = { sends: [], cards: [], selects: [], presetSets: [], disposes: [], followups: [], resolveSessions: [], registered: [], updates: [], creates: [], sessionCreates: [], boots: 0, configEditorEdits: 0, createSeq: 0, prepended: [] };
+async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", senderAllowlist = [], resolveAgentReturnsAgent = false, catalog: catalogOverride, defaultPermission = "workspace-write", persistFails = false, historySessions = [], historyTitleOf = (sid) => sid, configOverride = {} } = {}) {
+  const calls = { sends: [], cards: [], selects: [], presetSets: [], disposes: [], followups: [], resolveSessions: [], registered: [], updates: [], creates: [], sessionCreates: [], boots: 0, configEditorEdits: 0, configMutations: [], createSeq: 0, prepended: [] };
   // per-chat 状态文件（一等公民维度的持久化落点）——插件经 CONNECT_LARK_SESSION_MAP 指向这里
   const stateFile = makeStateFile();
   process.env.CONNECT_LARK_SESSION_MAP = stateFile.file;
@@ -169,6 +169,8 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
     ctx: { tools: { register(tool) { calls.registered.push(tool); } } },
   };
   const createHandle = { dispose: async () => { calls.disposes.push(1); } };
+  // 活着的 agent 注册表（按 sessionId），与宿主 AgentRegistry 同形。
+  const liveAgents = new Map();
   let disposer;
   const ctx = {
     logger: { info: (m) => console.log("[info]", m), warn: (m) => console.log("[warn]", m), error: (m) => console.log("[error]", m) },
@@ -193,7 +195,13 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
       rename: async () => {},
     },
     workspaceRegistry: { list: () => workspaces },
-    agents: { get: () => (ownedPerChat ? undefined : agent), create: async (opts) => { calls.creates.push(opts); if (failAgentCreate) throw new Error("simulated session-create failure"); return { agent, dispose: createHandle.dispose }; }, resume: async (opts) => { calls.creates.push(opts); if (failAgentCreate) throw new Error("simulated session-resume failure"); return { agent, dispose: createHandle.dispose }; } },
+    agents: {
+      // 与宿主注册表同形：按 sessionId 返回活着的 agent（找不到才是 undefined），
+      // 否则卡片热应用会在回合中途凭空造一个 agent（真机上不存在这个问题）。
+      get: (sid) => (ownedPerChat ? liveAgents.get(sid) : agent),
+      create: async (opts) => { calls.creates.push(opts); if (failAgentCreate) throw new Error("simulated session-create failure"); liveAgents.set(opts.sessionId, agent); return { agent, dispose: createHandle.dispose }; },
+      resume: async (opts) => { calls.creates.push(opts); if (failAgentCreate) throw new Error("simulated session-resume failure"); liveAgents.set(opts.resumeSessionId, agent); return { agent, dispose: createHandle.dispose }; },
+    },
     permissionPresets: {
       set(session, name) { calls.presetSets.push({ session, name }); },
       catalog: () => ({ options: permissions, defaultPreset: defaultPermission }),
@@ -211,11 +219,30 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
         };
       }
       if (key === "profileContext") return { dir: stateFile.dir };
+      if (key === "settings") {
+        // 卡片与 Web 设置页共用的唯一配置保存路径（宿主 settings 服务）。
+        return {
+          async mutate(ns, ops) {
+            calls.configMutations.push({ ns, ops });
+            // 落盘模拟：宿主把新值并回 profile patch → loader 热更新（volatile）
+            // → 插件重新读取配置快照。emit 触发插件的 volatile-update 监听器。
+            const paths = [];
+            for (const op of ops) {
+              if (op.op !== "set") continue;
+              const field = op.path[0];
+              if (op.value === undefined) delete config[field];
+              else config[field] = op.value;
+              paths.push([field]);
+            }
+            emit("loader/volatile-update", paths);
+          },
+        };
+      }
       if (key === "configEditor") {
         return {
           async edit() {
             calls.configEditorEdits++;
-            throw new Error("configEditor.edit must NOT be called (first-class: no config writes)");
+            throw new Error("configEditor.edit must NOT be called (cards write through the host settings service)");
           },
         };
       }
@@ -230,6 +257,7 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
     agentOwnership: ownedPerChat ? "owned-per-chat" : "attach-gui",
     attachSessionId: "session-test", provider: "", model: "", permissionPreset: "",
     senderAllowlist, groupAllowlist: [], thinkingPolicy: "cot-visible",
+    ...configOverride,
   };
   globalThis.__connectLarkTestChannel = {
     create() {
@@ -334,24 +362,30 @@ test("apply: attach-gui finished reply card has no settings panel (P0-1)", async
   } finally { await h.dispose(); }
 });
 
-test("apply: model select writes the session projection + per-chat state (NOT config)", async () => {
+test("apply: model select writes the PLUGIN CONFIG (same path as the Web settings page)", async () => {
   const h = await makeSettingsHarness();
   try {
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
     await h.endTurn();
-    // 选模型 → 写会话投影（agent.model.select）+ per-chat 状态，绝不写配置
+    // 选模型 → 写插件配置（宿主 settings 服务，Web 设置页同一路径）+ 会话投影
     const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "model", option: "kimi:k3.1-pro" } });
     assert.ok(resp.toast, "immediate toast returned");
-    assert.match(resp.toast.content, /本对话/, "toast is conversation-scoped (not plugin-global)");
-    await h.waitForState('"provider": "kimi"');
-    assert.match(h.readState(), /"provider":\s*"kimi"/, "per-chat state records the provider");
-    assert.match(h.readState(), /"model":\s*"k3.1-pro"/, "per-chat state records the model");
+    assert.match(resp.toast.content, /插件配置/, "toast says the change landed in the plugin config");
+    await settle();
+    // 卡片写的是插件配置本身（namespace = connect-lark），不是 per-chat 私有状态
+    const mutation = h.calls.configMutations.at(-1);
+    assert.ok(mutation, "card selection wrote the plugin config");
+    assert.equal(mutation.ns, "connect-lark", "same namespace as the Web settings page");
+    assert.deepEqual(
+      mutation.ops.map((op) => op.path[0]).sort(),
+      ["model", "provider", "reasoningEffort"],
+      "model selection writes provider/model/effort into the plugin config",
+    );
+    assert.equal(h.calls.configEditorEdits, 0, "configEditor.edit never used (cards go through the host settings service)");
     await settle();
     assert.ok(h.calls.selects.some((s) => s.provider === "kimi" && s.model === "k3.1-pro"), "agent.model.select wrote the session projection");
-    assert.equal(h.calls.configEditorEdits, 0, "configEditor NEVER called (first-class: no config write, no HMR)");
-    // 重启：per-chat 状态文件恢复该 chat 的显式选择（会话日志的 model/selection 由宿主重放）
-    await h.reloadPlugin();
-    assert.match(h.readState(), /"model":\s*"k3.1-pro"/, "choice survives a restart via the state file");
+    // per-chat 状态文件只记会话绑定，不再存模型
+    assert.doesNotMatch(h.readState(), /"provider"|"model"|"permissionPreset"/, "per-chat state holds session binding only");
   } finally { await h.dispose(); }
 });
 
@@ -361,12 +395,14 @@ test("apply: workspace switch updates defaultPath, disposes old handle, rebuilds
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
     await h.endTurn();
     h.calls.disposes.length = 0;
-    // 切工作区 → 修改插件配置 defaultPath + 就地重建回复卡
+    // 切工作区 → 修改插件配置 defaultPath（与 Web 设置页同一份）+ 就地重建回复卡
     const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "workspace", option: "ws-b" } });
     assert.ok(resp.toast, "immediate toast returned");
     await settle();
-    await h.waitForState('"cwd": "/tmp/b"');
-    assert.match(h.readState(), /"cwd": "\/tmp\/b"/, "per-chat state records the new workspace cwd");
+    const mutation = h.calls.configMutations.at(-1);
+    assert.ok(mutation, "workspace switch wrote the plugin config");
+    assert.equal(mutation.ns, "connect-lark");
+    assert.deepEqual(mutation.ops, [{ op: "set", path: ["defaultPath"], value: "/tmp/b" }], "defaultPath written to the plugin config");
     await settle();
     const notice = h.calls.sends.find((s) => typeof s.input === "object" && s.input.markdown && /已切换到工作区/.test(s.input.markdown));
     assert.ok(notice, "workspace switch notice sent");
@@ -393,12 +429,13 @@ test("apply: high permission requires confirm from the initiator only (P1-3)", a
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m-y", content: "确认" });
     await settle();
     assert.match(JSON.stringify(h.calls.sends), /已应用权限/);
-    await h.waitForState('"permissionPreset": "danger-full-access"');
-    assert.match(h.readState(), /"permissionPreset": "danger-full-access"/, "choice persisted to per-chat state (not config)");
-    // 下一轮 createOrResumeAgent 把 permission 设到会话
+    const mutation = h.calls.configMutations.at(-1);
+    assert.ok(mutation, "confirmed permission wrote the plugin config");
+    assert.deepEqual(mutation.ops, [{ op: "set", path: ["permissionPreset"], value: "danger-full-access" }], "permissionPreset written to the plugin config");
+    // 下一轮 createOrResumeAgent 把配置里的 permission 设到会话
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m3", content: "go" });
-    assert.equal(h.calls.presetSets.length, 1, "permission applied to session on next run");
-    assert.equal(h.calls.presetSets[0].name, "danger-full-access");
+    assert.ok(h.calls.presetSets.length >= 1, "permission applied to session on next run");
+    assert.equal(h.calls.presetSets.at(-1).name, "danger-full-access", "the configured permission reached the session");
   } finally { await h.dispose(); }
 });
 
@@ -410,15 +447,19 @@ test("apply: running-turn card action hot-applies without disturbing the turn (P
     // m1 进行中（未 turn/end）：点模型 → 热应用（fiber.update 立即提交，无重连）
     const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "model", option: "kimi:k3.1-pro" } });
     assert.match(resp.toast.content, /已切换/, "immediate A→B toast");
-    await h.waitForState('"model": "k3.1-pro"');
-    assert.match(h.readState(), /"model": "k3.1-pro"/, "choice written to per-chat state");
+    await settle();
+    const mutation = h.calls.configMutations.at(-1);
+    assert.ok(mutation, "choice written to the plugin config");
+    assert.deepEqual(mutation.ops.map((op) => op.path[0]).sort(), ["model", "provider", "reasoningEffort"], "model selection written to the plugin config");
     assert.equal(h.calls.creates.length, createsBefore, "in-flight turn untouched (no new agent mid-turn)");
     // turn/end 后下一条消息 → resolveAgent 指纹检测 → 新 agent 用新模型
     await h.endTurn();
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m2", content: "next" });
     await h.endTurn();
     assert.ok(h.calls.selects.some((s) => s.provider === "kimi" && s.model === "k3.1-pro"), "new model reached the session via projection");
-    assert.equal(h.calls.creates.at(-1).agentOptions.provider, undefined, "no model force-pushed into agentOptions (first-class)");
+    // 模型来自插件配置（与 Web 设置页同一份）：新会话按它创建，agentOptions 带着它。
+    assert.equal(h.calls.creates.at(-1).agentOptions?.provider, "kimi", "the configured provider reaches the session");
+    assert.equal(h.calls.creates.at(-1).agentOptions?.model, "k3.1-pro", "the configured model reaches the session");
   } finally { await h.dispose(); }
 });
 
@@ -442,15 +483,15 @@ test("apply: changing model clears a stale effort (DSH may reject unsupported ef
     await settle();
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
     await h.endTurn();
-    await h.waitForState('"model": "k3.1-mini"');
-    const state = h.readState();
-    assert.match(state, /"model": "k3.1-mini"/, "model switch recorded in per-chat state");
-    assert.ok(!state.includes('"reasoningEffort"'), "stale effort cleared on model change (no leftover effort for k3.1-mini)");
+    const mutation = h.calls.configMutations.at(-1);
+    assert.ok(mutation, "model switch wrote the plugin config");
+    const ops = Object.fromEntries(mutation.ops.map((op) => [op.path[0], op.value]));
+    assert.equal(ops.model, "k3.1-mini", "model switch recorded in the plugin config");
+    assert.ok(!("reasoningEffort" in ops) || ops.reasoningEffort === undefined, "stale effort cleared on model change (no leftover effort for k3.1-mini)");
     await h.reloadPlugin();
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m2", content: "next" });
     await h.endTurn();
-    // 模型走会话投影（agent.model.select），不再走 agentOptions（无 force-push）
-    assert.deepEqual(h.calls.creates.at(-1).agentOptions, {}, "no config/model force-push into agentOptions (first-class)");
+    // 会话不变（同一工作区 → 同一会话），模型经会话投影更新（配置即事实源）
     assert.ok(h.calls.selects.some((s) => s.model === "k3.1-mini" && !s.reasoningEffort), "no stale effort carried via the session projection");
   } finally { await h.dispose(); }
 });
@@ -462,8 +503,10 @@ test("apply: selecting a normal permission cancels a pending high-permission con
     await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "permission", option: "danger-full-access" } });
     // 改选普通权限 → pending 清除 + 配置立即更新为 read-only
     await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "permission", option: "read-only" } });
-    await h.waitForState('"permissionPreset": "read-only"');
-    assert.match(h.readState(), /"permissionPreset": "read-only"/);
+    await settle();
+    const mutation = h.calls.configMutations.at(-1);
+    assert.ok(mutation, "permission written to the plugin config");
+    assert.deepEqual(mutation.ops, [{ op: "set", path: ["permissionPreset"], value: "read-only" }], "read-only written to the plugin config");
     // 发起人回复「确认」→ 无 pending，不应用
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "确认" });
     await settle();
@@ -471,8 +514,9 @@ test("apply: selecting a normal permission cancels a pending high-permission con
     // 下一轮：应用的是 read-only 而非 danger-full-access
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m2", content: "go" });
     await h.endTurn();
-    assert.equal(h.calls.presetSets.length, 1);
-    assert.equal(h.calls.presetSets[0].name, "read-only");
+    assert.ok(h.calls.presetSets.length >= 1);
+    assert.equal(h.calls.presetSets.at(-1).name, "read-only", "the configured preset reached the session");
+    assert.ok(h.calls.presetSets.every((p) => p.name === "read-only"), "the cancelled high-permission preset was never applied");
   } finally { await h.dispose(); }
 });
 
@@ -482,12 +526,14 @@ test("apply: permission __default__ resolves to the DSH default preset", async (
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m0", content: "warm up" });
     await h.endTurn(); // onComplete 刷新 settingsData（defaultPermission 就位）
     await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "permission", option: "__default__" } });
-    await h.waitForState('"permissionPreset": "workspace-write"');
-    assert.match(h.readState(), /"permissionPreset": "workspace-write"/, "__default__ resolves to the catalog defaultPreset");
+    await settle();
+    const mutation = h.calls.configMutations.at(-1);
+    assert.ok(mutation, "default preset written to the plugin config");
+    assert.deepEqual(mutation.ops, [{ op: "set", path: ["permissionPreset"], value: "workspace-write" }], "__default__ resolves to the catalog defaultPreset");
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "go" });
     await h.endTurn();
-    assert.equal(h.calls.presetSets.length, 1);
-    assert.equal(h.calls.presetSets[0].name, "workspace-write", "defaultPreset from the catalog is applied");
+    assert.ok(h.calls.presetSets.length >= 1);
+    assert.equal(h.calls.presetSets.at(-1).name, "workspace-write", "defaultPreset from the catalog is applied");
   } finally { await h.dispose(); }
 });
 
@@ -604,8 +650,10 @@ test("apply: the auto preset does not require confirmation (it asks every call)"
     // auto = sandbox 全权 + approval ask（每次调用都审查）→ 比 danger-full-access（never）安全
     const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "permission", option: "auto" } });
     assert.equal(resp.toast.type, "success", "auto applies without a confirmation step");
-    await h.waitForState('"permissionPreset": "auto"');
-    assert.match(h.readState(), /"permissionPreset": "auto"/, "auto persisted to per-chat state");
+    await settle();
+    const mutation = h.calls.configMutations.at(-1);
+    assert.ok(mutation, "auto wrote the plugin config");
+    assert.deepEqual(mutation.ops, [{ op: "set", path: ["permissionPreset"], value: "auto" }], "auto persisted to the plugin config");
   } finally { await h.dispose(); }
 });
 
@@ -619,8 +667,10 @@ test("apply: picking an effort right after a model switch validates against the 
     await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "model", option: "kimi:k3.1-pro" } });
     const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "effort", option: "high" } });
     assert.equal(resp.toast.type, "success", "effort of the just-selected model is accepted");
-    await h.waitForState('"reasoningEffort": "high"');
-    assert.match(h.readState(), /"reasoningEffort": "high"/, "effort persisted to per-chat state");
+    await settle();
+    const mutation = h.calls.configMutations.at(-1);
+    assert.ok(mutation, "effort wrote the plugin config");
+    assert.deepEqual(mutation.ops, [{ op: "set", path: ["reasoningEffort"], value: "high" }], "effort persisted to the plugin config");
   } finally { await h.dispose(); }
 });
 
@@ -678,6 +728,26 @@ test("apply: dedup swallows repeated card actions (60s TTL)", async () => {
     const second = await h.cardAction(evt);
     assert.ok(first, "first applies");
     assert.equal(second, undefined, "same messageId+name+option deduped");
+  } finally { await h.dispose(); }
+});
+
+test("apply: the reply card shows the PLUGIN-CONFIGURED model, not the DSH default", async () => {
+  // 真机回归（2026-11-17）：插件配置里选了 Agnes，卡片却显示 DeepSeek——
+  // 因为配置从未传给会话、卡片又另存了一份 per-chat 状态。
+  const h = await makeSettingsHarness({ configOverride: { provider: "kimi", model: "k3.1-pro", reasoningEffort: "high" } });
+  try {
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    await h.endTurn();
+    const finalCard = h.calls.cards.at(-1);
+    const subtitle = String(finalCard.header?.subtitle?.content || "");
+    assert.match(subtitle, /Kimi · K3.1 Pro/, "card shows the model configured in the plugin config");
+    assert.match(subtitle, /高/, "card shows the configured reasoning effort");
+    // 新会话按配置里的模型创建（不再是 DSH 默认模型）
+    assert.ok(h.calls.creates.length > 0, "a session was created");
+    const opts = h.calls.creates.at(-1);
+    assert.equal(opts.agentOptions?.provider, "kimi", "session created with the configured provider");
+    assert.equal(opts.agentOptions?.model, "k3.1-pro", "session created with the configured model");
+    assert.equal(opts.agentOptions?.reasoningEffort, "high", "session created with the configured effort");
   } finally { await h.dispose(); }
 });
 
