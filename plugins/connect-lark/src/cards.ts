@@ -294,6 +294,35 @@ function settingsRow(items: Array<{ label: string; color: string; select: Record
   return { tag: "column_set", flex_mode: "none", columns };
 }
 
+/** 工作区切换卡：横幅 + 新工作区的「对话」下拉——切换后直接在这条消息里
+ *  选历史会话接回（负责人 2026-11-18：每个工作区与会话完全绑定）。 */
+export function buildWorkspaceSwitchCard(
+  fromTitle: string,
+  toTitle: string,
+  sessions: ReadonlyArray<{ sessionId: string; title: string; updatedAt?: number }>,
+): Record<string, unknown> {
+  const options: Array<{ label: string; value: string }> = [
+    { label: "🆕 使用新对话（默认）", value: NEW_CONVERSATION_VALUE },
+  ];
+  for (const s of sessions.slice(0, 12)) {
+    const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 8) + "…";
+    const rel = relativeTime(s.updatedAt ?? 0);
+    options.push({ label: name + " · " + rel + "前", value: s.sessionId });
+  }
+  return {
+    schema: "2.0",
+    header: { title: { tag: "plain_text", content: "📢 已切换工作区" }, template: "turquoise" },
+    body: { elements: [
+      { tag: "markdown", content: "从 **" + fromTitle + "** 切换至 **" + toTitle + "** · 已开启新对话（不继承历史）" },
+      { tag: "markdown", content: "<font color='grey'>如需继续之前的对话，直接在下拉选择（历史与设置保留）：</font>" },
+      { tag: "select_static", name: "conversation",
+        placeholder: { tag: "plain_text", content: "切换对话" },
+        options: options.map((o) => ({ text: { tag: "plain_text", content: o.label }, value: o.value })),
+        behaviors: [{ type: "callback", value: { value: "conversation" } }] },
+    ] },
+  };
+}
+
 /** 相对时间（跟 DSH 会话列表同口径）：10 分钟 / 10 小时 / 3 天 / 2 个月 / 1 年。 */
 export function relativeTime(updatedAt: number, now = Date.now()): string {
   const diff = Math.max(0, now - updatedAt);

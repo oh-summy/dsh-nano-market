@@ -232,7 +232,8 @@ function settingsRow(items) {
 		flex_mode: "none",
 		columns: items.map((it) => [{
 			tag: "column",
-			width: "48px",
+			width: "56px",
+			horizontal_align: "center",
 			vertical_align: "center",
 			elements: [{
 				tag: "markdown",
@@ -246,6 +247,61 @@ function settingsRow(items) {
 			horizontal_spacing: "small",
 			elements: [it.select]
 		}]).flat()
+	};
+}
+/** 工作区切换卡：横幅 + 新工作区的「对话」下拉——切换后直接在这条消息里
+*  选历史会话接回（负责人 2026-11-18：每个工作区与会话完全绑定）。 */
+function buildWorkspaceSwitchCard(fromTitle, toTitle, sessions) {
+	const options = [{
+		label: "🆕 使用新对话（默认）",
+		value: NEW_CONVERSATION_VALUE
+	}];
+	for (const s of sessions.slice(0, 12)) {
+		const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 8) + "…";
+		const rel = relativeTime(s.updatedAt ?? 0);
+		options.push({
+			label: name + " · " + rel + "前",
+			value: s.sessionId
+		});
+	}
+	return {
+		schema: "2.0",
+		header: {
+			title: {
+				tag: "plain_text",
+				content: "📢 已切换工作区"
+			},
+			template: "turquoise"
+		},
+		body: { elements: [
+			{
+				tag: "markdown",
+				content: "从 **" + fromTitle + "** 切换至 **" + toTitle + "** · 已开启新对话（不继承历史）"
+			},
+			{
+				tag: "markdown",
+				content: "<font color='grey'>如需继续之前的对话，直接在下拉选择（历史与设置保留）：</font>"
+			},
+			{
+				tag: "select_static",
+				name: "conversation",
+				placeholder: {
+					tag: "plain_text",
+					content: "切换对话"
+				},
+				options: options.map((o) => ({
+					text: {
+						tag: "plain_text",
+						content: o.label
+					},
+					value: o.value
+				})),
+				behaviors: [{
+					type: "callback",
+					value: { value: "conversation" }
+				}]
+			}
+		] }
 	};
 }
 /** 相对时间（跟 DSH 会话列表同口径）：10 分钟 / 10 小时 / 3 天 / 2 个月 / 1 年。 */
@@ -1989,8 +2045,10 @@ function apply(ctx, config = {}) {
 		try {
 			await writePluginConfig(partial);
 			if (controlName === "workspace") {
+				const fromCwd = currentCwd(chatId);
+				plainWorkspaceTitle = (settingsData?.workspaces ?? []).find((w) => w.path === fromCwd)?.title ?? fromCwd.split("/").filter(Boolean).pop() ?? fromCwd;
 				clearSessionBinding(chatId);
-				const newCwd = partial.defaultPath || currentCwd(chatId);
+				const newCwd = partial.defaultPath || fromCwd;
 				try {
 					const created = await ctx.sessionController.create({ cwd: newCwd });
 					const newId = created?.sessionId ?? created?.value?.sessionId;
@@ -2009,6 +2067,18 @@ function apply(ctx, config = {}) {
 								title: "新对话"
 							});
 						} catch {}
+						const toWsTitle = (settingsData?.workspaces ?? []).find((w) => w.path === newCwd)?.title ?? newCwd.split("/").filter(Boolean).pop() ?? newCwd;
+						const wsSessions = (settingsData?.sessions ?? []).filter((s) => s.cwd === newCwd && s.sessionId !== newId).slice(0, 12).map((s) => ({
+							sessionId: s.sessionId,
+							title: s.title,
+							updatedAt: s.updatedAt
+						}));
+						try {
+							await withTimeout(chan.send(chatId, { card: buildWorkspaceSwitchCard(plainWorkspaceTitle, toWsTitle, wsSessions) }), 8e3);
+						} catch (sendError) {
+							ctx.logger?.warn?.("[connect-lark] workspace switch card send failed: " + sendError.message);
+							await sendBounded(chan, chatId, "🔄 **已切换工作区** · " + nowStamp() + "\n从 **" + (plainWorkspaceTitle || "未知") + "** 切换至 **" + toWsTitle + "** · 已开启新对话（不继承历史）\n可在「会话设置 → 对话」下拉接回之前工作区的历史会话");
+						}
 					}
 				} catch (e2) {
 					ctx.logger?.warn?.("[connect-lark] workspace-switch session create failed: " + e2.message);
@@ -2065,6 +2135,7 @@ function apply(ctx, config = {}) {
 	*  填充，与 Web 选择器同源；实测 MiniMax = Low/Medium/High/Xhigh/Max、Agnes = Off/High）。
 	*  绝不在卡片回调里 await 网络请求：飞书回调窗口约 3s，超时会报「回调服务超时」。 */
 	const effortOptionsFor = (args) => effortOptions(currentModelValue(args.current, args.catalog), args.catalog);
+	let plainWorkspaceTitle = "";
 	/** 本地时间戳（消息里的切换记录用）：2026-11-18 14:38 */
 	const nowStamp = () => {
 		const d = /* @__PURE__ */ new Date();
@@ -2076,13 +2147,6 @@ function apply(ctx, config = {}) {
 		const row = (settingsData?.sessions ?? []).find((s) => s.sessionId === sessionId);
 		if (row?.title) return row.title;
 		return sessionId.replace(/^session-/, "").slice(0, 13) + "…";
-	};
-	const sendWorkspaceSwitchedNotice = async (chan, chatId, fromTitle, toTitle) => {
-		try {
-			await sendBounded(chan, chatId, "🔄 **已切换工作区** · " + nowStamp() + "\n从 **" + (fromTitle || "未知") + "** 切换至 **" + (toTitle || "未知") + "** · 已开启新对话（不继承历史）\n可在「对话」下拉接回之前工作区的历史会话");
-		} catch (e) {
-			ctx.logger?.warn?.("[connect-lark] workspace notice failed: " + e.message);
-		}
 	};
 	ctx.effect(() => {
 		let dead = false;
@@ -2503,7 +2567,7 @@ function apply(ctx, config = {}) {
 								title: "新对话"
 							});
 						} catch {}
-						Promise.resolve(chan.send(chatId, { markdown: "🆕 **已开启新对话** · " + nowStamp() + "\n之后的对话在新会话进行，不继承之前的历史" })).catch(() => {});
+						Promise.resolve(chan.send(chatId, { markdown: "━━━━━━━━━━ 📢 新建对话 ━━━━━━━━━━\n🆕 已开启全新会话 · " + nowStamp() + "\n之后的对话在新会话进行，不继承之前的历史" })).catch(() => {});
 						let rebuilt;
 						try {
 							rebuilt = rebuildReplyCard(chatId);
@@ -2531,7 +2595,7 @@ function apply(ctx, config = {}) {
 						sessionId: option,
 						cwd: known.cwd
 					});
-					Promise.resolve(chan.send(chatId, { markdown: "🔄 **已切换对话** · " + nowStamp() + "\n从「" + fromTitle + "」切换至「" + toTitle + "」\n下一条消息起在新会话继续，历史与设置保留" })).catch(() => {});
+					Promise.resolve(chan.send(chatId, { markdown: "━━━━━━━━━━ 📢 切换对话 ━━━━━━━━━━\n从「" + fromTitle + "」切换至「" + toTitle + "」 · " + nowStamp() + "\n下一条消息起在新会话继续，历史与设置保留" })).catch(() => {});
 					let rebuilt;
 					try {
 						rebuilt = rebuildReplyCard(chatId);
@@ -2552,7 +2616,7 @@ function apply(ctx, config = {}) {
 						type: "error",
 						content: result.error
 					} };
-					if (result.switchedWorkspace) sendWorkspaceSwitchedNotice(chan, chatId, prevDisplay?.workspace ?? "", result.workspaceTitle ?? "").catch(() => {});
+					if (result.switchedWorkspace) {}
 					if (result.pendingHigh) return { toast: {
 						type: "warning",
 						content: "已选择高权限档，回复「确认」以应用（仅发起人，30s 内）"
@@ -2570,6 +2634,7 @@ function apply(ctx, config = {}) {
 						} };
 					}
 					applyDimension(chan, chatId, controlName, result.partial, evt.messageId + ":" + controlName + ":" + option);
+					if (controlName === "workspace") return;
 					const dimLabels = {
 						workspace: "工作区",
 						model: "模型",

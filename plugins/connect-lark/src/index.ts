@@ -25,7 +25,7 @@ import { isVolatile } from "@deepseek-ai/cosmokit";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel, type LarkChannel } from "@larksuite/channel";
 import {
-  buildApprovalCard, buildApprovalFinalCard, buildSettingsPanel,
+  buildApprovalCard, buildApprovalFinalCard, buildSettingsPanel, buildWorkspaceSwitchCard,
   CANCEL_SETTINGS_VALUE, currentModelValue, DEFAULT_OPTION_VALUE, NEW_CONVERSATION_VALUE,
   effortOptions, modelOptions,
   richCard, settingsStatusLine, streamMarkdown,
@@ -962,8 +962,12 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       //    下一条消息（那会落回确定性会话 = 接回旧历史，与「默认新开」语义冲突）。
       await writePluginConfig(partial);
       if (controlName === "workspace") {
+        const fromCwd = currentCwd(chatId);
+        const fromWsTitle = (settingsData?.workspaces ?? []).find((w) => w.path === fromCwd)?.title
+          ?? fromCwd.split("/").filter(Boolean).pop() ?? fromCwd;
+        plainWorkspaceTitle = fromWsTitle;
         clearSessionBinding(chatId);
-        const newCwd = partial.defaultPath || currentCwd(chatId);
+        const newCwd = partial.defaultPath || fromCwd;
         try {
           const created: any = await ctx.sessionController.create({ cwd: newCwd });
           const newId = created?.sessionId ?? created?.value?.sessionId;
@@ -975,6 +979,18 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             } catch { /* 不阻断 */ }
             touchState(chatId, { sessionId: newId, cwd: newCwd });
             try { await ctx.sessionController.rename({ sessionId: newId, title: "新对话" }); } catch { /* 不影响切换 */ }
+            // 切换记录 = **可交互卡片**：内嵌新工作区的「对话」下拉，直接接回历史会话
+            const toWsTitle = (settingsData?.workspaces ?? []).find((w) => w.path === newCwd)?.title ?? newCwd.split("/").filter(Boolean).pop() ?? newCwd;
+            const wsSessions = (settingsData?.sessions ?? [])
+              .filter((s) => s.cwd === newCwd && s.sessionId !== newId)
+              .slice(0, 12)
+              .map((s) => ({ sessionId: s.sessionId, title: s.title, updatedAt: s.updatedAt }));
+            try {
+              await withTimeout(chan.send(chatId, { card: buildWorkspaceSwitchCard(plainWorkspaceTitle, toWsTitle, wsSessions) }), 8_000);
+            } catch (sendError) {
+              ctx.logger?.warn?.("[connect-lark] workspace switch card send failed: " + (sendError as Error).message);
+              await sendBounded(chan, chatId, "🔄 **已切换工作区** · " + nowStamp() + "\n从 **" + (plainWorkspaceTitle || "未知") + "** 切换至 **" + toWsTitle + "** · 已开启新对话（不继承历史）\n可在「会话设置 → 对话」下拉接回之前工作区的历史会话");
+            }
           }
         } catch (e2) {
           ctx.logger?.warn?.("[connect-lark] workspace-switch session create failed: " + (e2 as Error).message);
@@ -1064,6 +1080,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   const effortOptionsFor = (args: SettingsCardOptions): Array<{ label: string; value: string }> =>
     effortOptions(currentModelValue(args.current, args.catalog), args.catalog);
 
+  // 最近一次工作区切换的来源标题（切换卡「从 X」用；工作区分支写入）
+  let plainWorkspaceTitle = "";
   /** 本地时间戳（消息里的切换记录用）：2026-11-18 14:38 */
   const nowStamp = (): string => {
     const d = new Date();
@@ -1075,16 +1093,6 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
     const row = (settingsData?.sessions ?? []).find((s) => s.sessionId === sessionId);
     if (row?.title) return row.title;
     return sessionId.replace(/^session-/, "").slice(0, 13) + "…";
-  };
-
-  const sendWorkspaceSwitchedNotice = async (chan: LarkChannel, chatId: string, fromTitle: string, toTitle: string): Promise<void> => {
-    try {
-      await sendBounded(chan, chatId, "🔄 **已切换工作区** · " + nowStamp() +
-        "\n从 **" + (fromTitle || "未知") + "** 切换至 **" + (toTitle || "未知") + "** · 已开启新对话（不继承历史）" +
-        "\n可在「对话」下拉接回之前工作区的历史会话");
-    } catch (e) {
-      ctx.logger?.warn?.("[connect-lark] workspace notice failed: " + (e as Error).message);
-    }
   };
 
   ctx.effect(() => {
@@ -1544,7 +1552,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             try { await ctx.sessionController.rename({ sessionId: newId, title: "新对话" }); } catch { /* 不影响切换 */ }
             // 切换记录作为**一条消息**发进对话（负责人 2026-11-18：不要只弹 toast）
             void Promise.resolve(chan.send(chatId, {
-              markdown: "🆕 **已开启新对话** · " + nowStamp() + "\n之后的对话在新会话进行，不继承之前的历史",
+              markdown: "━━━━━━━━━━ 📢 新建对话 ━━━━━━━━━━\n🆕 已开启全新会话 · " + nowStamp() + "\n之后的对话在新会话进行，不继承之前的历史",
             })).catch(() => {});
             let rebuilt: object | undefined;
             try { rebuilt = rebuildReplyCard(chatId); } catch (e2) {
@@ -1570,7 +1578,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           touchState(chatId, { sessionId: option, cwd: known.cwd });
           // 切换记录作为**一条消息**发进对话（含时间与从→到）
           void Promise.resolve(chan.send(chatId, {
-            markdown: "🔄 **已切换对话** · " + nowStamp() + "\n从「" + fromTitle + "」切换至「" + toTitle + "」\n下一条消息起在新会话继续，历史与设置保留",
+            markdown: "━━━━━━━━━━ 📢 切换对话 ━━━━━━━━━━\n从「" + fromTitle + "」切换至「" + toTitle + "」 · " + nowStamp() + "\n下一条消息起在新会话继续，历史与设置保留",
           })).catch(() => {});
           let rebuilt: object | undefined;
           try { rebuilt = rebuildReplyCard(chatId); } catch (e2) {
@@ -1585,7 +1593,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           const result = applySelect(chatId, controlName, option, openId);
           if (result.error) return { toast: { type: "error", content: result.error } };
           if (result.switchedWorkspace) {
-            void sendWorkspaceSwitchedNotice(chan, chatId, (prevDisplay as any)?.workspace ?? "", result.workspaceTitle ?? "").catch(() => {});
+            // 切换记录（含新工作区对话下拉的可交互卡片）由 applyDimension 发送，此处不再重复
           }
           if (result.pendingHigh) {
             return { toast: { type: "warning", content: "已选择高权限档，回复「确认」以应用（仅发起人，30s 内）" } };
@@ -1611,7 +1619,9 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           }
           // 写插件配置（与 Web 设置页同一份）+ 让当前会话立即生效（失败发通知）。
           // 透传 dedup 键：失败时释放，允许用户立即重试（审查 P1-5）。
+          // 工作区切换的记录（可交互卡片）由 applyDimension 发送——此处不回 toast。
           void applyDimension(chan, chatId, controlName, result.partial, evt.messageId + ":" + controlName + ":" + option);
+          if (controlName === "workspace") return;
           const dimLabels: Record<string, string> = { workspace: "工作区", model: "模型", effort: "思考强度", permission: "权限" };
           const field: string = controlName;
           const prevLabel = (prevDisplay as any)?.[field] ?? "跟随 DSH 默认";
