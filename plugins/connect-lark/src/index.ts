@@ -427,7 +427,8 @@ async function listSessions(ctx: AnyCtx, limit: number = HISTORY_LIMIT, cwdFilte
       titleError = "sessionQuery service unavailable";
     }
     for (const s of page) {
-      s.title = titles.get(s.sessionId) ?? "未命名对话（" + s.sessionId.slice(0, 12) + "…）";
+      // 无标题保持空串：显示层（对话下拉）用 id + 相对时间呈现，不造「未命名对话」包装
+      s.title = titles.get(s.sessionId) ?? "";
     }
     return { sessions: page, total, titleError };
   } catch (e) {

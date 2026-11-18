@@ -320,7 +320,7 @@ function conversationSelect(opts: SettingsCardOptions): Record<string, unknown> 
     if (seen.has(s.sessionId)) continue;
     seen.add(s.sessionId);
     const isCurrent = s.sessionId === opts.currentSessionId;
-    const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 8) + "…";
+    const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 13) + "…";
     const rel = relativeTime(s.updatedAt ?? 0);
     options.push({ label: (isCurrent ? "● 当前 ｜ " : "") + name + " · " + rel + "前", value: s.sessionId });
   }
@@ -334,16 +334,10 @@ export function buildSettingsPanel(opts: SettingsCardOptions): Record<string, un
   const selects = settingsSelectElements(opts);
   const chatSelect = conversationSelect(opts);
   const elements: Array<Record<string, unknown>> = [
-    // 引导行：说明语义而非口号（浅色底上用深灰保证可读）
-    { tag: "markdown", content: "<font color='grey'>选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效</font>" },
-    // 三行布局（标签与下拉同排）：对话独占一行（数量说明在下拉右侧）；模型+思考强度；工作区+权限
-    { tag: "column_set", flex_mode: "none", columns: [
-      { tag: "column", width: "48px", vertical_align: "center",
-        elements: [{ tag: "markdown", content: "<text_tag color='indigo'>对话</text_tag>" }] },
-      { tag: "column", width: "weighted", weight: 1, vertical_align: "center", elements: [chatSelect] },
-      { tag: "column", width: "auto", vertical_align: "center",
-        elements: [{ tag: "markdown", content: "<font color='grey'>共 " + (opts.sessionsTotal ?? 0) + " 个</font>" }] },
-    ] },
+    // 引导行：说明语义 + 会话总数（灰字）
+    { tag: "markdown", content: "<font color='grey'>选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效 · 本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话</font>" },
+    // 三行布局（标签与下拉同排）：对话下拉占满整行（露出更多标题文字）；模型+强度；工作区+权限
+    settingsRow([{ label: "对话", color: "indigo", select: chatSelect }]),
     settingsRow([
       { label: "模型", color: "blue", select: selects[1] },
       { label: "强度", color: "turquoise", select: selects[2] },

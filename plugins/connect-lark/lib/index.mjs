@@ -275,7 +275,7 @@ function conversationSelect(opts) {
 		if (seen.has(s.sessionId)) continue;
 		seen.add(s.sessionId);
 		const isCurrent = s.sessionId === opts.currentSessionId;
-		const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 8) + "…";
+		const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 13) + "…";
 		const rel = relativeTime(s.updatedAt ?? 0);
 		options.push({
 			label: (isCurrent ? "● 当前 ｜ " : "") + name + " · " + rel + "前",
@@ -286,42 +286,17 @@ function conversationSelect(opts) {
 }
 function buildSettingsPanel(opts) {
 	const selects = settingsSelectElements(opts);
+	const chatSelect = conversationSelect(opts);
 	const elements = [
 		{
 			tag: "markdown",
-			content: "<font color='grey'>选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效</font>"
+			content: "<font color='grey'>选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效 · 本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话</font>"
 		},
-		{
-			tag: "column_set",
-			flex_mode: "none",
-			columns: [
-				{
-					tag: "column",
-					width: "48px",
-					vertical_align: "center",
-					elements: [{
-						tag: "markdown",
-						content: "<text_tag color='indigo'>对话</text_tag>"
-					}]
-				},
-				{
-					tag: "column",
-					width: "weighted",
-					weight: 1,
-					vertical_align: "center",
-					elements: [conversationSelect(opts)]
-				},
-				{
-					tag: "column",
-					width: "auto",
-					vertical_align: "center",
-					elements: [{
-						tag: "markdown",
-						content: "<font color='grey'>共 " + (opts.sessionsTotal ?? 0) + " 个</font>"
-					}]
-				}
-			]
-		},
+		settingsRow([{
+			label: "对话",
+			color: "indigo",
+			select: chatSelect
+		}]),
 		settingsRow([{
 			label: "模型",
 			color: "blue",
@@ -1473,7 +1448,7 @@ async function listSessions(ctx, limit = HISTORY_LIMIT, cwdFilter, coldRead = tr
 			};
 			await Promise.all(coldTargets.map((s) => probeTitle(s.sessionId)));
 		} else if (coldCount > 0) titleError = "sessionQuery service unavailable";
-		for (const s of page) s.title = titles.get(s.sessionId) ?? "未命名对话（" + s.sessionId.slice(0, 12) + "…）";
+		for (const s of page) s.title = titles.get(s.sessionId) ?? "";
 		return {
 			sessions: page,
 			total,
