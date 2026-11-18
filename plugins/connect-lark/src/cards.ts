@@ -287,7 +287,7 @@ function settingsSelectElements(opts: SettingsCardOptions): Array<Record<string,
 function settingsRow(items: Array<{ label: string; color: string; select: Record<string, unknown> }>): Record<string, unknown> {
   const columns = items.map((it) => [
     // 标签列固定宽 + 标签居中：两字/三字标签的两侧空隙对称，组内贴合度一致（真机反馈 2026-11-18）
-    { tag: "column", width: "56px", horizontal_align: "center", vertical_align: "center",
+    { tag: "column", width: "56px", horizontal_align: "right", vertical_align: "center",
       elements: [{ tag: "markdown", content: "<text_tag color='" + it.color + "'>" + it.label + "</text_tag>" }] },
     { tag: "column", width: "weighted", weight: 1, vertical_align: "center", horizontal_spacing: "small", elements: [it.select] },
   ]).flat();
@@ -377,7 +377,7 @@ function conversationSelect(opts: SettingsCardOptions): Record<string, unknown> 
     const isCurrent = s.sessionId === opts.currentSessionId;
     const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 13) + "…";
     const rel = relativeTime(s.updatedAt ?? 0);
-    options.push({ label: (isCurrent ? "● 当前 ｜ " : "") + name + " · " + rel + "前", value: s.sessionId });
+    options.push({ label: (isCurrent ? "📍 " : "") + name + " · " + rel + "前", value: s.sessionId });
   }
   // initial：当前绑定会话在候选里就指向它；否则指向「新对话」（无绑定 = 默认会话尚未出现在清单）
   const initial = opts.currentSessionId && seen.has(opts.currentSessionId) ? opts.currentSessionId : undefined;

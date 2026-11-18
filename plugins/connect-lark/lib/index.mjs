@@ -233,7 +233,7 @@ function settingsRow(items) {
 		columns: items.map((it) => [{
 			tag: "column",
 			width: "56px",
-			horizontal_align: "center",
+			horizontal_align: "right",
 			vertical_align: "center",
 			elements: [{
 				tag: "markdown",
@@ -373,7 +373,7 @@ function conversationSelect(opts) {
 		const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 13) + "…";
 		const rel = relativeTime(s.updatedAt ?? 0);
 		options.push({
-			label: (isCurrent ? "● 当前 ｜ " : "") + name + " · " + rel + "前",
+			label: (isCurrent ? "📍 " : "") + name + " · " + rel + "前",
 			value: s.sessionId
 		});
 	}

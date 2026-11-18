@@ -119,7 +119,7 @@ test("buildSettingsPanel: five named select_static elements with grouped layout"
   const conv = panelSelects(withSessions).find((s) => s.name === "conversation");
   assert.ok(conv.options.some((o) => o.value === "session-a" && /调试问题/.test(o.text.content)), "session options carry real titles");
   assert.equal(conv.initial_option, "session-b", "current binding is the initial option");
-  assert.ok(conv.options.some((o) => /● 当前/.test(o.text.content)), "current session is visually marked");
+  assert.ok(conv.options.some((o) => /📍/.test(o.text.content)), "current session is visually marked");
   assert.ok(panelSelects(withSessions).every((s) => Array.isArray(s.options) && s.options.length > 0), "no empty options selects");
   assert.ok(selects.every((s) => s.behaviors?.[0]?.type === "callback"), "every select carries a callback behavior (official-recommended custom回传参数)");
   assert.ok(selects.every((s) => Array.isArray(s.options) && s.options.length > 0), "no empty options selects");
