@@ -165,7 +165,7 @@ test("modelOptions flattens provider groups; effortOptions follow the current mo
 
 // ============ apply 集成（cardAction 流程） ============
 
-async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", senderAllowlist = [], resolveAgentReturnsAgent = false, catalog: catalogOverride, defaultPermission = "workspace-write", persistFails = false, failCreatesFrom = 0, failSessionCreates = false, failSessionCreatesFrom = 1, mutateFails = false, historySessions = [], historyTitleOf = (sid) => sid, configOverride = {} } = {}) {
+async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", senderAllowlist = [], resolveAgentReturnsAgent = false, catalog: catalogOverride, defaultPermission = "workspace-write", persistFails = false, failCreatesFrom = 0, failSessionCreates = false, failSessionCreatesFrom = 1, mutateFails = false, failCardSends = false, historySessions = [], historyTitleOf = (sid) => sid, configOverride = {} } = {}) {
   const calls = { sends: [], cards: [], selects: [], presetSets: [], disposes: [], followups: [], resolveSessions: [], registered: [], updates: [], creates: [], sessionCreates: [], boots: 0, configEditorEdits: 0, configMutations: [], createSeq: 0, prepended: [] };
   // per-chat 状态文件（一等公民维度的持久化落点）——插件经 CONNECT_LARK_SESSION_MAP 指向这里
   const stateFile = makeStateFile();
@@ -186,10 +186,19 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
   // 活着的 agent 注册表（按 sessionId），与宿主 AgentRegistry 同形。
   const liveAgents = new Map();
   let disposer;
+  let fiberListeners = [];
   const ctx = {
     logger: { info: (m) => console.log("[info]", m), warn: (m) => console.log("[warn]", m), error: (m) => console.log("[error]", m) },
     credentials: { resolve: async () => ({ value: "test-secret" }) },
-    effect(fn) { disposer = fn(); },
+    // 模拟 cordis fiber 语义：每次 apply = 新 fiber，fiber 内注册的监听器随
+    // 插件卸载（disposer）自动清理（真实 cordis 语义：EventsService 监听器
+    // 随 owning fiber dispose）——否则 mock 里会逐代累积（审查 P2-7 实测发现）。
+    effect(fn) {
+      fiberListeners = [];
+      const prev = disposer;
+      disposer = () => { try { prev?.(); } catch { /* noop */ } for (const u of fiberListeners) try { u(); } catch { /* noop */ } fiberListeners = []; };
+      fn();
+    },
     on(name, fn, options) {
       if (!handlers.has(name)) handlers.set(name, new Set());
       handlers.get(name).add(fn);
@@ -197,7 +206,9 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
       if (options && typeof options === "object" && options.prepend) {
         calls.prepended.push(name);
       }
-      return () => handlers.get(name)?.delete(fn);
+      const unsub = () => handlers.get(name)?.delete(fn);
+      fiberListeners.push(unsub);
+      return unsub;
     },
     sessionController: {
       resolveAgent: async (sid) => { calls.resolveSessions.push(sid); return resolveAgentReturnsAgent ? { agent } : {}; },
@@ -283,7 +294,7 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
         async connect() {},
         async disconnect() {},
         on(name, fn) { channelHandlers.set(name, fn); return () => channelHandlers.delete(name); },
-        async send(chatId, input) { calls.sends.push({ chatId, input }); return { messageId: "msg-" + calls.sends.length }; },
+        async send(chatId, input) { if (failCardSends && input?.card) throw new Error("simulated card send failure"); calls.sends.push({ chatId, input }); return { messageId: "msg-" + calls.sends.length }; },
         async updateCard(messageId, card) { calls.updates.push({ messageId, card }); },
         async stream(chatId, input) {
           const controller = { async update(card) { calls.cards.push(card); } };
@@ -317,6 +328,10 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
       return false;
     },
     readState,
+    // 监听器计数（HMR 泄漏回归断言用）：cordis handlers 各 Set 总数 + channel handlers
+    handlerCount: () => { let n = channelHandlers.size; for (const [, s] of handlers) n += s.size; return n; },
+    handlerNames: () => [...handlers.entries()].map(([k, s]) => [k, s.size]),
+    emitApproval: (payload, next) => { let last; for (const fn of handlers.get("approval/request") ?? []) last = fn(payload, next); return last; },
     cardAction: async (evt) => {
       console.log("[probe]", new Date().toISOString().slice(11, 23), "cardAction called:", JSON.stringify(evt.action));
       const fn = channelHandlers.get("cardAction");
@@ -1013,6 +1028,51 @@ test("apply: dedup key is released on failure so the user can retry within TTL (
     await settle();
     assert.match(resp2.toast.content, /新会话创建失败/, "retry within TTL is NOT silently swallowed");
     assert.ok(!h.calls.sends.some((s) => s.input?.card && /已开启全新会话/.test(String(s.input.card.header?.title?.content || ""))), "no success banner (create kept failing)");
+  } finally { await h.dispose(); }
+});
+
+test("apply → dispose ×20：监听器回到基线，无泄漏（审查 P2-7 HMR 回归）", async () => {
+  const h = await makeSettingsHarness();
+  try {
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    await h.endTurn();
+    await h.reloadPlugin(); // 一次完整 HMR 周期后取基线
+    const baseline = h.handlerCount();
+    const namesBaseline = JSON.stringify(h.handlerNames());
+    for (let i = 0; i < 20; i++) await h.reloadPlugin();
+    assert.equal(h.handlerCount(), baseline, "listener count returns to baseline after 20 HMR cycles");
+    assert.equal(JSON.stringify(h.handlerNames()), namesBaseline, "per-event listener sizes unchanged");
+  } finally { await h.dispose(); }
+});
+
+test("审批缺 callId 时用匿名序号——两次审批互不覆盖（审查 P2-8）", async () => {
+  const h = await makeSettingsHarness();
+  try {
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    await h.endTurn();
+    const sid = h.calls.sessionCreates[0]?.sessionId;
+    assert.ok(sid, "deterministic session exists");
+    // 两次不带 callId 的审批 → 各自发卡，callId 不同（不共用 key ""）。
+    // 注意：不 await emit——审批 promise 要等用户点按钮才 resolve。
+    h.emit("approval/request", { agent: { session: { id: sid } }, toolName: "write", reason: "r1" }, () => new Promise(() => {}));
+    h.emit("approval/request", { agent: { session: { id: sid } }, toolName: "write", reason: "r2" }, () => new Promise(() => {}));
+    await settle();
+    const cards = h.calls.sends.filter((s) => s.input?.card && JSON.stringify(s.input.card).includes("anon-"));
+    assert.equal(cards.length, 2, "two anon approval cards sent with distinct callIds");
+    assert.notEqual(JSON.stringify(cards[0].input.card), JSON.stringify(cards[1].input.card), "cards differ");
+  } finally { await h.dispose(); }
+});
+
+test("工作区切换卡发送失败时降级为 markdown 文案（审查 P2-1/P2-8）", async () => {
+  const h = await makeSettingsHarness({ failCardSends: true });
+  try {
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    await h.endTurn();
+    await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "workspace", option: "ws-b" } });
+    await settle();
+    console.log("[debug] sends:", JSON.stringify(h.calls.sends.map((s) => ({ md: typeof s.input?.markdown === "string" ? s.input.markdown.slice(0, 50) : (s.input?.card ? "CARD" : String(JSON.stringify(s.input)).slice(0, 30)) }))));
+    assert.ok(h.calls.sends.some((s) => typeof s.input?.markdown === "string" && /已切换工作区/.test(s.input.markdown)), "fallback markdown sent when the card send fails");
+    assert.ok(!h.calls.sends.some((s) => s.input?.card && String(s.input.card.header?.title?.content || "").includes("已切换工作区")), "no card (send kept failing)");
   } finally { await h.dispose(); }
 });
 

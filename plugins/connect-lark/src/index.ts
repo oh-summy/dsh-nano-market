@@ -965,12 +965,12 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       //    历史可在「对话」下拉接回）。立即在新工作区创建全新会话并绑定——不清绑定等
       //    下一条消息（那会落回确定性会话 = 接回旧历史，与「默认新开」语义冲突）。
       await writePluginConfig(partial);
-      if (controlName === "workspace") {
+      if (controlName === "workspace") { console.log("[probe-branch] enter");
         const fromCwd = currentCwd(chatId);
         const fromWsTitle = (settingsData?.workspaces ?? []).find((w) => w.path === fromCwd)?.title
           ?? fromCwd.split("/").filter(Boolean).pop() ?? fromCwd;
         plainWorkspaceTitle = fromWsTitle;
-        clearSessionBinding(chatId);
+        console.log("[probe-branch] before clear"); clearSessionBinding(chatId); console.log("[probe-branch] after clear");
         const newCwd = partial.defaultPath || fromCwd;
         try {
           const created: any = await ctx.sessionController.create({ cwd: newCwd });
@@ -986,12 +986,15 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             // 切换记录 = **可交互卡片**：内嵌新工作区的「对话」下拉，直接接回历史会话
             const toWsTitle = (settingsData?.workspaces ?? []).find((w) => w.path === newCwd)?.title ?? newCwd.split("/").filter(Boolean).pop() ?? newCwd;
             const wsSessions = (settingsData?.sessions ?? [])
-              .filter((s) => s.cwd === newCwd && s.sessionId !== newId)
+              .filter((s) => s.cwd === newCwd && s.sessionId !== newId && s.blank !== true)
               .slice(0, 12)
               .map((s) => ({ sessionId: s.sessionId, title: s.title, updatedAt: s.updatedAt }));
             try {
-              await withTimeout(chan.send(chatId, { card: buildWorkspaceSwitchCard(plainWorkspaceTitle, toWsTitle, wsSessions) }), 8_000);
-            } catch (sendError) {
+              console.log("[probe-branch] before send");
+              const sent = await withTimeout(chan.send(chatId, { card: buildWorkspaceSwitchCard(plainWorkspaceTitle, toWsTitle, wsSessions) }), 8_000);
+              // withTimeout 超时返回 {ok:false} 而不抛——显式转 throw，让降级文案可达（审查 P2-1）
+              if (!sent?.ok) throw new Error("workspace switch card send timeout");
+            } catch (sendError) { console.log("[probe-branch] send catch:", (sendError as Error).message);
               ctx.logger?.warn?.("[connect-lark] workspace switch card send failed: " + (sendError as Error).message);
               await sendBounded(chan, chatId, "🔄 **已切换工作区** · " + nowStamp() + "\n从 **" + (plainWorkspaceTitle || "未知") + "** 切换至 **" + toWsTitle + "** · 已开启新对话（不继承历史）\n可在「会话设置 → 对话」下拉接回之前工作区的历史会话");
             }
@@ -1037,6 +1040,12 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         }
       } catch (e) {
         ctx.logger?.warn?.("[connect-lark] config saved but session projection failed: " + (e as Error).message);
+        // 投影失败也释放 dedup 键：配置已保存但当前会话未生效，重试是用户最可能
+        // 的动作，不能被 60s dedup 静默吞掉（审查 P2-3）
+        if (dedupKey) dedupTable.delete(dedupKey);
+        // 投影失败也释放 dedup 键：配置已保存但当前会话未生效，重试是用户最可能
+        // 的动作，不能被 60s dedup 静默吞掉（审查 P2-3）
+        if (dedupKey) dedupTable.delete(dedupKey);
         void Promise.resolve(chan.send(chatId, {
           markdown: "✅ 已保存到插件配置（Web 设置页同步可见）\n⚠️ 当前会话未能立即切换：" + (e as Error).message + "\n新对话（或关闭持久终端后）会按新配置生效",
         })).catch(() => {});
@@ -1055,7 +1064,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
     // 唯一事实源 = 插件配置：卡片显示的就是 Web 页面上看到的值。
     const st = chatId ? chatState(chatId) : ({} as ChatState);
     const d: SettingsDisplay = {};
-    const wsPath = st.cwd || plain.defaultPath;
+    // 与 currentCwd() 同源兜底（审查 P2-4）：未配 defaultPath 时状态行仍显示工作区
+    const wsPath = st.cwd || plain.defaultPath || process.cwd();
     if (wsPath) {
       const ws = settingsData?.workspaces.find((w) => w.path === wsPath);
       d.workspace = ws?.title ?? wsPath;
