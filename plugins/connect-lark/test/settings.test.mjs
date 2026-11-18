@@ -21,7 +21,7 @@ registerHooks({
 // 动态 import：必须在 registerHooks 之后，channel stub 才生效
 const lib = await import("../lib/index.mjs");
 const {
-  cwdTag, buildSettingsPanel, buildHistoryCard, buildApprovalCard, buildApprovalFinalCard,
+  cwdTag, buildSettingsPanel, buildApprovalCard, buildApprovalFinalCard,
   settingsStatusLine, modelOptions, effortOptions, currentModelValue,
 } = lib;
 
@@ -828,100 +828,6 @@ test("apply: finished reply card carries status line and the inline settings pan
   } finally { await h.dispose(); }
 });
 
-// ============ P4：历史对话 / 新对话 ============
-
-test("buildHistoryCard: lists sessions as select options with new-conversation + close buttons", () => {
-  const sessions = [
-    { sessionId: "sess-a", title: "对话A", cwd: "/tmp/a" },
-    { sessionId: "sess-b", title: "对话B", cwd: "/tmp/b" },
-  ];
-  const card = buildHistoryCard(sessions, "sess-b");
-  assert.equal(card.schema, "2.0");
-  assert.equal(String(card.header?.title?.content), "🗂 历史对话");
-  const sel = card.body.elements.find((e) => e.tag === "select_static");
-  assert.ok(sel, "history select_static present");
-  assert.equal(sel.name, "history");
-  assert.deepEqual(sel.options.map((o) => o.value), ["sess-a", "sess-b"], "option values are session ids");
-  assert.equal(sel.initial_option, "sess-b", "current session highlighted");
-  const btns = card.body.elements.filter((e) => e.tag === "button");
-  assert.equal(btns.length, 2, "new-conversation + close buttons");
-  assert.equal(btns[0].behaviors[0].value.value, "new-conversation");
-  assert.equal(btns[1].behaviors[0].value.value, "cancel-history");
-});
-
-test("buildHistoryCard: empty sessions renders a note, no invalid empty-value option", () => {
-  const card = buildHistoryCard([]);
-  const sel = card.body.elements.find((e) => e.tag === "select_static");
-  assert.equal(sel, undefined, "no select when there is nothing to pick (empty option value is rejected by Feishu)");
-  const txt = JSON.stringify(card.body.elements);
-  assert.match(txt, /暂无历史会话/, "explains why there is no picker");
-  // 非空时才有 select，且选项值都是 sessionId
-  const card2 = buildHistoryCard([{ sessionId: "sess-a", title: "A" }]);
-  const sel2 = card2.body.elements.find((e) => e.tag === "select_static");
-  assert.ok(sel2, "select present with sessions");
-  assert.deepEqual(sel2.options.map((o) => o.value), ["sess-a"]);
-});
-
-test("apply: open-history button sends a history card (P4)", async () => {
-  const h = await makeSettingsHarness({ historySessions: [{ sessionId: "sess-a", title: "对话A" }] });
-  try {
-    const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { value: { value: "open-history" } } });
-    assert.ok(resp?.toast, "toast returned immediately");
-    await settle();
-    const historySend = h.calls.sends.find((s) => s.input?.card && String(s.input.card.header?.title?.content || "").includes("历史对话"));
-    assert.ok(historySend, "history card sent");
-    const sel = historySend.input.card.body.elements.find((e) => e.tag === "select_static");
-    assert.equal(sel.options[0].value, "sess-a", "session option carried");
-  } finally { await h.dispose(); }
-});
-
-test("apply: history select switches the chat session (P4)", async () => {
-  const h = await makeSettingsHarness({ historySessions: [{ sessionId: "sess-a", title: "对话A" }, { sessionId: "sess-b", title: "对话B" }] });
-  try {
-    // 先让插件为该 chat 建立默认会话（发一条消息走 resolveAgent）
-    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
-    await h.endTurn();
-    // 从历史卡选 sess-b
-    const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "history", option: "sess-b" } });
-    assert.ok(resp?.toast, "switch toast returned");
-    assert.match(resp.toast.content, /历史对话/);
-    // per-chat 状态记录新 sessionId
-    const state = JSON.parse(h.readState());
-    assert.equal(state["oc-1"].sessionId, "sess-b", "sessionId switched in per-chat state");
-    // 下一条消息走新会话（resolveAgent 用新 id）
-    h.calls.resolveSessions.length = 0;
-    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m2", content: "again" });
-    await h.endTurn();
-    assert.ok(h.calls.resolveSessions.includes("sess-b"), "next turn resolves the switched session");
-  } finally { await h.dispose(); }
-});
-
-test("apply: history select rejects unknown session (P4)", async () => {
-  const h = await makeSettingsHarness({ historySessions: [{ sessionId: "sess-a", title: "对话A" }] });
-  try {
-    const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "history", option: "sess-ghost" } });
-    assert.ok(resp?.toast?.type === "error", "unknown session rejected");
-  } finally { await h.dispose(); }
-});
-
-test("apply: new-conversation button creates a host session and records it (P4)", async () => {
-  const h = await makeSettingsHarness();
-  try {
-    const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { value: { value: "new-conversation" } } });
-    assert.ok(resp?.toast, "toast returned");
-    await settle();
-    // 会话创建被调用，且 per-chat 状态记录了 host-uuid
-    assert.ok(h.calls.sessionCreates.some((c) => c && typeof c === "object"), "sessionController.create called");
-    const state = JSON.parse(h.readState());
-    assert.ok(state["oc-1"].sessionId?.startsWith("host-uuid-"), "new session id recorded");
-    // 下一条消息用新会话
-    h.calls.resolveSessions.length = 0;
-    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
-    await h.endTurn();
-    assert.ok(h.calls.resolveSessions.some((s) => s.startsWith("host-uuid-")), "next turn uses the new session");
-  } finally { await h.dispose(); }
-});
-
 // ============ P5：审批终态 ============
 
 test("buildApprovalCard: carries approve/reject buttons with callId", () => {
@@ -993,22 +899,6 @@ test("apply: approval for a non-owned agent delegates via next() (P5)", async ()
   } finally { await h.dispose(); }
 });
 
-test("apply: history card options show real session titles, not raw ids", async () => {
-  const h = await makeSettingsHarness({
-    historySessions: [{ sessionId: "sess-a", title: "对话A" }],
-    historyTitleOf: () => "请在 /tmp/dsh-approval-probe.txt 写",
-  });
-  try {
-    await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { value: { value: "open-history" } } });
-    await settle();
-    const historySend = h.calls.sends.find((s) => s.input?.card && String(s.input.card.header?.title?.content || "").includes("历史对话"));
-    assert.ok(historySend, "history card sent");
-    const sel = historySend.input.card.body.elements.find((e) => e.tag === "select_static");
-    // 标题来自冷读的 session/title 事件（rc.2 的 list 行没有标题）
-    assert.equal(sel.options[0].text.content, "请在 /tmp/dsh-approval-probe.txt 写", "real title from cold read");
-  } finally { await h.dispose(); }
-});
-
 test("apply: settings panel carries the conversation dropdown (P4, replaces history buttons)", async () => {
   const h = await makeSettingsHarness();
   try {
@@ -1034,27 +924,51 @@ test("apply: settings panel carries the conversation dropdown (P4, replaces hist
   } finally { await h.dispose(); }
 });
 
-test("apply: conversation dropdown switch binds the session (next message runs there)", async () => {
+test("apply: conversation dropdown — 新对话真新建、切历史真绑定（不继承历史）", async () => {
   const h = await makeSettingsHarness({
-    historySessions: [{ sessionId: "sess-x", title: "已命名的会话", cwd: "", updatedAt: 2 }],
+    historySessions: [{ sessionId: "sess-x", title: "已命名的会话", cwd: "", updatedAt: 2, blank: false }],
   });
   try {
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
     await h.endTurn();
-    // 选「新对话」：当前本来就无显式绑定 → 提示无需切换
+    // 选「新对话」：默认会话**有历史**（确定性会话）→ 必须真正创建全新会话并绑定，
+    // 不能 no-op（真机 bug 2026-11-18：误判「已是新对话」导致继续旧上下文）
+    const createsBefore = h.calls.sessionCreates.length;
     const resp0 = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
-    assert.match(resp0.toast.content, /已是新对话/, "already on the default session → no-op toast");
-    // 绑定一个显式会话 → 下一条消息走它
-    const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "conversation", option: "sess-x" } });
+    assert.match(resp0.toast.content, /已开启新对话/, "fresh session created and bound");
+    assert.equal(h.calls.sessionCreates.length, createsBefore + 1, "sessionController.create called once for the fresh session");
+    const newId = h.calls.sessionCreates.at(-1).sessionId;
+    await h.waitForState('"sessionId": "' + newId + '"');
+    // 再点一次：刚绑定的会话不在 list 里（row 缺失 = 按有历史处理）→ 再建一个（诚实语义）
+    const resp1 = await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
+    assert.match(resp1.toast.content, /已开启新对话/, "second 新对话 creates another fresh session");
+    assert.equal(h.calls.sessionCreates.length, createsBefore + 2);
+    // 切到有历史的会话 → 绑定
+    const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-3", operator: { openId: "ou-1" }, action: { name: "conversation", option: "sess-x" } });
     assert.match(resp.toast.content, /已切换对话/, "bind toast returned");
     await h.waitForState('"sessionId": "sess-x"');
-    // 未知名单里的会话不在 settingsData.sessions（refresh 依赖宿主 list）——校验拒绝伪造绑定
-    const denied = await h.cardAction({ chatId: "oc-1", messageId: "card-3", operator: { openId: "ou-1" }, action: { name: "conversation", option: "sess-fake" } });
+    // 清单里不存在的会话 → 拒绝伪造绑定
+    const denied = await h.cardAction({ chatId: "oc-1", messageId: "card-4", operator: { openId: "ou-1" }, action: { name: "conversation", option: "sess-fake" } });
     assert.match(denied.toast.content, /不存在/, "fake session binding rejected");
-    // 新对话解除绑定
-    const resp2 = await h.cardAction({ chatId: "oc-1", messageId: "card-4", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
-    assert.match(resp2.toast.content, /已切到新对话/, "unbind toast returned");
-    await settle();
-    assert.doesNotMatch(h.readState(), /"sessionId"/, "binding cleared from the per-chat state file");
+    // 切回「新对话」：sess-x 有历史 → 再建新会话
+    const resp2 = await h.cardAction({ chatId: "oc-1", messageId: "card-5", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
+    assert.match(resp2.toast.content, /已开启新对话/, "creates fresh again from a titled session");
+    assert.ok(h.calls.sessionCreates.length >= createsBefore + 3, "creates again");
+  } finally { await h.dispose(); }
+});
+
+test("apply: 新对话 on a genuinely blank bound session is a no-op", async () => {
+  // 绑定的会话在清单里标记 blank: true（从未发过消息）→ 「新对话」合法 no-op
+  const h = await makeSettingsHarness({
+    historySessions: [{ sessionId: "host-blank", title: "", cwd: "", updatedAt: 2, blank: true }],
+  });
+  try {
+    // 绑定空会话（走正常的切换路径）
+    const bind = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "host-blank" } });
+    assert.match(bind.toast.content, /已切换对话/, "blank session bound via the normal path");
+    // 新对话：当前绑定的会话是空会话 → 合法 no-op
+    const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
+    assert.match(resp.toast.content, /已是新对话/, "blank bound session → no-op");
+    assert.equal(h.calls.sessionCreates.length, 0, "no new session created");
   } finally { await h.dispose(); }
 });

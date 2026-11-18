@@ -25,11 +25,11 @@ import { isVolatile } from "@deepseek-ai/cosmokit";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel, type LarkChannel } from "@larksuite/channel";
 import {
-  buildApprovalCard, buildApprovalFinalCard, buildHistoryCard, buildSettingsPanel,
+  buildApprovalCard, buildApprovalFinalCard, buildSettingsPanel,
   CANCEL_SETTINGS_VALUE, currentModelValue, DEFAULT_OPTION_VALUE, NEW_CONVERSATION_VALUE,
   effortOptions, modelOptions,
   richCard, settingsStatusLine, streamMarkdown,
-  type HistorySessionOption, type SettingsCardOptions, type SettingsDisplay,
+  type SettingsCardOptions, type SettingsDisplay,
 } from "./cards.js";
 import { cwdTag } from "./overrides.js";
 import { defaultStatePath, loadStates, saveStates, type ChatState, type ChatStateMap } from "./session-map.js";
@@ -313,7 +313,7 @@ async function ensureFirstClass(ctx: AnyCtx, sessionId: string, cwd: string, tit
 /**
  * P4：列出可 resume 的历史会话（sessionController.list）。
  * 双版本形状差异归一化：rc.2 的 list() 返回 SessionSummary[]；rc.3 返回
- * { items: SessionSummary[] }。此处统一为 HistorySessionOption[]（只取卡片需要的字段）。
+ * { items: SessionSummary[] }。此处统一为会话行（只取清单需要的字段）。
  * 失败/无会话 → 空数组（卡片显示「暂无历史会话」）。
  */
 /** 历史卡最多展示的会话条数（真机实测：实例里 ~300 会话时全量下拉会让飞书建卡超时）。 */
@@ -780,28 +780,6 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
     titleError?: string;
   } | null = null;
 
-  /** 历史卡的 markdown 兜底：卡片发不出去时，至少把会话清单以文本给出。 */
-  const sendHistoryFallback = async (
-    chan: LarkChannel,
-    chatId: string,
-    sessions: Array<{ sessionId: string; title: string }>,
-    total: number,
-    reason: string,
-  ): Promise<void> => {
-    try {
-      const lines = sessions.slice(0, 10).map((s, i) => `${i + 1}. ${s.title}`);
-      const body = [
-        "🗂 **历史对话**（卡片发送${reason}，改用文本列出）",
-        ...(lines.length ? lines : ["（暂无可列出的历史会话）"]),
-        "",
-        "切换方式：展开回复卡的「⚙️ 快捷设置」，点「🗂 历史对话」按钮选择（卡片恢复后可用）。",
-      ].join("\n");
-      await sendBounded(chan, chatId, body);
-    } catch (e) {
-      ctx.logger?.warn?.("[connect-lark] history fallback failed: " + (e as Error).message);
-    }
-  };
-
   const refreshSettingsData = async (): Promise<void> => {
     try {
       // catalog / 工作区 / 权限与全量会话**并行**取（对话下拉需要会话清单）
@@ -983,11 +961,25 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
    *  新会话/关闭终端后按新配置生效，必须如实告知而不是笼统说「设置未生效」。 */
   const applyDimension = async (chan: LarkChannel, chatId: string, controlName: string, partial: Partial<ResolvedConfig>): Promise<void> => {
     try {
-      // 1) 写配置（唯一事实源）。工作区变了 → 解除会话绑定（下一条消息起是新工作区的新会话）。
+      // 1) 写配置（唯一事实源）。工作区切换 → **默认开启新对话**（负责人 2026-11-18 需求；
+      //    历史可在「对话」下拉接回）。立即在新工作区创建全新会话并绑定——不清绑定等
+      //    下一条消息（那会落回确定性会话 = 接回旧历史，与「默认新开」语义冲突）。
       await writePluginConfig(partial);
       if (controlName === "workspace") {
         clearSessionBinding(chatId);
-        return; // cwd 是会话出身属性，靠会话 id 变化体现
+        const newCwd = partial.defaultPath || currentCwd(chatId);
+        try {
+          const created: any = await ctx.sessionController.create({ cwd: newCwd });
+          const newId = created?.sessionId ?? created?.value?.sessionId;
+          if (newId) {
+            touchState(chatId, { sessionId: newId, cwd: newCwd });
+            try { await ctx.sessionController.rename({ sessionId: newId, title: "新对话" }); } catch { /* 不影响切换 */ }
+          }
+        } catch (e2) {
+          ctx.logger?.warn?.("[connect-lark] workspace-switch session create failed: " + (e2 as Error).message);
+          // 创建失败 → 保持无绑定：下一条消息按确定性会话兜底
+        }
+        return;
       }
       // 2) 让当前会话立刻用上新配置（配置本身已由 loader 热更新；这里补会话投影）。
       //    投影失败不影响已保存的配置——单独捕获并说明「何时生效」。
@@ -1487,44 +1479,42 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         const controlName = (typeof actionName === "string" && actionName)
           ? actionName
           : (typeof behaviorName === "string" && behaviorName ? behaviorName : undefined);
-        // P4：历史对话选择（选中即切换会话：下一条消息起在该会话上下文继续）
-        if (controlName === "history") {
-          if (typeof option !== "string" || option === "") return;
-          if (!dedupClaim(evt.messageId + ":" + controlName + ":" + option)) return;
-          // 校验该会话确实存在（本地查询，带超时兜底防回调挂起）
-          // 用大 limit 取全集：卡片只展示最近 20 条，但被选中的会话可能已被挤出
-          const listed = await withTimeout(listSessions(ctx, 10_000), 5_000);
-          if (!listed.ok) return { toast: { type: "error", content: "会话列表加载超时，请重试" } };
-          const chosen = listed.value.sessions.find((s) => s.sessionId === option);
-          if (!chosen) return { toast: { type: "error", content: "该会话不存在或已不可用" } };
-          // 切会话 = 换 sessionId（cwd 随会话出身属性走，不单独改 chat cwd）
-          touchState(chatId, { sessionId: option });
-          return { toast: { type: "success", content: "✅ 已切换到历史对话（下一条消息起在该会话继续，历史与设置保留）" } };
-        }
         // 「对话」下拉（面板内嵌）：新对话 / 切到本工作区的历史会话。
         // 会话绑定存 per-chat 状态（不是配置）——不写 writePluginConfig。
         if (controlName === "conversation") {
           if (typeof option !== "string" || option === "") return;
           if (!dedupClaim(evt.messageId + ":" + controlName + ":" + option)) return;
-          const current = chatState(chatId).sessionId || deterministicSessionId(chatId, currentCwd(chatId));
           if (option === NEW_CONVERSATION_VALUE) {
-            if (!chatState(chatId).sessionId) {
-              // 本来就在默认会话上：无需动作
-              return { toast: { type: "success", content: "当前已是新对话，无需切换" } };
+            // 「新对话」= **真正创建全新会话并立即绑定**（不继承任何历史）。
+            // 无绑定时走的是确定性默认会话（connect-lark:chat@工作区）——它**有历史**，
+            // 不能当成「已是新对话」（真机 bug 2026-11-18：误判 no-op 导致继续旧上下文）。
+            // 仅当前会话确实是空会话（从未发过消息）时才是合法 no-op。
+            const boundId = chatState(chatId).sessionId;
+            const targetId = boundId ?? deterministicSessionId(chatId, currentCwd(chatId));
+            const row = (settingsData?.sessions ?? []).find((s) => s.sessionId === targetId);
+            const isBlank = row ? row.blank === true : false;
+            if (isBlank) {
+              return { toast: { type: "success", content: "当前已是新对话（空会话），无需切换" } };
             }
-            clearSessionBinding(chatId);
+            const created: any = await ctx.sessionController.create({ cwd: currentCwd(chatId) });
+            const newId = created?.sessionId ?? created?.value?.sessionId;
+            if (!newId) return { toast: { type: "error", content: "新会话创建失败，请重试" } };
+            touchState(chatId, { sessionId: newId, cwd: currentCwd(chatId) });
+            // 立即命名（宿主首条消息自动命名会在首轮覆盖它）
+            try { await ctx.sessionController.rename({ sessionId: newId, title: "新对话" }); } catch { /* 不影响切换 */ }
             try { rebuildReplyCard(chatId); } catch (e2) {
               ctx.logger?.warn?.("[connect-lark] reply card rebuild failed: " + (e2 as Error).message);
             }
-            return { toast: { type: "success", content: "✅ 已切到新对话（下一条消息起在全新会话继续）" } };
+            return { toast: { type: "success", content: "✅ 已开启新对话（立即生效，不继承历史）" } };
           }
+          const current = chatState(chatId).sessionId || deterministicSessionId(chatId, currentCwd(chatId));
           if (option === current) {
             return { toast: { type: "success", content: "已是当前对话" } };
           }
           // 校验会话确实存在于本工作区（防伪造回调绑到别的会话）
           const known = (settingsData?.sessions ?? []).find((s) => s.sessionId === option);
           if (!known) return { toast: { type: "error", content: "该会话不存在或不在当前工作区" } };
-          touchState(chatId, { sessionId: option });
+          touchState(chatId, { sessionId: option, cwd: currentCwd(chatId) });
           try { rebuildReplyCard(chatId); } catch (e2) {
             ctx.logger?.warn?.("[connect-lark] reply card rebuild failed: " + (e2 as Error).message);
           }
@@ -1595,58 +1585,6 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         if (!dedupClaim(evt.messageId + ":" + kind)) return;
         // 历史「取消」按钮（旧版选择卡）仍需响应
         if (kind === CANCEL_SETTINGS_VALUE) {
-          return { toast: { type: "info", content: "已关闭" } };
-        }
-        // P4：历史对话卡 / 新对话按钮（按钮区顶部已做 dedupClaim，此处不再重复）
-        if (kind === "open-history") {
-          // 后台拉会话列表并发卡（回调只回 toast，重活 detach）
-          void (async () => {
-            try {
-              const { sessions, total } = await listSessions(ctx);
-              const currentId = chatState(chatId).sessionId;
-              const card = buildHistoryCard(sessions, currentId, total);
-              // 卡片发送失败要报**真实原因**；且必须留 markdown 兜底：
-              // 飞书建卡在某些环境下会卡住（真机实测：选项过多 / 客户端过旧），
-              // 这时至少把会话清单以文本给出，用户还能看到有哪些历史。
-              let sent: { ok: boolean } | null = null;
-              try {
-                sent = await withTimeout(chan.send(chatId, { card }), 8_000);
-              } catch (sendError) {
-                ctx.logger?.warn?.("[connect-lark] history card send error: " + (sendError as Error).message);
-                await sendHistoryFallback(chan, chatId, sessions, total, (sendError as Error).message);
-                return;
-              }
-              if (!sent.ok) {
-                ctx.logger?.warn?.("[connect-lark] history card send timed out (8s)");
-                await sendHistoryFallback(chan, chatId, sessions, total, "发送超时");
-                return;
-              }
-            } catch (e) {
-              ctx.logger?.warn?.("[connect-lark] history card failed: " + (e as Error).message);
-              void Promise.resolve(chan.send(chatId, { markdown: "⚠️ 历史会话列表加载失败：" + (e as Error).message })).catch(() => {});
-            }
-          })();
-          return { toast: { type: "info", content: "正在加载历史对话…" } };
-        }
-        if (kind === "new-conversation") {
-          // 后台开新会话（host-uuid）并记入 per-chat 状态；下一条消息起走新会话
-          void (async () => {
-            try {
-              const cwd = currentCwd(chatId);
-              const created = await ctx.sessionController.create({ cwd });
-              const newId = created.sessionId;
-              const ws = await ctx.workspaceRegistry?.resolveByPath?.(cwd);
-              if (ws) { try { await ws.attachSession(newId); } catch { /* 归属失败不阻断 */ } }
-              touchState(chatId, { sessionId: newId });
-              await sendBounded(chan, chatId, "✅ 已开启**新对话**（空白会话）。**下一条消息起**在新上下文处理，之前的历史保留在原会话。");
-            } catch (e) {
-              ctx.logger?.warn?.("[connect-lark] new conversation failed: " + (e as Error).message);
-              await sendBounded(chan, chatId, "⚠️ 新对话创建失败：" + (e as Error).message);
-            }
-          })();
-          return { toast: { type: "info", content: "正在创建新对话…" } };
-        }
-        if (kind === "cancel-history") {
           return { toast: { type: "info", content: "已关闭" } };
         }
         // P5：审批按钮（approve:<callId> / reject:<callId>）
@@ -1821,11 +1759,11 @@ function extractImages(msg: any): Array<{ fileKey: string }> {
 // ---- Re-exports (for tests + consumers) ----
 export { richCard, streamMarkdown } from "./cards.js";
 export {
-  buildApprovalCard, buildApprovalFinalCard, buildHistoryCard, buildSettingsPanel,
+  buildApprovalCard, buildApprovalFinalCard, buildSettingsPanel,
   currentModelValue, effortOptions, modelOptions, settingsStatusLine,
   CANCEL_SETTINGS_VALUE, DEFAULT_OPTION_VALUE,
 } from "./cards.js";
-export type { HistorySessionOption, SettingsCardOptions, SettingsDisplay } from "./cards.js";
+export type { SettingsCardOptions, SettingsDisplay } from "./cards.js";
 export { cwdTag } from "./overrides.js";
 export { loadStates, saveStates, defaultStatePath, type ChatState, type ChatStateMap } from "./session-map.js";
 export { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage, MAX_IMAGE_BYTES, FEISHU_CDN_HOSTS } from "./images.js";

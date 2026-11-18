@@ -383,73 +383,7 @@ function selectStatic(
   return element;
 }
 
-// ---- P4：历史对话卡 / P5：审批卡（一等公民会话层改造） --------------------------
-
-/** 历史对话卡选项的一行（来自 sessionController.list 的归一化结果）。 */
-export interface HistorySessionOption {
-  sessionId: string;
-  title: string;
-  /** 该会话的 cwd（会话出身属性；切换时随会话走，不单独改 chat cwd）。 */
-  cwd?: string;
-}
-
-/**
- * P4 历史对话卡：select_static 列出该 chat 可 resume 的历史会话，
- * 选中即切换（下一条消息起在该会话上下文继续）；另带「新对话」按钮。
- * 选项值 = sessionId（宿主生成，无法从 chatId 推导，故卡片回传原样携带）。
- */
-export function buildHistoryCard(
-  sessions: ReadonlyArray<HistorySessionOption>,
-  currentSessionId?: string,
-  total?: number,
-): Record<string, unknown> {
-  const options: Array<{ label: string; value: string }> = sessions.map((s) => ({
-    label: s.title || s.sessionId,
-    value: s.sessionId,
-  }));
-  const elements: Array<Record<string, unknown>> = [
-    { tag: "div", text: { tag: "lark_md", content: "选择**历史对话**（下一条消息起在所选会话继续，历史与设置保留）：" } },
-  ];
-  // 空列表时**不渲染 select_static**：空值选项会被飞书判为非法卡片（整卡被拒），
-  // 直接给一句说明更稳（真机实测：占位空值选项导致历史卡发送失败）。
-  if (options.length > 0) {
-    elements.push({
-      tag: "select_static",
-      name: "history",
-      placeholder: { tag: "plain_text", content: "历史对话" },
-      options: options.map((o) => ({ text: { tag: "plain_text", content: o.label }, value: o.value })),
-      behaviors: [{ type: "callback", value: { value: "history" } }],
-      ...(currentSessionId && options.some((o) => o.value === currentSessionId) ? { initial_option: currentSessionId } : {}),
-    });
-  } else {
-    elements.push({ tag: "div", text: { tag: "lark_md", content: "暂无历史会话（当前对话是唯一会话）。" } });
-  }
-  elements.push(
-    { tag: "div", text: { tag: "lark_md", content: "※ 切历史 = 换会话上下文；切回原会话可 resume 原历史。" } },
-    ...(total !== undefined && total > options.length
-      ? [{ tag: "div", text: { tag: "lark_md", content: "（共 " + total + " 条会话，此处显示最近 " + options.length + " 条）" } }]
-      : []),
-    {
-      tag: "button",
-      text: { tag: "plain_text", content: "➕ 新对话" },
-      type: "default",
-      size: "small",
-      behaviors: [{ type: "callback", value: { value: "new-conversation" } }],
-    },
-    {
-      tag: "button",
-      text: { tag: "plain_text", content: "关闭" },
-      type: "default",
-      size: "small",
-      behaviors: [{ type: "callback", value: { value: "cancel-history" } }],
-    },
-  );
-  return {
-    schema: "2.0",
-    header: { title: { tag: "plain_text", content: "🗂 历史对话" }, template: "wathet" },
-    body: { elements },
-  };
-}
+// ---- P5：审批卡（一等公民会话层改造） --------------------------
 
 /** P5 审批卡：工具名 + 原因 + [同意][拒绝] 两个回调按钮。
  *  按钮 value 携带 callId（approve:<callId> / reject:<callId>），回调据此 resolve 对应审批。 */

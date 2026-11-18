@@ -357,99 +357,6 @@ function selectStatic(name, placeholder, options, initial) {
 	if (initial && options.some((o) => o.value === initial)) element.initial_option = initial;
 	return element;
 }
-/**
-* P4 历史对话卡：select_static 列出该 chat 可 resume 的历史会话，
-* 选中即切换（下一条消息起在该会话上下文继续）；另带「新对话」按钮。
-* 选项值 = sessionId（宿主生成，无法从 chatId 推导，故卡片回传原样携带）。
-*/
-function buildHistoryCard(sessions, currentSessionId, total) {
-	const options = sessions.map((s) => ({
-		label: s.title || s.sessionId,
-		value: s.sessionId
-	}));
-	const elements = [{
-		tag: "div",
-		text: {
-			tag: "lark_md",
-			content: "选择**历史对话**（下一条消息起在所选会话继续，历史与设置保留）："
-		}
-	}];
-	if (options.length > 0) elements.push({
-		tag: "select_static",
-		name: "history",
-		placeholder: {
-			tag: "plain_text",
-			content: "历史对话"
-		},
-		options: options.map((o) => ({
-			text: {
-				tag: "plain_text",
-				content: o.label
-			},
-			value: o.value
-		})),
-		behaviors: [{
-			type: "callback",
-			value: { value: "history" }
-		}],
-		...currentSessionId && options.some((o) => o.value === currentSessionId) ? { initial_option: currentSessionId } : {}
-	});
-	else elements.push({
-		tag: "div",
-		text: {
-			tag: "lark_md",
-			content: "暂无历史会话（当前对话是唯一会话）。"
-		}
-	});
-	elements.push({
-		tag: "div",
-		text: {
-			tag: "lark_md",
-			content: "※ 切历史 = 换会话上下文；切回原会话可 resume 原历史。"
-		}
-	}, ...total !== void 0 && total > options.length ? [{
-		tag: "div",
-		text: {
-			tag: "lark_md",
-			content: "（共 " + total + " 条会话，此处显示最近 " + options.length + " 条）"
-		}
-	}] : [], {
-		tag: "button",
-		text: {
-			tag: "plain_text",
-			content: "➕ 新对话"
-		},
-		type: "default",
-		size: "small",
-		behaviors: [{
-			type: "callback",
-			value: { value: "new-conversation" }
-		}]
-	}, {
-		tag: "button",
-		text: {
-			tag: "plain_text",
-			content: "关闭"
-		},
-		type: "default",
-		size: "small",
-		behaviors: [{
-			type: "callback",
-			value: { value: "cancel-history" }
-		}]
-	});
-	return {
-		schema: "2.0",
-		header: {
-			title: {
-				tag: "plain_text",
-				content: "🗂 历史对话"
-			},
-			template: "wathet"
-		},
-		body: { elements }
-	};
-}
 /** P5 审批卡：工具名 + 原因 + [同意][拒绝] 两个回调按钮。
 *  按钮 value 携带 callId（approve:<callId> / reject:<callId>），回调据此 resolve 对应审批。 */
 function buildApprovalCard(toolName, reason, callId) {
@@ -1447,7 +1354,7 @@ async function ensureFirstClass(ctx, sessionId, cwd, title) {
 /**
 * P4：列出可 resume 的历史会话（sessionController.list）。
 * 双版本形状差异归一化：rc.2 的 list() 返回 SessionSummary[]；rc.3 返回
-* { items: SessionSummary[] }。此处统一为 HistorySessionOption[]（只取卡片需要的字段）。
+* { items: SessionSummary[] }。此处统一为会话行（只取清单需要的字段）。
 * 失败/无会话 → 空数组（卡片显示「暂无历史会话」）。
 */
 /** 历史卡最多展示的会话条数（真机实测：实例里 ~300 会话时全量下拉会让飞书建卡超时）。 */
@@ -1895,20 +1802,6 @@ function apply(ctx, config = {}) {
 	const pendingConfirms = /* @__PURE__ */ new Map();
 	const CONFIRM_TTL_MS = 3e4;
 	let settingsData = null;
-	/** 历史卡的 markdown 兜底：卡片发不出去时，至少把会话清单以文本给出。 */
-	const sendHistoryFallback = async (chan, chatId, sessions, total, reason) => {
-		try {
-			const lines = sessions.slice(0, 10).map((s, i) => `${i + 1}. ${s.title}`);
-			await sendBounded(chan, chatId, [
-				"🗂 **历史对话**（卡片发送${reason}，改用文本列出）",
-				...lines.length ? lines : ["（暂无可列出的历史会话）"],
-				"",
-				"切换方式：展开回复卡的「⚙️ 快捷设置」，点「🗂 历史对话」按钮选择（卡片恢复后可用）。"
-			].join("\n"));
-		} catch (e) {
-			ctx.logger?.warn?.("[connect-lark] history fallback failed: " + e.message);
-		}
-	};
 	const refreshSettingsData = async () => {
 		try {
 			const [catalog, sessions] = await Promise.all([ctx.sessionController.modelCatalog(), listSessions(ctx, 300, void 0, 80).catch(() => ({
@@ -2080,6 +1973,25 @@ function apply(ctx, config = {}) {
 			await writePluginConfig(partial);
 			if (controlName === "workspace") {
 				clearSessionBinding(chatId);
+				const newCwd = partial.defaultPath || currentCwd(chatId);
+				try {
+					const created = await ctx.sessionController.create({ cwd: newCwd });
+					const newId = created?.sessionId ?? created?.value?.sessionId;
+					if (newId) {
+						touchState(chatId, {
+							sessionId: newId,
+							cwd: newCwd
+						});
+						try {
+							await ctx.sessionController.rename({
+								sessionId: newId,
+								title: "新对话"
+							});
+						} catch {}
+					}
+				} catch (e2) {
+					ctx.logger?.warn?.("[connect-lark] workspace-switch session create failed: " + e2.message);
+				}
 				return;
 			}
 			try {
@@ -2514,34 +2426,32 @@ function apply(ctx, config = {}) {
 				const behaviorName = typeof rawActionValue === "object" && rawActionValue !== null ? rawActionValue.value : rawActionValue;
 				const actionName = evt.action?.name;
 				const controlName = typeof actionName === "string" && actionName ? actionName : typeof behaviorName === "string" && behaviorName ? behaviorName : void 0;
-				if (controlName === "history") {
-					if (typeof option !== "string" || option === "") return;
-					if (!dedupClaim(evt.messageId + ":" + controlName + ":" + option)) return;
-					const listed = await withTimeout(listSessions(ctx, 1e4), 5e3);
-					if (!listed.ok) return { toast: {
-						type: "error",
-						content: "会话列表加载超时，请重试"
-					} };
-					if (!listed.value.sessions.find((s) => s.sessionId === option)) return { toast: {
-						type: "error",
-						content: "该会话不存在或已不可用"
-					} };
-					touchState(chatId, { sessionId: option });
-					return { toast: {
-						type: "success",
-						content: "✅ 已切换到历史对话（下一条消息起在该会话继续，历史与设置保留）"
-					} };
-				}
 				if (controlName === "conversation") {
 					if (typeof option !== "string" || option === "") return;
 					if (!dedupClaim(evt.messageId + ":" + controlName + ":" + option)) return;
-					const current = chatState(chatId).sessionId || deterministicSessionId(chatId, currentCwd(chatId));
 					if (option === "__new_conversation__") {
-						if (!chatState(chatId).sessionId) return { toast: {
+						const targetId = chatState(chatId).sessionId ?? deterministicSessionId(chatId, currentCwd(chatId));
+						const row = (settingsData?.sessions ?? []).find((s) => s.sessionId === targetId);
+						if (row ? row.blank === true : false) return { toast: {
 							type: "success",
-							content: "当前已是新对话，无需切换"
+							content: "当前已是新对话（空会话），无需切换"
 						} };
-						clearSessionBinding(chatId);
+						const created = await ctx.sessionController.create({ cwd: currentCwd(chatId) });
+						const newId = created?.sessionId ?? created?.value?.sessionId;
+						if (!newId) return { toast: {
+							type: "error",
+							content: "新会话创建失败，请重试"
+						} };
+						touchState(chatId, {
+							sessionId: newId,
+							cwd: currentCwd(chatId)
+						});
+						try {
+							await ctx.sessionController.rename({
+								sessionId: newId,
+								title: "新对话"
+							});
+						} catch {}
 						try {
 							rebuildReplyCard(chatId);
 						} catch (e2) {
@@ -2549,10 +2459,10 @@ function apply(ctx, config = {}) {
 						}
 						return { toast: {
 							type: "success",
-							content: "✅ 已切到新对话（下一条消息起在全新会话继续）"
+							content: "✅ 已开启新对话（立即生效，不继承历史）"
 						} };
 					}
-					if (option === current) return { toast: {
+					if (option === (chatState(chatId).sessionId || deterministicSessionId(chatId, currentCwd(chatId)))) return { toast: {
 						type: "success",
 						content: "已是当前对话"
 					} };
@@ -2561,7 +2471,10 @@ function apply(ctx, config = {}) {
 						type: "error",
 						content: "该会话不存在或不在当前工作区"
 					} };
-					touchState(chatId, { sessionId: option });
+					touchState(chatId, {
+						sessionId: option,
+						cwd: currentCwd(chatId)
+					});
 					try {
 						rebuildReplyCard(chatId);
 					} catch (e2) {
@@ -2635,60 +2548,6 @@ function apply(ctx, config = {}) {
 				if (typeof kind !== "string" || kind.length === 0) return;
 				if (!dedupClaim(evt.messageId + ":" + kind)) return;
 				if (kind === "cancel-settings") return { toast: {
-					type: "info",
-					content: "已关闭"
-				} };
-				if (kind === "open-history") {
-					(async () => {
-						try {
-							const { sessions, total } = await listSessions(ctx);
-							const currentId = chatState(chatId).sessionId;
-							const card = buildHistoryCard(sessions, currentId, total);
-							let sent = null;
-							try {
-								sent = await withTimeout(chan.send(chatId, { card }), 8e3);
-							} catch (sendError) {
-								ctx.logger?.warn?.("[connect-lark] history card send error: " + sendError.message);
-								await sendHistoryFallback(chan, chatId, sessions, total, sendError.message);
-								return;
-							}
-							if (!sent.ok) {
-								ctx.logger?.warn?.("[connect-lark] history card send timed out (8s)");
-								await sendHistoryFallback(chan, chatId, sessions, total, "发送超时");
-								return;
-							}
-						} catch (e) {
-							ctx.logger?.warn?.("[connect-lark] history card failed: " + e.message);
-							Promise.resolve(chan.send(chatId, { markdown: "⚠️ 历史会话列表加载失败：" + e.message })).catch(() => {});
-						}
-					})();
-					return { toast: {
-						type: "info",
-						content: "正在加载历史对话…"
-					} };
-				}
-				if (kind === "new-conversation") {
-					(async () => {
-						try {
-							const cwd = currentCwd(chatId);
-							const newId = (await ctx.sessionController.create({ cwd })).sessionId;
-							const ws = await ctx.workspaceRegistry?.resolveByPath?.(cwd);
-							if (ws) try {
-								await ws.attachSession(newId);
-							} catch {}
-							touchState(chatId, { sessionId: newId });
-							await sendBounded(chan, chatId, "✅ 已开启**新对话**（空白会话）。**下一条消息起**在新上下文处理，之前的历史保留在原会话。");
-						} catch (e) {
-							ctx.logger?.warn?.("[connect-lark] new conversation failed: " + e.message);
-							await sendBounded(chan, chatId, "⚠️ 新对话创建失败：" + e.message);
-						}
-					})();
-					return { toast: {
-						type: "info",
-						content: "正在创建新对话…"
-					} };
-				}
-				if (kind === "cancel-history") return { toast: {
 					type: "info",
 					content: "已关闭"
 				} };
@@ -2858,4 +2717,4 @@ const CONTRACT_NOTES = {
 	whitelistFailClosed: "accessMode=app (default) defers to the Feishu app scope; accessMode=list allows only the grants plus the tenant manager",
 	streaming: "channel.stream(to, { markdown: async (c) => { c.append(delta) } }) — SDK-owned CardKit"
 };
-export { CANCEL_SETTINGS_VALUE, CONTRACT_NOTES, Config, DEFAULT_OPTION_VALUE, DIRECTORY_PORT, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildApprovalCard, buildApprovalFinalCard, buildHistoryCard, buildImageContent, buildSettingsPanel, buildUserMessage, createOrResumeAgent, currentModelValue, cwdTag, defaultStatePath, downloadImageBounded, downloadInboundImage, effortOptions, fetchDirectoryUsers, inject, listDirectoryUsers, loadStates, modelOptions, passesWhitelist, plainConfig, resolveAgentModelOptions, resolveAppSecret, richCard, saveStates, settingsStatusLine, startDirectoryService, streamMarkdown };
+export { CANCEL_SETTINGS_VALUE, CONTRACT_NOTES, Config, DEFAULT_OPTION_VALUE, DIRECTORY_PORT, FEISHU_CDN_HOSTS, IMAGE_UNSUPPORTED_REPLY, MAX_IMAGE_BYTES, RunManager, admitImage, apply, buildApprovalCard, buildApprovalFinalCard, buildImageContent, buildSettingsPanel, buildUserMessage, createOrResumeAgent, currentModelValue, cwdTag, defaultStatePath, downloadImageBounded, downloadInboundImage, effortOptions, fetchDirectoryUsers, inject, listDirectoryUsers, loadStates, modelOptions, passesWhitelist, plainConfig, resolveAgentModelOptions, resolveAppSecret, richCard, saveStates, settingsStatusLine, startDirectoryService, streamMarkdown };
