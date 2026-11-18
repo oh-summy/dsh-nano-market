@@ -162,6 +162,9 @@ export const CANCEL_SETTINGS_VALUE = "cancel-settings";
 /** Sentinel option value: clear that dimension back to "follow DSH default". */
 export const DEFAULT_OPTION_VALUE = "__default__";
 
+/** 「对话」下拉的哨兵值：开启新对话（解除会话绑定，下一条消息起是新会话）。 */
+export const NEW_CONVERSATION_VALUE = "__new_conversation__";
+
 export interface CatalogModelView {
   id: string;
   name?: string;
@@ -184,6 +187,12 @@ export interface SettingsCardOptions {
   effortList?: ReadonlyArray<{ label: string; value: string }>;
   hasPendingPermission?: boolean;
   defaultWorkspaceTitle?: string;
+  /** 「对话」下拉的候选：当前工作区的会话（标题来自宿主首条消息自动命名） */
+  chatSessions?: ReadonlyArray<{ sessionId: string; title: string; cwd?: string }>;
+  /** 当前绑定的会话 id（对话下拉的 initial_option） */
+  currentSessionId?: string;
+  /** 会话总数（超出下拉容量时在面板注明） */
+  sessionsTotal?: number;
 }
 
 /** Flat options for the model select: value = "provider:model". */
@@ -267,7 +276,8 @@ function settingsSelectElements(opts: SettingsCardOptions): Array<Record<string,
  *  选择即生效（写该 chat 会话投影 + per-chat 状态），不弹任何单独卡片。
  *  折叠面板官方嵌套规则仅禁止 form 容器；内嵌 select_static 需真机验证（S0）。 */
 /** 两列分组布局（负责人 2026-11-14 要求：模型+思考强度一组、工作区+权限一组）：
- *  每组一个 column_set（左列 label+select，右列 label+select）。 */
+ *  每组一个 column_set（左列 label+select，右列 label+select）。
+ *  label 用粗体（保守样式：text_tag/font 在真机 2.0 渲染不稳，2026-11-18 实测回退）。 */
 function settingsGroupRow(
   left: { label: string; select: Record<string, unknown> },
   right: { label: string; select: Record<string, unknown> },
@@ -288,10 +298,39 @@ function settingsGroupRow(
   };
 }
 
+/** 会话 select：新对话 + 本工作区历史会话（带标题），initial 指向当前绑定。
+ *  选择即切换会话绑定（per-chat 状态），不写插件配置——会话绑定不是配置。 */
+function conversationSelect(opts: SettingsCardOptions): Record<string, unknown> {
+  const options: Array<{ label: string; value: string }> = [
+    { label: "➕ 开启新对话", value: NEW_CONVERSATION_VALUE },
+  ];
+  const seen = new Set<string>([NEW_CONVERSATION_VALUE]);
+  for (const s of opts.chatSessions ?? []) {
+    if (seen.has(s.sessionId)) continue;
+    seen.add(s.sessionId);
+    const isCurrent = s.sessionId === opts.currentSessionId;
+    options.push({ label: (isCurrent ? "● 当前 ｜ " : "") + (s.title || s.sessionId.slice(0, 18)), value: s.sessionId });
+  }
+  // initial：当前绑定会话在候选里就指向它；否则指向「新对话」（无绑定 = 默认会话尚未出现在清单）
+  const initial = opts.currentSessionId && seen.has(opts.currentSessionId) ? opts.currentSessionId : undefined;
+  const el = selectStatic("conversation", "切换对话", options, initial ?? NEW_CONVERSATION_VALUE);
+  return el;
+}
+
 export function buildSettingsPanel(opts: SettingsCardOptions): Record<string, unknown> {
   const selects = settingsSelectElements(opts);
+  const chatSelect = conversationSelect(opts);
   const elements: Array<Record<string, unknown>> = [
-    { tag: "div", text: { tag: "lark_md", content: "选择**即生效**（下一条消息起）；换工作区 = **新开一段对话**，不继承当前历史。" } },
+    // 引导行：说明语义而非口号
+    { tag: "div", text: { tag: "lark_md", content: "选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效" } },
+    // 对话独占一行：标题 + 下拉（带标题的历史会话）
+    { tag: "column_set", flex_mode: "stretch", columns: [{
+      tag: "column", width: "weighted", weight: 1,
+      elements: [
+        { tag: "div", text: { tag: "lark_md", content: "**对话**" } },
+        chatSelect,
+      ],
+    }] },
     settingsGroupRow(
       { label: "模型", select: selects[1] },
       { label: "思考强度", select: selects[2] },
@@ -307,31 +346,20 @@ export function buildSettingsPanel(opts: SettingsCardOptions): Record<string, un
       text: { tag: "lark_md", content: "⚠️ 高权限档待确认：回复**确认**以应用（仅发起人有效，30s 内）。" },
     });
   }
-  // 历史对话 / 新对话入口（P4）：按钮回调值分别为 open-history / new-conversation
-  elements.push({
-    tag: "button",
-    text: { tag: "plain_text", content: "🗂 历史对话" },
-    type: "default",
-    size: "small",
-    behaviors: [{ type: "callback", value: { value: "open-history" } }],
-  });
-  elements.push({
-    tag: "button",
-    text: { tag: "plain_text", content: "➕ 新对话" },
-    type: "default",
-    size: "small",
-    behaviors: [{ type: "callback", value: { value: "new-conversation" } }],
-  });
+  const overflow = (opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0)
+    ? [{ tag: "div", text: { tag: "lark_md", content: "（本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉显示最近 " + (opts.chatSessions?.length ?? 0) + " 个）" } }]
+    : [];
   return {
     tag: "collapsible_panel",
     expanded: false,
+    vertical_spacing: "8px",
     header: {
-      title: { tag: "plain_text", content: "⚙️ 快捷设置（选择即生效）" },
+      title: { tag: "plain_text", content: "⚙️ 会话设置" },
       vertical_align: "center",
       icon: { tag: "standard_icon", token: "down-small_outlined" },
       icon_position: "follow",
     },
-    elements,
+    elements: [...elements, ...overflow],
   };
 }
 

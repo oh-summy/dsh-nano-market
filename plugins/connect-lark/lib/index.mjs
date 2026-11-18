@@ -136,6 +136,8 @@ function settingsStatusLine(display, attachGui) {
 const CANCEL_SETTINGS_VALUE = "cancel-settings";
 /** Sentinel option value: clear that dimension back to "follow DSH default". */
 const DEFAULT_OPTION_VALUE = "__default__";
+/** 「对话」下拉的哨兵值：开启新对话（解除会话绑定，下一条消息起是新会话）。 */
+const NEW_CONVERSATION_VALUE = "__new_conversation__";
 /** Flat options for the model select: value = "provider:model". */
 function modelOptions(catalog) {
 	const out = [];
@@ -218,7 +220,8 @@ function settingsSelectElements(opts) {
 *  选择即生效（写该 chat 会话投影 + per-chat 状态），不弹任何单独卡片。
 *  折叠面板官方嵌套规则仅禁止 form 容器；内嵌 select_static 需真机验证（S0）。 */
 /** 两列分组布局（负责人 2026-11-14 要求：模型+思考强度一组、工作区+权限一组）：
-*  每组一个 column_set（左列 label+select，右列 label+select）。 */
+*  每组一个 column_set（左列 label+select，右列 label+select）。
+*  label 用粗体（保守样式：text_tag/font 在真机 2.0 渲染不稳，2026-11-18 实测回退）。 */
 function settingsGroupRow(left, right) {
 	const column = (label, select) => ({
 		tag: "column",
@@ -238,6 +241,25 @@ function settingsGroupRow(left, right) {
 		columns: [column(left.label, left.select), column(right.label, right.select)]
 	};
 }
+/** 会话 select：新对话 + 本工作区历史会话（带标题），initial 指向当前绑定。
+*  选择即切换会话绑定（per-chat 状态），不写插件配置——会话绑定不是配置。 */
+function conversationSelect(opts) {
+	const options = [{
+		label: "➕ 开启新对话",
+		value: NEW_CONVERSATION_VALUE
+	}];
+	const seen = /* @__PURE__ */ new Set([NEW_CONVERSATION_VALUE]);
+	for (const s of opts.chatSessions ?? []) {
+		if (seen.has(s.sessionId)) continue;
+		seen.add(s.sessionId);
+		const isCurrent = s.sessionId === opts.currentSessionId;
+		options.push({
+			label: (isCurrent ? "● 当前 ｜ " : "") + (s.title || s.sessionId.slice(0, 18)),
+			value: s.sessionId
+		});
+	}
+	return selectStatic("conversation", "切换对话", options, (opts.currentSessionId && seen.has(opts.currentSessionId) ? opts.currentSessionId : void 0) ?? "__new_conversation__");
+}
 function buildSettingsPanel(opts) {
 	const selects = settingsSelectElements(opts);
 	const elements = [
@@ -245,8 +267,24 @@ function buildSettingsPanel(opts) {
 			tag: "div",
 			text: {
 				tag: "lark_md",
-				content: "选择**即生效**（下一条消息起）；换工作区 = **新开一段对话**，不继承当前历史。"
+				content: "选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效"
 			}
+		},
+		{
+			tag: "column_set",
+			flex_mode: "stretch",
+			columns: [{
+				tag: "column",
+				width: "weighted",
+				weight: 1,
+				elements: [{
+					tag: "div",
+					text: {
+						tag: "lark_md",
+						content: "**对话**"
+					}
+				}, conversationSelect(opts)]
+			}]
 		},
 		settingsGroupRow({
 			label: "模型",
@@ -270,39 +308,21 @@ function buildSettingsPanel(opts) {
 			content: "⚠️ 高权限档待确认：回复**确认**以应用（仅发起人有效，30s 内）。"
 		}
 	});
-	elements.push({
-		tag: "button",
+	const overflow = (opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0) ? [{
+		tag: "div",
 		text: {
-			tag: "plain_text",
-			content: "🗂 历史对话"
-		},
-		type: "default",
-		size: "small",
-		behaviors: [{
-			type: "callback",
-			value: { value: "open-history" }
-		}]
-	});
-	elements.push({
-		tag: "button",
-		text: {
-			tag: "plain_text",
-			content: "➕ 新对话"
-		},
-		type: "default",
-		size: "small",
-		behaviors: [{
-			type: "callback",
-			value: { value: "new-conversation" }
-		}]
-	});
+			tag: "lark_md",
+			content: "（本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉显示最近 " + (opts.chatSessions?.length ?? 0) + " 个）"
+		}
+	}] : [];
 	return {
 		tag: "collapsible_panel",
 		expanded: false,
+		vertical_spacing: "8px",
 		header: {
 			title: {
 				tag: "plain_text",
-				content: "⚙️ 快捷设置（选择即生效）"
+				content: "⚙️ 会话设置"
 			},
 			vertical_align: "center",
 			icon: {
@@ -311,7 +331,7 @@ function buildSettingsPanel(opts) {
 			},
 			icon_position: "follow"
 		},
-		elements
+		elements: [...elements, ...overflow]
 	};
 }
 /** CardKit 2.0 select_static: the component fires card.action.trigger by
@@ -1251,7 +1271,15 @@ async function downloadInboundImage(url, maxBytes = MAX_IMAGE_BYTES) {
 function plainConfig(input) {
 	const out = {};
 	for (const [key, value] of Object.entries(input)) out[key] = isVolatile(value) ? value.get() : value;
+	normalizeYamlRoundTrip(out);
 	return out;
+}
+/** 宿主 configEditor 写 YAML 不加引号：effort 档位 id "off" 会被 YAML 1.1 解析成布尔 false
+*  （真机实证 2026-11-17：选 Off → 落盘 `reasoningEffort: off` → 读回 false）。
+*  这里把布尔回读归一回档位 id，保证卡片显示与会话创建拿到合法值。 */
+function normalizeYamlRoundTrip(out) {
+	if (out.reasoningEffort === false) out.reasoningEffort = "off";
+	else if (out.reasoningEffort === true) out.reasoningEffort = "";
 }
 const inject = [
 	"agents",
@@ -1449,7 +1477,7 @@ async function readColdSessionTitle(query, sessionId) {
 	}) ?? "");
 	return "";
 }
-async function listSessions(ctx, limit = HISTORY_LIMIT) {
+async function listSessions(ctx, limit = HISTORY_LIMIT, cwdFilter, coldRead = true) {
 	try {
 		const ctrl = ctx.sessionController;
 		if (!ctrl?.list) return {
@@ -1459,21 +1487,29 @@ async function listSessions(ctx, limit = HISTORY_LIMIT) {
 		const raw = await ctrl.list();
 		const mapped = (Array.isArray(raw) ? raw : raw?.items ?? []).filter((r) => typeof (r?.sessionId ?? r?.id) === "string" && (r.sessionId ?? r.id)).map((r) => ({
 			sessionId: r.sessionId ?? r.id,
-			title: r.projections?.values?.sessionListMetadata?.title ?? r.title ?? r.sessionId ?? r.id,
+			title: r.projections?.values?.title ?? r.title ?? "",
 			cwd: typeof r.cwd === "string" ? r.cwd : void 0,
 			updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0
-		})).sort((a, b) => b.updatedAt - a.updatedAt);
-		const total = mapped.length;
-		const page = mapped.slice(0, limit);
+		}));
+		const scoped = (cwdFilter === void 0 ? mapped : mapped.filter((s) => s.cwd === cwdFilter)).sort((a, b) => b.updatedAt - a.updatedAt);
+		const total = scoped.length;
+		const page = scoped.slice(0, limit);
 		const titles = /* @__PURE__ */ new Map();
-		const query = ctx.get?.("sessionQuery");
-		const probeTitle = async (sessionId) => {
-			try {
-				const result = await withTimeout(readColdSessionTitle(query, sessionId), 5e3);
-				if (result.ok && result.value) titles.set(sessionId, result.value);
-			} catch {}
-		};
-		await Promise.all(page.map((s) => probeTitle(s.sessionId)));
+		const query = coldRead ? ctx.get?.("sessionQuery") : void 0;
+		if (query && typeof query.readTitleSnapshots === "function") try {
+			(await withTimeout(query.readTitleSnapshots(page.map((s) => s.sessionId)), 1e4)).forEach((r, i) => {
+				if (r?.status === "fulfilled" && typeof r.value?.title === "string" && r.value.title) titles.set(page[i].sessionId, r.value.title);
+			});
+		} catch {}
+		else if (query) {
+			const probeTitle = async (sessionId) => {
+				try {
+					const result = await withTimeout(readColdSessionTitle(query, sessionId), 5e3);
+					if (result.ok && result.value) titles.set(sessionId, result.value);
+				} catch {}
+			};
+			await Promise.all(page.map((s) => probeTitle(s.sessionId)));
+		}
 		for (const s of page) s.title = titles.get(s.sessionId) ?? "未命名对话（" + s.sessionId.slice(0, 12) + "…）";
 		return {
 			sessions: page,
@@ -1856,7 +1892,10 @@ function apply(ctx, config = {}) {
 	};
 	const refreshSettingsData = async () => {
 		try {
-			const catalog = await ctx.sessionController.modelCatalog();
+			const [catalog, sessions] = await Promise.all([ctx.sessionController.modelCatalog(), listSessions(ctx, 300, void 0, false).catch(() => ({
+				sessions: [],
+				total: 0
+			}))]);
 			const workspaces = (ctx.workspaceRegistry?.list?.() ?? []).map((w) => ({
 				id: w.id,
 				title: w.title,
@@ -1870,20 +1909,34 @@ function apply(ctx, config = {}) {
 				catalog,
 				workspaces,
 				permissions: permCat.options ?? [],
-				defaultPermission: permCat.defaultPreset ?? ""
+				defaultPermission: permCat.defaultPreset ?? "",
+				sessions: sessions.sessions,
+				sessionsTotal: sessions.total
 			};
 		} catch (e) {
 			ctx.logger?.warn?.("[connect-lark] settings data refresh failed: " + e.message);
 		}
 	};
 	const settingsCardArgs = (chatId, overrides) => {
-		const wsPath = chatState(chatId).cwd || plain.defaultPath;
+		const st = chatState(chatId);
+		const wsPath = st.cwd || plain.defaultPath;
 		const ws = wsPath ? settingsData?.workspaces.find((w) => w.path === wsPath) : void 0;
 		const defaultTitle = wsPath ? "工作区（" + wsPath.split("/").filter(Boolean).pop() + "）" : "默认工作区";
 		const provider = overrides?.provider ?? plain.provider ?? "";
 		const model = overrides?.model ?? plain.model ?? "";
 		const effort = overrides?.reasoningEffort !== void 0 ? overrides.reasoningEffort : plain.reasoningEffort ?? "";
 		const hasModel = Boolean(provider && model);
+		const currentSessionId = st.sessionId || deterministicSessionId(chatId, wsPath || process.cwd());
+		const chatSessions = (settingsData?.sessions ?? []).filter((s) => wsPath === void 0 || s.cwd === wsPath).slice(0, 15).map((s) => ({
+			sessionId: s.sessionId,
+			title: s.title,
+			cwd: s.cwd
+		}));
+		if (!chatSessions.some((s) => s.sessionId === currentSessionId)) chatSessions.unshift({
+			sessionId: currentSessionId,
+			title: "",
+			cwd: wsPath
+		});
 		return {
 			catalog: settingsData?.catalog ?? { groups: [] },
 			workspaces: settingsData?.workspaces ?? [],
@@ -1897,7 +1950,10 @@ function apply(ctx, config = {}) {
 				permission: plain.permissionPreset || void 0
 			},
 			hasPendingPermission: pendingConfirms.has(chatId),
-			defaultWorkspaceTitle: defaultTitle
+			defaultWorkspaceTitle: defaultTitle,
+			chatSessions,
+			currentSessionId,
+			sessionsTotal: settingsData?.sessionsTotal ?? 0
 		};
 	};
 	/** 需要二次确认的高危档位（宿主语义，dsh-permission-presets）：
@@ -1994,7 +2050,9 @@ function apply(ctx, config = {}) {
 	/** 后台：把本次选择**写入插件配置**（与 Web 设置页同一份），并让当前会话立即生效。
 	*  - 配置写：writePluginConfig → 宿主 settings.mutate → profile patch → loader 热更新；
 	*  - 会话生效：模型/强度 → agent.model.select（会话投影，重启重放）；权限 → permissionPresets.set。
-	*  失败发一条飞书通知（不能只报成功 toast）。 */
+	*  两步分开报错：配置保存失败 ≠ 会话投影失败。权限切换可能被宿主拒绝
+	*  （持久终端开着时不能改 sandbox 模式——真机实证 2026-11-17），此时配置已保存，
+	*  新会话/关闭终端后按新配置生效，必须如实告知而不是笼统说「设置未生效」。 */
 	const applyDimension = async (chan, chatId, controlName, partial) => {
 		try {
 			await writePluginConfig(partial);
@@ -2002,17 +2060,22 @@ function apply(ctx, config = {}) {
 				clearSessionBinding(chatId);
 				return;
 			}
-			const cwd = currentCwd(chatId);
-			const id = chatState(chatId).sessionId || deterministicSessionId(chatId, cwd);
-			await ensureFirstClass(ctx, id, cwd);
-			const { agent } = await createOrResumeAgent(ctx, id, { cwd }, {}, plain.permissionPreset);
-			if (controlName === "model" || controlName === "effort") {
-				const sel = resolveAgentModelOptions(plain, await ctx.sessionController.modelCatalog());
-				agent.model?.select?.(sel);
-			}
-			if (controlName === "permission") {
-				const p = plain.permissionPreset || (settingsData?.defaultPermission ?? "");
-				if (p) ctx.permissionPresets?.set?.(agent.session, p);
+			try {
+				const cwd = currentCwd(chatId);
+				const id = chatState(chatId).sessionId || deterministicSessionId(chatId, cwd);
+				await ensureFirstClass(ctx, id, cwd);
+				const { agent } = await createOrResumeAgent(ctx, id, { cwd }, {}, plain.permissionPreset);
+				if (controlName === "model" || controlName === "effort") {
+					const sel = resolveAgentModelOptions(plain, await ctx.sessionController.modelCatalog());
+					agent.model?.select?.(sel);
+				}
+				if (controlName === "permission") {
+					const p = plain.permissionPreset || (settingsData?.defaultPermission ?? "");
+					if (p) ctx.permissionPresets?.set?.(agent.session, p);
+				}
+			} catch (e) {
+				ctx.logger?.warn?.("[connect-lark] config saved but session projection failed: " + e.message);
+				Promise.resolve(chan.send(chatId, { markdown: "✅ 已保存到插件配置（Web 设置页同步可见）\n⚠️ 当前会话未能立即切换：" + e.message + "\n新对话（或关闭持久终端后）会按新配置生效" })).catch(() => {});
 			}
 		} catch (e) {
 			ctx.logger?.warn?.("[connect-lark] apply dimension failed: " + e.message);
@@ -2440,6 +2503,46 @@ function apply(ctx, config = {}) {
 					return { toast: {
 						type: "success",
 						content: "✅ 已切换到历史对话（下一条消息起在该会话继续，历史与设置保留）"
+					} };
+				}
+				if (controlName === "conversation") {
+					if (typeof option !== "string" || option === "") return;
+					if (!dedupClaim(evt.messageId + ":" + controlName + ":" + option)) return;
+					const current = chatState(chatId).sessionId || deterministicSessionId(chatId, currentCwd(chatId));
+					if (option === "__new_conversation__") {
+						if (!chatState(chatId).sessionId) return { toast: {
+							type: "success",
+							content: "当前已是新对话，无需切换"
+						} };
+						clearSessionBinding(chatId);
+						try {
+							rebuildReplyCard(chatId);
+						} catch (e2) {
+							ctx.logger?.warn?.("[connect-lark] reply card rebuild failed: " + e2.message);
+						}
+						return { toast: {
+							type: "success",
+							content: "✅ 已切到新对话（下一条消息起在全新会话继续）"
+						} };
+					}
+					if (option === current) return { toast: {
+						type: "success",
+						content: "已是当前对话"
+					} };
+					const known = (settingsData?.sessions ?? []).find((s) => s.sessionId === option);
+					if (!known) return { toast: {
+						type: "error",
+						content: "该会话不存在或不在当前工作区"
+					} };
+					touchState(chatId, { sessionId: option });
+					try {
+						rebuildReplyCard(chatId);
+					} catch (e2) {
+						ctx.logger?.warn?.("[connect-lark] reply card rebuild failed: " + e2.message);
+					}
+					return { toast: {
+						type: "success",
+						content: "✅ 已切换对话：" + (known.title || option.slice(0, 18)) + "（下一条消息起在该会话继续，历史与设置保留）"
 					} };
 				}
 				if (controlName === "workspace" || controlName === "model" || controlName === "effort" || controlName === "permission") {

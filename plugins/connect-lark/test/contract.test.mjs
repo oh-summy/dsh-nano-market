@@ -201,6 +201,19 @@ test("FIELDS count matches the schema (guards against drift)", () => {
 });
 
 
+test("plainConfig normalizes the YAML round-trip: effort id off survives as a string", async () => {
+  // 真机实证（2026-11-17）：选 Off → 宿主写 YAML `reasoningEffort: off`（不加引号）→
+  // YAML 1.1 读回布尔 false → 卡片显示「跟随模型默认」、新会话拿到非法 effort。
+  const { plainConfig } = await import("../lib/index.mjs");
+  const cfg = { provider: "agnes", model: "agnes-3.0-flash", reasoningEffort: false, permissionPreset: "workspace-write" };
+  const plain = plainConfig(cfg);
+  assert.equal(plain.reasoningEffort, "off", "boolean false round-trips back to the off effort id");
+  const cfgTrue = plainConfig({ provider: "agnes", model: "agnes-3.0-flash", reasoningEffort: true });
+  assert.equal(cfgTrue.reasoningEffort, "", "boolean true degrades to follow-model-default");
+  const cfgOff = plainConfig({ provider: "agnes", model: "agnes-3.0-flash", reasoningEffort: "off" });
+  assert.equal(cfgOff.reasoningEffort, "off", "a proper string off is untouched");
+});
+
 test("per-chat state file keeps session binding only — legacy setting fields are dropped", async () => {
   const { loadStates } = await import("../lib/index.mjs");
   const { writeFileSync, mkdtempSync } = await import("node:fs");

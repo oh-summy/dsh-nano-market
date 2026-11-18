@@ -534,7 +534,7 @@ function NanoMarketTab(props) {
           })) }),
     ] }),
     bundleError ? jsxs("div", { className: "nmk-notice", children: [
-      jsx("span", { children: t("unknownState") }),
+      jsx("span", { children: t("unknownState") + "（" + (bundleError || "") + "）" }),
       jsx("button", { type: "button", className: "nmk-retry", disabled: refreshing, onClick: () => void retryReads(), children: refreshing ? t("retrying") : t("retry") }),
     ] }) : null,
     marketError ? jsxs("div", { className: "nmk-notice", children: [

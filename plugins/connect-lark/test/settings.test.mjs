@@ -101,12 +101,26 @@ function panelSelects(card) {
   return out;
 }
 
-test("buildSettingsPanel: four named select_static elements with grouped layout", () => {
+test("buildSettingsPanel: five named select_static elements with grouped layout", () => {
   const card = buildSettingsPanel({ catalog, workspaces, permissions, defaultPermission: "workspace-write" });
   assert.equal(card.tag, "collapsible_panel");
   assert.equal(card.expanded, false, "panel collapsed by default");
   const selects = panelSelects(card);
-  assert.deepEqual(selects.map((s) => s.name), ["model", "effort", "workspace", "permission"], "grouped row order");
+  assert.deepEqual(selects.map((s) => s.name), ["conversation", "model", "effort", "workspace", "permission"], "grouped row order");
+  const conversation = selects.find((s) => s.name === "conversation");
+  assert.ok(conversation.options.some((o) => o.value === "__new_conversation__"), "conversation list offers 新对话");
+  assert.ok(conversation.options[0].value === "__new_conversation__", "conversation list starts with 新对话");
+  assert.equal(conversation.initial_option, "__new_conversation__", "no sessions in args → initial falls back to 新对话");
+  const withSessions = buildSettingsPanel({
+    catalog, workspaces, permissions, defaultPermission: "workspace-write",
+    chatSessions: [{ sessionId: "session-a", title: "调试问题" }, { sessionId: "session-b", title: "写脚本" }],
+    currentSessionId: "session-b",
+  });
+  const conv = panelSelects(withSessions).find((s) => s.name === "conversation");
+  assert.ok(conv.options.some((o) => o.value === "session-a" && /调试问题/.test(o.text.content)), "session options carry real titles");
+  assert.equal(conv.initial_option, "session-b", "current binding is the initial option");
+  assert.ok(conv.options.some((o) => /● 当前/.test(o.text.content)), "current session is visually marked");
+  assert.ok(panelSelects(withSessions).every((s) => Array.isArray(s.options) && s.options.length > 0), "no empty options selects");
   assert.ok(selects.every((s) => s.behaviors?.[0]?.type === "callback"), "every select carries a callback behavior (official-recommended custom回传参数)");
   assert.ok(selects.every((s) => Array.isArray(s.options) && s.options.length > 0), "no empty options selects");
   const workspace = selects.find((s) => s.name === "workspace");
@@ -151,7 +165,7 @@ test("modelOptions flattens provider groups; effortOptions follow the current mo
 
 // ============ apply 集成（cardAction 流程） ============
 
-async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", senderAllowlist = [], resolveAgentReturnsAgent = false, catalog: catalogOverride, defaultPermission = "workspace-write", persistFails = false, historySessions = [], historyTitleOf = (sid) => sid, configOverride = {} } = {}) {
+async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", senderAllowlist = [], resolveAgentReturnsAgent = false, catalog: catalogOverride, defaultPermission = "workspace-write", persistFails = false, mutateFails = false, historySessions = [], historyTitleOf = (sid) => sid, configOverride = {} } = {}) {
   const calls = { sends: [], cards: [], selects: [], presetSets: [], disposes: [], followups: [], resolveSessions: [], registered: [], updates: [], creates: [], sessionCreates: [], boots: 0, configEditorEdits: 0, configMutations: [], createSeq: 0, prepended: [] };
   // per-chat 状态文件（一等公民维度的持久化落点）——插件经 CONNECT_LARK_SESSION_MAP 指向这里
   const stateFile = makeStateFile();
@@ -223,6 +237,7 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
         // 卡片与 Web 设置页共用的唯一配置保存路径（宿主 settings 服务）。
         return {
           async mutate(ns, ops) {
+            if (mutateFails) throw new Error("simulated config-save failure");
             calls.configMutations.push({ ns, ops });
             // 落盘模拟：宿主把新值并回 profile patch → loader 热更新（volatile）
             // → 插件重新读取配置快照。emit 触发插件的 volatile-update 监听器。
@@ -336,7 +351,7 @@ test("apply: model select rebuilds the reply card in place (no separate card)", 
       if (el.tag === "column_set") for (const col of el.columns ?? []) for (const sub of col.elements ?? []) if (sub.tag === "select_static") beforeSelects.push(sub);
       if (el.tag === "select_static") beforeSelects.push(sub);
     }
-    assert.equal(beforeSelects.length, 4, "panel carries the four selects (nested in column groups)");
+    assert.equal(beforeSelects.length, 5, "panel carries the five selects (conversation + four nested in column groups)");
 
     // 从回复卡内嵌面板选模型 → 就地重建同一张卡（不弹新卡）
     // 回归锁定（真机 bug 2026-11-14）：CardKit 2.0 select_static 回调可能不带 action.name——
@@ -590,15 +605,35 @@ test("apply: high permission cannot be reached via the DSH default preset (P0-2)
   } finally { await h.dispose(); }
 });
 
-test("apply: a failed persist is reported instead of claiming success (P1-4)", async () => {
+test("apply: a failed session projection is reported as saved-config + failed-switch (P1-4)", async () => {
   const h = await makeSettingsHarness({ persistFails: true });
   try {
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
     await h.endTurn();
     const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "model", option: "kimi:k3.1-pro" } });
     await settle();
-    const notified = h.calls.sends.some((s) => s.input && typeof s.input.markdown === "string" && /未保存|失败/.test(s.input.markdown));
-    assert.ok(notified, "the user is told the setting was not saved");
+    // 配置保存成功 + 会话投影失败：必须如实区分，不能笼统说「设置未生效」
+    // （真机实证：权限切换被宿主拒绝时配置其实已落盘——持久终端开着不能改 sandbox 模式）。
+    const notified = h.calls.sends.some((s) => s.input && typeof s.input.markdown === "string"
+      && /已保存到插件配置/.test(s.input.markdown) && /未能立即切换/.test(s.input.markdown));
+    assert.ok(notified, "the user is told the config was saved but the live switch failed");
+    // 配置本身已写入（settings.mutate 被调用）
+    assert.ok(h.calls.configMutations.length > 0, "the config mutation was recorded");
+  } finally { await h.dispose(); }
+});
+
+test("apply: a failed CONFIG SAVE is reported as not-saved (config write throws)", async () => {
+  const h = await makeSettingsHarness({ mutateFails: true });
+  try {
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    await h.endTurn();
+    // 宿主 settings.mutate 抛错 → 配置保存失败 → 笼统「设置未生效」是对的
+    await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "permission", option: "workspace-write" } });
+    await settle();
+    const notified = h.calls.sends.some((s) => s.input && typeof s.input.markdown === "string" && /设置未生效/.test(s.input.markdown));
+    assert.ok(notified, "config save failure is reported as not-saved");
+    assert.ok(h.calls.sends.every((s) => !(typeof s.input?.markdown === "string" && /已保存到插件配置/.test(s.input.markdown))),
+      "no saved-config claim when the write itself failed");
   } finally { await h.dispose(); }
 });
 
@@ -778,7 +813,7 @@ test("apply: finished reply card carries status line and the inline settings pan
       if (el.tag === "column_set") for (const col of el.columns ?? []) for (const sub of col.elements ?? []) if (sub.tag === "select_static") selects.push(sub);
       if (el.tag === "select_static") selects.push(el);
     }
-    assert.deepEqual(selects.map((s) => s.name), ["model", "effort", "workspace", "permission"], "grouped row order");
+    assert.deepEqual(selects.map((s) => s.name), ["conversation", "model", "effort", "workspace", "permission"], "grouped row order");
     assert.match(JSON.stringify(panel.elements), /\*\*模型\*\*/, "panel labels present above selects");
     const modelSel = selects.find((s) => s.name === "model");
     assert.equal(modelSel.initial_option, "kimi:k3.1-pro", "panel reflects the override");
@@ -967,17 +1002,52 @@ test("apply: history card options show real session titles, not raw ids", async 
   } finally { await h.dispose(); }
 });
 
-test("apply: settings panel carries history/new-conversation buttons (P4)", async () => {
+test("apply: settings panel carries the conversation dropdown (P4, replaces history buttons)", async () => {
   const h = await makeSettingsHarness();
   try {
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
     await h.endTurn();
     const finalCard = h.calls.cards.at(-1);
-    const panel = finalCard.body.elements.find((e) => e.tag === "collapsible_panel" && String(e.header?.title?.content || "").startsWith("⚙️"));
+    const panel = finalCard.body.elements.find((e) => e.tag === "collapsible_panel" && String(e.header?.title?.content || "").includes("会话设置"));
     assert.ok(panel, "settings panel present");
     const btns = panel.elements.filter((e) => e.tag === "button");
     const values = btns.map((b) => b.behaviors?.[0]?.value?.value);
-    assert.ok(values.includes("open-history"), "history button in panel");
-    assert.ok(values.includes("new-conversation"), "new-conversation button in panel");
+    assert.ok(!values.includes("open-history") && !values.includes("new-conversation"), "history/new buttons are gone");
+    const selects = [];
+    for (const el of panel.elements) {
+      if (el.tag === "select_static") selects.push(el);
+      if (el.tag === "column_set") for (const col of el.columns ?? []) for (const sub of col.elements ?? []) if (sub.tag === "select_static") selects.push(sub);
+    }
+    const conv = selects.find((s) => s.name === "conversation");
+    assert.ok(conv, "conversation dropdown present in panel");
+    assert.ok(conv.options.some((o) => o.value === "__new_conversation__"), "dropdown offers 新对话");
+    // 当前会话在候选里（默认确定性会话）
+    const cur = conv.options.find((o) => String(o.value).includes("connect-lark:oc-1"));
+    assert.ok(cur, "the deterministic default session is listed as a candidate");
+  } finally { await h.dispose(); }
+});
+
+test("apply: conversation dropdown switch binds the session (next message runs there)", async () => {
+  const h = await makeSettingsHarness({
+    historySessions: [{ sessionId: "sess-x", title: "已命名的会话", cwd: "", updatedAt: 2 }],
+  });
+  try {
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    await h.endTurn();
+    // 选「新对话」：当前本来就无显式绑定 → 提示无需切换
+    const resp0 = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
+    assert.match(resp0.toast.content, /已是新对话/, "already on the default session → no-op toast");
+    // 绑定一个显式会话 → 下一条消息走它
+    const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "conversation", option: "sess-x" } });
+    assert.match(resp.toast.content, /已切换对话/, "bind toast returned");
+    await h.waitForState('"sessionId": "sess-x"');
+    // 未知名单里的会话不在 settingsData.sessions（refresh 依赖宿主 list）——校验拒绝伪造绑定
+    const denied = await h.cardAction({ chatId: "oc-1", messageId: "card-3", operator: { openId: "ou-1" }, action: { name: "conversation", option: "sess-fake" } });
+    assert.match(denied.toast.content, /不存在/, "fake session binding rejected");
+    // 新对话解除绑定
+    const resp2 = await h.cardAction({ chatId: "oc-1", messageId: "card-4", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
+    assert.match(resp2.toast.content, /已切到新对话/, "unbind toast returned");
+    await settle();
+    assert.doesNotMatch(h.readState(), /"sessionId"/, "binding cleared from the per-chat state file");
   } finally { await h.dispose(); }
 });
