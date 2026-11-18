@@ -288,7 +288,7 @@ function settingsRow(items: Array<{ label: string; color: string; select: Record
   const columns = items.map((it) => [
     // 标签列固定宽 + 标签居中：两字/三字标签的两侧空隙对称，组内贴合度一致（真机反馈 2026-11-18）
     { tag: "column", width: "auto", horizontal_align: "right", vertical_align: "center",
-      elements: [{ tag: "markdown", content: "<text_tag color='" + it.color + "'>" + it.label + "</text_tag>" }] },
+      elements: [{ tag: "markdown", content: "<text_tag color='" + it.color + "'>" + it.label + (it.label.length === 2 ? "　" : "") + "</text_tag>" }] },
     { tag: "column", width: "weighted", weight: 1, vertical_align: "center", horizontal_spacing: "small", elements: [it.select] },
   ]).flat();
   return { tag: "column_set", flex_mode: "none", columns };
