@@ -602,9 +602,10 @@ async function finalizeRunCard(
 
 export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   let plain = plainConfig(config);
-  // 说明：模型/强度/权限/工作区不再写插件配置（不再走 configEditor.edit → patch → HMR），
-  // 而是写【会话投影】（agent.model.select / permissionPresets.set）+ per-chat 状态。
-  // 因此不再有「配置编辑触发 entry 重载」这条路径，HMR 嵌套事务问题随之消失（无需逃逸）。
+  // 说明：模型/强度/权限/工作区的修改**写插件配置**（卡片与 Web 设置页同一份，
+  // 经 ctx.settings.mutate → 宿主 configEditor 原子写 → patch → loader 热更新，
+  // 绝不直写 patch 文件）；会话绑定（对话/工作区切换产生的会话归属）存 per-chat 状态。
+  // 全字段 .volatile() → 热更新不重启插件，无「配置编辑触发 entry 重载」问题。
   let channel: LarkChannel | null = null;
   let runManager: RunManager | null = null;
   let unsubMessage: (() => void) | null = null;
@@ -628,6 +629,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   const sessionChat = new Map<string, string>();
   // P5 审批：callId → 待决审批（飞书按钮点击后 resolve）。绑 chatId 用于发卡与终态更新。
   // 放在 apply() 作用域：审批监听器在 apply 顶层注册，需要跨 boot/cleanup 存活。
+  // 缺 callId 审批用匿名序号（审查 P1-6：不能共用 key "" 互相覆盖）。
+  let approvalSeq = 0;
   const pendingApprovals = new Map<string, {
     resolve: (outcome: "allowed-once" | "rejected" | "cancelled") => void;
     chatId: string;
@@ -766,8 +769,6 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   };
   // 高权限档二次确认：per-chat，绑发起人 openId，30s TTL（方案 §4.3 / P1-3）
   const pendingConfirms = new Map<string, { openId: string; permission: string; expiresAt: number }>();
-  // 最近一次回复所在的 chat（卡片回调的 pending key 与就地重建目标）
-  let lastRepliedChatId = "";
   const CONFIRM_TTL_MS = 30_000;
   // 设置卡片数据缓存（open-settings 时刷新一次；select 回调用缓存同步构建就地更新）
   let settingsData: {
@@ -808,7 +809,9 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
     // 卡片与 Web 设置页读写的是同一份配置，因此这里显示的就是 Web 页面上看到的值。
     // overrides 用于「用户刚选的模型」尚未落配置时，面板先按新模型渲染（档位跟随所选模型）。
     const st = chatState(chatId);
-    const wsPath = st.cwd || plain.defaultPath;
+    // 与 currentCwd() 同源兜底（process.cwd()），否则未配 defaultPath 时
+    // 会话下拉按 cwd === "" 过滤、恒为空（审查 P1-4）
+    const wsPath = st.cwd || plain.defaultPath || process.cwd();
     const ws = wsPath ? settingsData?.workspaces.find((w) => w.path === wsPath) : undefined;
     const defaultTitle = wsPath ? "工作区（" + wsPath.split("/").filter(Boolean).pop() + "）" : "默认工作区";
     const provider = overrides?.provider ?? plain.provider ?? "";
@@ -884,8 +887,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   };
 
   /** 同步处理一次 select 回调：校验 → 生成该维度的候选值（高权限档先进 pending，
-   *  确认后才进入候选）。候选经 applyDimState 落 per-chat 状态（重启恢复）+
-   *  applyDimension 写会话投影（一等公民），不写插件配置、不写 patch。 */
+   *  确认后才进入候选）。候选由调用方经 writePluginConfig 写插件配置（唯一事实源），
+   *  并由 applyDimension 补会话投影让当前会话立即生效。 */
   const applySelect = (
     chatId: string,
     name: string,
@@ -897,7 +900,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       // 校验用实时 registry（settingsData 只是展示缓存）
       const ws = (ctx.workspaceRegistry?.list?.() ?? []).find((w: any) => w.id === option);
       if (!ws) return { error: "未知工作区" };
-      const switched = (plain.defaultPath || "") !== ws.path;
+      // 与 per-chat 当前 cwd 比较（而非配置 defaultPath）：重选当前工作区不触发「新开对话」
+      const switched = currentCwd(chatId) !== ws.path;
       return { partial: { defaultPath: ws.path }, switchedWorkspace: switched, workspaceTitle: ws.title };
     }
     if (name === "model") {
@@ -929,13 +933,6 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
     return { error: "未知控件" };
   };
 
-  /** 同步：把本次选择落到 per-chat 状态（只记工作区；模型/强度/权限在插件配置里）。 */
-  const applyDimState = (chatId: string, partial: Partial<ResolvedConfig>): void => {
-    const patch: Partial<ChatState> = {};
-    if (partial.defaultPath !== undefined) patch.cwd = partial.defaultPath || undefined;
-    touchState(chatId, patch);
-  };
-
   /** 配置写入口：**唯一**的配置保存路径（与 Web 设置页同一处）。
    *  走宿主 settings 服务 → configEditor → profile patch → loader 热更新，
    *  与 Web 设置页的 form.actions().save() 完全同源（同一份 cordis.patch.yml 配置）。
@@ -958,7 +955,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
    *  两步分开报错：配置保存失败 ≠ 会话投影失败。权限切换可能被宿主拒绝
    *  （持久终端开着时不能改 sandbox 模式——真机实证 2026-11-17），此时配置已保存，
    *  新会话/关闭终端后按新配置生效，必须如实告知而不是笼统说「设置未生效」。 */
-  const applyDimension = async (chan: LarkChannel, chatId: string, controlName: string, partial: Partial<ResolvedConfig>): Promise<void> => {
+  const applyDimension = async (chan: LarkChannel, chatId: string, controlName: string, partial: Partial<ResolvedConfig>, dedupKey?: string): Promise<void> => {
     try {
       // 1) 写配置（唯一事实源）。工作区切换 → **默认开启新对话**（负责人 2026-11-18 需求；
       //    历史可在「对话」下拉接回）。立即在新工作区创建全新会话并绑定——不清绑定等
@@ -971,6 +968,11 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           const created: any = await ctx.sessionController.create({ cwd: newCwd });
           const newId = created?.sessionId ?? created?.value?.sessionId;
           if (newId) {
+            // 挂工作区归属（Web 左栏立即可见；归属失败不阻断）
+            try {
+              const ws = await ctx.workspaceRegistry?.resolveByPath?.(newCwd);
+              if (ws) await ws.attachSession(newId);
+            } catch { /* 不阻断 */ }
             touchState(chatId, { sessionId: newId, cwd: newCwd });
             try { await ctx.sessionController.rename({ sessionId: newId, title: "新对话" }); } catch { /* 不影响切换 */ }
           }
@@ -988,10 +990,19 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         // 目标会话是【空会话】（从未发过消息）时跳过投影：为投影而创建空会话
         // 会在历史清单里堆积「未命名对话」（真机实证 2026-11-18），而配置在
         // 下一条消息创建会话时本就会带上（agentOptions + permissionPreset）。
+        // 仅在清单明确标记 blank 时跳过；row 缺失（清单缓存未含/重启后冷会话）
+        // 必须正常走投影——否则切换静默不生效（审查 P1-3）。
         const row = settingsData?.sessions.find((s) => s.sessionId === id);
-        const isBlank = row ? row.blank === true : ctx.agents?.get?.(id) === undefined;
-        if (isBlank) {
-          ctx.logger?.info?.("[connect-lark] target session is blank; skip projection (config will apply at creation) id=" + id + " rowBlank=" + (row ? String(row.blank) : "missing"));
+        if (row?.blank === true) {
+          ctx.logger?.info?.("[connect-lark] target session is blank; skip projection (config will apply at creation) id=" + id);
+          return;
+        }
+        // 「跟随 DSH 默认」（partial 全空）跳过投影：保留会话现有投影即可——
+        // 把 catalog.default select 进投影会把会话钉死在当时的默认上，
+        // DSH 默认日后变化该会话不跟随（审查 P2）。新会话由 agentOptions 兜底。
+        const allEmpty = Object.values(partial).every((v) => v === "" || v === undefined);
+        if (allEmpty) {
+          ctx.logger?.info?.("[connect-lark] dimension set to follow DSH default; skip session projection");
           return;
         }
         await ensureFirstClass(ctx, id, cwd);
@@ -1012,6 +1023,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       }
     } catch (e) {
       ctx.logger?.warn?.("[connect-lark] apply dimension failed: " + (e as Error).message);
+      // 失败释放 dedup 键：让用户 60s 内可以直接重试（审查 P1-5）
+      if (dedupKey) dedupTable.delete(dedupKey);
       void Promise.resolve(chan.send(chatId, { markdown: "⚠️ 设置未生效：" + (e as Error).message + "（请重试）" })).catch(() => {});
     }
   };
@@ -1258,8 +1271,6 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               onDelta(frame.chunk.text, "reasoning");
             } else if (frame?.type === "chunk" && frame.chunk?.type === "tool-call-delta") {
               onDelta("", "tool");
-            } else if (frame?.type === "chunk" && frame.chunk?.type === "tool-call-delta") {
-              onDelta("", "tool");
             }
           }));
           const unsubTurn = ctx.on("session/event", (session: any, event: any) => {
@@ -1355,7 +1366,6 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             }
             // 刷新设置卡数据（面板下拉的选项与当前值来自它）；失败时面板降级为占位项
             await refreshSettingsData();
-            lastRepliedChatId = slot.chatId;
             const panelArgs = plain.agentOwnership === "owned-per-chat" ? settingsCardArgs(slot.chatId) : undefined;
             const effortList = panelArgs ? effortOptionsFor(panelArgs) : undefined;
             const footer = {
@@ -1509,9 +1519,26 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             if (isBlank) {
               return { toast: { type: "success", content: "当前已是新对话（空会话），无需切换" } };
             }
-            const created: any = await ctx.sessionController.create({ cwd: currentCwd(chatId) });
-            const newId = created?.sessionId ?? created?.value?.sessionId;
-            if (!newId) return { toast: { type: "error", content: "新会话创建失败，请重试" } };
+            let newId: string | undefined;
+            try {
+              const created: any = await ctx.sessionController.create({ cwd: currentCwd(chatId) });
+              newId = created?.sessionId ?? created?.value?.sessionId;
+              // 挂工作区归属：Web 左栏立即可见（审查 P2；归属失败不阻断）
+              if (newId) {
+                try {
+                  const ws = await ctx.workspaceRegistry?.resolveByPath?.(currentCwd(chatId));
+                  if (ws) await ws.attachSession(newId);
+                } catch { /* 不阻断 */ }
+              }
+            } catch (e2) {
+              // 创建抛错：释放 dedup 键，60s 内可重试（审查 P1-5）
+              dedupTable.delete(evt.messageId + ":" + controlName + ":" + option);
+              return { toast: { type: "error", content: "新会话创建失败：" + (e2 as Error).message + "（请重试）" } };
+            }
+            if (!newId) {
+              dedupTable.delete(evt.messageId + ":" + controlName + ":" + option);
+              return { toast: { type: "error", content: "新会话创建失败，请重试" } };
+            }
             touchState(chatId, { sessionId: newId, cwd: currentCwd(chatId) });
             // 立即命名（宿主首条消息自动命名会在首轮覆盖它）
             try { await ctx.sessionController.rename({ sessionId: newId, title: "新对话" }); } catch { /* 不影响切换 */ }
@@ -1529,12 +1556,18 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           if (option === current) {
             return { toast: { type: "success", content: "已是当前对话" } };
           }
-          // 校验会话确实存在于本工作区（防伪造回调绑到别的会话）
+          // 校验会话确实存在于**当前工作区**（settingsData.sessions 是全实例清单，
+          // 含 GUI 会话与其他工作区的会话——只查成员身份会让旧卡片把本 chat
+          // 绑定到任意会话，下一条飞书消息即注入他处上下文，真机审查 P0-1）。
+          // touchState 同时记 known.cwd（会话真实出身），保证后续 resolveAgent 的
+          // meta.cwd 与会话出身一致，而非当前工作区。
           const known = (settingsData?.sessions ?? []).find((s) => s.sessionId === option);
-          if (!known) return { toast: { type: "error", content: "该会话不存在或不在当前工作区" } };
+          if (!known || known.cwd !== currentCwd(chatId)) {
+            return { toast: { type: "error", content: "该会话不存在或不在当前工作区" } };
+          }
           const fromTitle = sessionDisplayName(current);
           const toTitle = known.title || option.replace(/^session-/, "").slice(0, 13) + "…";
-          touchState(chatId, { sessionId: option, cwd: currentCwd(chatId) });
+          touchState(chatId, { sessionId: option, cwd: known.cwd });
           // 切换记录作为**一条消息**发进对话（含时间与从→到）
           void Promise.resolve(chan.send(chatId, {
             markdown: "🔄 **已切换对话** · " + nowStamp() + "\n从「" + fromTitle + "」切换至「" + toTitle + "」\n下一条消息起在新会话继续，历史与设置保留",
@@ -1577,7 +1610,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             }
           }
           // 写插件配置（与 Web 设置页同一份）+ 让当前会话立即生效（失败发通知）。
-          void applyDimension(chan, chatId, controlName, result.partial);
+          // 透传 dedup 键：失败时释放，允许用户立即重试（审查 P1-5）。
+          void applyDimension(chan, chatId, controlName, result.partial, evt.messageId + ":" + controlName + ":" + option);
           const dimLabels: Record<string, string> = { workspace: "工作区", model: "模型", effort: "思考强度", permission: "权限" };
           const field: string = controlName;
           const prevLabel = (prevDisplay as any)?.[field] ?? "跟随 DSH 默认";
@@ -1627,7 +1661,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           }
           return { toast: { type: "success", content: outcome === "allowed-once" ? "✅ 已同意" : "⛔ 已拒绝" } };
         }
-        return;
+        // 未识别的按钮：旧版卡片的回调已随面板重构移除，提示用户用最新卡片
+        return { toast: { type: "info", content: "该按钮来自旧版卡片，请展开最新回复卡操作" } };
       };
       unsubCardAction = chan.on("cardAction", cardActionHandler);
 
@@ -1721,7 +1756,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       const chatId = sessionChat.get(sid);
       if (!chatId) return next(); // 非本插件 agent → 不干预
       if (!channel) return Promise.resolve("cancelled"); // 通道未就绪 → 取消（不挂死 agent）
-      const callId = req?.callId ?? "";
+      // callId 缺省时用匿名序号：两个缺 callId 的审批不能共用 key ""（审查 P1-6）
+      const callId = req?.callId || "anon-" + (++approvalSeq);
       return new Promise<"allowed-once" | "rejected" | "cancelled">((resolve) => {
         // 先清理过期审批（防残留）
         const now = Date.now();

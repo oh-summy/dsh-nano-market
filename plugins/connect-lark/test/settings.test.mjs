@@ -165,7 +165,7 @@ test("modelOptions flattens provider groups; effortOptions follow the current mo
 
 // ============ apply 集成（cardAction 流程） ============
 
-async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", senderAllowlist = [], resolveAgentReturnsAgent = false, catalog: catalogOverride, defaultPermission = "workspace-write", persistFails = false, failCreatesFrom = 0, mutateFails = false, historySessions = [], historyTitleOf = (sid) => sid, configOverride = {} } = {}) {
+async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", senderAllowlist = [], resolveAgentReturnsAgent = false, catalog: catalogOverride, defaultPermission = "workspace-write", persistFails = false, failCreatesFrom = 0, failSessionCreates = false, failSessionCreatesFrom = 1, mutateFails = false, historySessions = [], historyTitleOf = (sid) => sid, configOverride = {} } = {}) {
   const calls = { sends: [], cards: [], selects: [], presetSets: [], disposes: [], followups: [], resolveSessions: [], registered: [], updates: [], creates: [], sessionCreates: [], boots: 0, configEditorEdits: 0, configMutations: [], createSeq: 0, prepended: [] };
   // per-chat 状态文件（一等公民维度的持久化落点）——插件经 CONNECT_LARK_SESSION_MAP 指向这里
   const stateFile = makeStateFile();
@@ -205,7 +205,7 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
       cancel: async () => {},
       // P4：历史会话列表 / 新会话创建（mock 默认返回空列表 / 生成确定性 id）
       list: async () => ({ items: historySessions ?? [] }),
-      create: async (req) => { calls.sessionCreates.push(req); return { sessionId: "host-uuid-" + (++calls.createSeq) }; },
+      create: async (req) => { calls.sessionCreates.push(req); if (failSessionCreates && calls.sessionCreates.length >= failSessionCreatesFrom) throw new Error("simulated session-create failure"); return { sessionId: "host-uuid-" + (++calls.createSeq) }; },
       rename: async () => {},
     },
     workspaceRegistry: { list: () => workspaces },
@@ -612,7 +612,7 @@ test("apply: a failed session projection is reported as saved-config + failed-sw
   const h = await makeSettingsHarness({
     persistFails: true,
     failCreatesFrom: 1, // 首条消息的 create 成功（refresh 有数据、会话非空），卡片投影的 create 失败
-    historySessions: [{ sessionId: det, title: "", cwd: "", updatedAt: 1, blank: false }],
+    historySessions: [{ sessionId: det, title: "", cwd: process.cwd(), updatedAt: 1, blank: false }],
   });
   try {
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
@@ -926,7 +926,7 @@ test("apply: settings panel carries the conversation dropdown (P4, replaces hist
 
 test("apply: conversation dropdown — 新对话真新建、切历史真绑定（不继承历史）", async () => {
   const h = await makeSettingsHarness({
-    historySessions: [{ sessionId: "sess-x", title: "已命名的会话", cwd: "", updatedAt: 2, blank: false }],
+    historySessions: [{ sessionId: "sess-x", title: "已命名的会话", cwd: process.cwd(), updatedAt: 2, blank: false }],
   });
   try {
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
@@ -960,10 +960,72 @@ test("apply: conversation dropdown — 新对话真新建、切历史真绑定�
   } finally { await h.dispose(); }
 });
 
+test("apply: conversation bind rejects sessions from other workspaces (审查 P0-1)", async () => {
+  const h = await makeSettingsHarness({
+    historySessions: [
+      { sessionId: "sess-other-ws", title: "别的会话", cwd: "/somewhere/else", updatedAt: 3, blank: false },
+      { sessionId: "sess-x", title: "本工作区会话", cwd: process.cwd(), updatedAt: 2, blank: false },
+    ],
+  });
+  try {
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    await h.endTurn();
+    const denied = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "sess-other-ws" } });
+    assert.match(denied.toast.content, /不在当前工作区/, "cross-workspace bind rejected");
+    await settle();
+    assert.doesNotMatch(h.readState(), /"sessionId": "sess-other-ws"/, "cross-workspace binding never recorded");
+    const ok = await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "conversation", option: "sess-x" } });
+    await settle();
+    assert.ok(h.calls.sends.some((s) => typeof s.input?.markdown === "string" && /已切换对话/.test(s.input.markdown)), "same-workspace bind accepted (record sent as a message)");
+    await h.waitForState('"sessionId": "sess-x"');
+  } finally { await h.dispose(); }
+});
+
+test("apply: blank target session skips projection silently but config is saved (审查 P1-3)", async () => {
+  const h = await makeSettingsHarness({
+    historySessions: [{ sessionId: "blank-x", title: "", cwd: process.cwd(), updatedAt: 2, blank: true }],
+  });
+  try {
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    await h.endTurn();
+    await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "blank-x" } });
+    await settle();
+    const createsBefore = h.calls.creates.length;
+    await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "model", option: "kimi:k3.1-pro" } });
+    await settle();
+    assert.equal(h.calls.creates.length, createsBefore, "no agent created for a blank target (no pollution)");
+    assert.ok(h.calls.configMutations.some((m) => m.ops.some((op) => op.path[0] === "model" && op.value === "k3.1-pro")), "config still saved");
+    assert.ok(!h.calls.sends.some((s) => typeof s.input?.markdown === "string" && /设置未生效/.test(s.input.markdown)), "no failure notice for an expected skip");
+  } finally { await h.dispose(); }
+});
+
+test("apply: dedup key is released on failure so the user can retry within TTL (审查 P1-5)", async () => {
+  const h = await makeSettingsHarness({ persistFails: true, failCreatesFrom: 1, failSessionCreates: true, failSessionCreatesFrom: 3 });
+  try {
+    await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
+    await h.endTurn();
+    // 前两次「新对话」成功（host-uuid-1/2），第三次触发 session create 失败
+    const msgSent = (re) => h.calls.sends.some((s) => typeof s.input?.markdown === "string" && re.test(s.input.markdown));
+    const resp1 = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
+    await settle();
+    assert.ok(msgSent(/已开启新对话/), "first click succeeds and sends the record");
+    const resp2 = await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
+    await settle();
+    assert.ok(msgSent(/已开启新对话/), "second click succeeds too");
+    const resp3 = await h.cardAction({ chatId: "oc-1", messageId: "card-3", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
+    await settle();
+    assert.match(resp3.toast.content, /新会话创建失败/, "create failure reported");
+    // 同一 messageId + option 重试：dedup 键已在失败时释放，不再被 60s 静默吞掉
+    const resp4 = await h.cardAction({ chatId: "oc-1", messageId: "card-3", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
+    await settle();
+    assert.match(resp4.toast.content, /新会话创建失败/, "retry within TTL is NOT silently swallowed");
+  } finally { await h.dispose(); }
+});
+
 test("apply: 新对话 on a genuinely blank bound session is a no-op", async () => {
   // 绑定的会话在清单里标记 blank: true（从未发过消息）→ 「新对话」合法 no-op
   const h = await makeSettingsHarness({
-    historySessions: [{ sessionId: "host-blank", title: "", cwd: "", updatedAt: 2, blank: true }],
+    historySessions: [{ sessionId: "host-blank", title: "", cwd: process.cwd(), updatedAt: 2, blank: true }],
   });
   try {
     // 绑定空会话（走正常的切换路径）

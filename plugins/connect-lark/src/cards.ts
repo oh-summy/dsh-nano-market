@@ -286,7 +286,8 @@ function settingsSelectElements(opts: SettingsCardOptions): Array<Record<string,
  *  固定宽需 flex_mode "none"（2.0 文档：width 具体数值仅 flex_mode none 生效）。 */
 function settingsRow(items: Array<{ label: string; color: string; select: Record<string, unknown> }>): Record<string, unknown> {
   const columns = items.map((it) => [
-    { tag: "column", width: "48px", vertical_align: "center",
+    // 标签列固定宽 + 标签居中：两字/三字标签的两侧空隙对称，组内贴合度一致（真机反馈 2026-11-18）
+    { tag: "column", width: "56px", horizontal_align: "center", vertical_align: "center",
       elements: [{ tag: "markdown", content: "<text_tag color='" + it.color + "'>" + it.label + "</text_tag>" }] },
     { tag: "column", width: "weighted", weight: 1, vertical_align: "center", horizontal_spacing: "small", elements: [it.select] },
   ]).flat();

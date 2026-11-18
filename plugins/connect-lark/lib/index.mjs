@@ -1639,6 +1639,7 @@ function apply(ctx, config = {}) {
 	const chatTypeCache = /* @__PURE__ */ new Map();
 	const lastReplyCards = /* @__PURE__ */ new Map();
 	const sessionChat = /* @__PURE__ */ new Map();
+	let approvalSeq = 0;
 	const pendingApprovals = /* @__PURE__ */ new Map();
 	const APPROVAL_TTL_MS = 3e5;
 	const mediaRegistered = /* @__PURE__ */ new Set();
@@ -1847,7 +1848,7 @@ function apply(ctx, config = {}) {
 	};
 	const settingsCardArgs = (chatId, overrides) => {
 		const st = chatState(chatId);
-		const wsPath = st.cwd || plain.defaultPath;
+		const wsPath = st.cwd || plain.defaultPath || process.cwd();
 		const ws = wsPath ? settingsData?.workspaces.find((w) => w.path === wsPath) : void 0;
 		const defaultTitle = wsPath ? "工作区（" + wsPath.split("/").filter(Boolean).pop() + "）" : "默认工作区";
 		const provider = overrides?.provider ?? plain.provider ?? "";
@@ -1914,14 +1915,14 @@ function apply(ctx, config = {}) {
 		return "已设置";
 	};
 	/** 同步处理一次 select 回调：校验 → 生成该维度的候选值（高权限档先进 pending，
-	*  确认后才进入候选）。候选经 applyDimState 落 per-chat 状态（重启恢复）+
-	*  applyDimension 写会话投影（一等公民），不写插件配置、不写 patch。 */
+	*  确认后才进入候选）。候选由调用方经 writePluginConfig 写插件配置（唯一事实源），
+	*  并由 applyDimension 补会话投影让当前会话立即生效。 */
 	const applySelect = (chatId, name, option, openId) => {
 		if (name === "workspace") {
 			if (option === "__default__") return { partial: { defaultPath: "" } };
 			const ws = (ctx.workspaceRegistry?.list?.() ?? []).find((w) => w.id === option);
 			if (!ws) return { error: "未知工作区" };
-			const switched = (plain.defaultPath || "") !== ws.path;
+			const switched = currentCwd(chatId) !== ws.path;
 			return {
 				partial: { defaultPath: ws.path },
 				switchedWorkspace: switched,
@@ -1984,7 +1985,7 @@ function apply(ctx, config = {}) {
 	*  两步分开报错：配置保存失败 ≠ 会话投影失败。权限切换可能被宿主拒绝
 	*  （持久终端开着时不能改 sandbox 模式——真机实证 2026-11-17），此时配置已保存，
 	*  新会话/关闭终端后按新配置生效，必须如实告知而不是笼统说「设置未生效」。 */
-	const applyDimension = async (chan, chatId, controlName, partial) => {
+	const applyDimension = async (chan, chatId, controlName, partial, dedupKey) => {
 		try {
 			await writePluginConfig(partial);
 			if (controlName === "workspace") {
@@ -1994,6 +1995,10 @@ function apply(ctx, config = {}) {
 					const created = await ctx.sessionController.create({ cwd: newCwd });
 					const newId = created?.sessionId ?? created?.value?.sessionId;
 					if (newId) {
+						try {
+							const ws = await ctx.workspaceRegistry?.resolveByPath?.(newCwd);
+							if (ws) await ws.attachSession(newId);
+						} catch {}
 						touchState(chatId, {
 							sessionId: newId,
 							cwd: newCwd
@@ -2013,9 +2018,12 @@ function apply(ctx, config = {}) {
 			try {
 				const cwd = currentCwd(chatId);
 				const id = chatState(chatId).sessionId || deterministicSessionId(chatId, cwd);
-				const row = settingsData?.sessions.find((s) => s.sessionId === id);
-				if (row ? row.blank === true : ctx.agents?.get?.(id) === void 0) {
-					ctx.logger?.info?.("[connect-lark] target session is blank; skip projection (config will apply at creation) id=" + id + " rowBlank=" + (row ? String(row.blank) : "missing"));
+				if ((settingsData?.sessions.find((s) => s.sessionId === id))?.blank === true) {
+					ctx.logger?.info?.("[connect-lark] target session is blank; skip projection (config will apply at creation) id=" + id);
+					return;
+				}
+				if (Object.values(partial).every((v) => v === "" || v === void 0)) {
+					ctx.logger?.info?.("[connect-lark] dimension set to follow DSH default; skip session projection");
 					return;
 				}
 				await ensureFirstClass(ctx, id, cwd);
@@ -2034,6 +2042,7 @@ function apply(ctx, config = {}) {
 			}
 		} catch (e) {
 			ctx.logger?.warn?.("[connect-lark] apply dimension failed: " + e.message);
+			if (dedupKey) dedupTable.delete(dedupKey);
 			Promise.resolve(chan.send(chatId, { markdown: "⚠️ 设置未生效：" + e.message + "（请重试）" })).catch(() => {});
 		}
 	};
@@ -2242,7 +2251,6 @@ function apply(ctx, config = {}) {
 						if (frame?.type === "chunk" && frame.chunk?.type === "text-delta") onDelta(frame.chunk.text, "text");
 						else if (frame?.type === "chunk" && frame.chunk?.type === "reasoning-delta") onDelta(frame.chunk.text, "reasoning");
 						else if (frame?.type === "chunk" && frame.chunk?.type === "tool-call-delta") onDelta("", "tool");
-						else if (frame?.type === "chunk" && frame.chunk?.type === "tool-call-delta") onDelta("", "tool");
 					}));
 					const unsubTurn = ctx.on("session/event", (session, event) => {
 						if (event?.type === "turn/end" && session?.id === targetSessionId) onTurnEnd();
@@ -2332,7 +2340,6 @@ function apply(ctx, config = {}) {
 							return;
 						}
 						await refreshSettingsData();
-						slot.chatId;
 						const panelArgs = plain.agentOwnership === "owned-per-chat" ? settingsCardArgs(slot.chatId) : void 0;
 						const effortList = panelArgs ? effortOptionsFor(panelArgs) : void 0;
 						const footer = {
@@ -2464,12 +2471,28 @@ function apply(ctx, config = {}) {
 							type: "success",
 							content: "当前已是新对话（空会话），无需切换"
 						} };
-						const created = await ctx.sessionController.create({ cwd: currentCwd(chatId) });
-						const newId = created?.sessionId ?? created?.value?.sessionId;
-						if (!newId) return { toast: {
-							type: "error",
-							content: "新会话创建失败，请重试"
-						} };
+						let newId;
+						try {
+							const created = await ctx.sessionController.create({ cwd: currentCwd(chatId) });
+							newId = created?.sessionId ?? created?.value?.sessionId;
+							if (newId) try {
+								const ws = await ctx.workspaceRegistry?.resolveByPath?.(currentCwd(chatId));
+								if (ws) await ws.attachSession(newId);
+							} catch {}
+						} catch (e2) {
+							dedupTable.delete(evt.messageId + ":" + controlName + ":" + option);
+							return { toast: {
+								type: "error",
+								content: "新会话创建失败：" + e2.message + "（请重试）"
+							} };
+						}
+						if (!newId) {
+							dedupTable.delete(evt.messageId + ":" + controlName + ":" + option);
+							return { toast: {
+								type: "error",
+								content: "新会话创建失败，请重试"
+							} };
+						}
 						touchState(chatId, {
 							sessionId: newId,
 							cwd: currentCwd(chatId)
@@ -2498,7 +2521,7 @@ function apply(ctx, config = {}) {
 						content: "已是当前对话"
 					} };
 					const known = (settingsData?.sessions ?? []).find((s) => s.sessionId === option);
-					if (!known) return { toast: {
+					if (!known || known.cwd !== currentCwd(chatId)) return { toast: {
 						type: "error",
 						content: "该会话不存在或不在当前工作区"
 					} };
@@ -2506,7 +2529,7 @@ function apply(ctx, config = {}) {
 					const toTitle = known.title || option.replace(/^session-/, "").slice(0, 13) + "…";
 					touchState(chatId, {
 						sessionId: option,
-						cwd: currentCwd(chatId)
+						cwd: known.cwd
 					});
 					Promise.resolve(chan.send(chatId, { markdown: "🔄 **已切换对话** · " + nowStamp() + "\n从「" + fromTitle + "」切换至「" + toTitle + "」\n下一条消息起在新会话继续，历史与设置保留" })).catch(() => {});
 					let rebuilt;
@@ -2546,7 +2569,7 @@ function apply(ctx, config = {}) {
 							content: "当前模型不支持该思考强度，请先切换模型"
 						} };
 					}
-					applyDimension(chan, chatId, controlName, result.partial);
+					applyDimension(chan, chatId, controlName, result.partial, evt.messageId + ":" + controlName + ":" + option);
 					const dimLabels = {
 						workspace: "工作区",
 						model: "模型",
@@ -2602,6 +2625,10 @@ function apply(ctx, config = {}) {
 						content: outcome === "allowed-once" ? "✅ 已同意" : "⛔ 已拒绝"
 					} };
 				}
+				return { toast: {
+					type: "info",
+					content: "该按钮来自旧版卡片，请展开最新回复卡操作"
+				} };
 			};
 			unsubCardAction = chan.on("cardAction", cardActionHandler);
 			refreshSettingsData().catch(() => {});
@@ -2682,7 +2709,7 @@ function apply(ctx, config = {}) {
 		const chatId = sessionChat.get(sid);
 		if (!chatId) return next();
 		if (!channel) return Promise.resolve("cancelled");
-		const callId = req?.callId ?? "";
+		const callId = req?.callId || "anon-" + ++approvalSeq;
 		return new Promise((resolve) => {
 			const now = Date.now();
 			for (const [cid, p] of pendingApprovals) if (p.expiresAt <= now) pendingApprovals.delete(cid);
