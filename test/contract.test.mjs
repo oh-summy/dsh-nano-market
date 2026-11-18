@@ -152,7 +152,7 @@ test("buildUserMessage: accepts an explicit source", () => {
 test("inject declares every service the plugin touches", () => {
   assert.deepEqual(
     [...inject].sort(),
-    ["agents", "attachments", "credentials", "llm", "permissionPresets", "sessionController", "workspaceRegistry"].sort(),
+    ["agents", "attachments", "credentials", "llm", "permissionPresets", "sessionController", "sessionQuery", "settings", "workspaceRegistry"].sort(),
   );
 });
 
@@ -200,6 +200,38 @@ test("FIELDS count matches the schema (guards against drift)", () => {
   assert.deepEqual(Object.keys(Config.dict).sort(), [...FIELDS].sort());
 });
 
+
+test("plainConfig normalizes the YAML round-trip: effort id off survives as a string", async () => {
+  // 真机实证（2026-11-17）：选 Off → 宿主写 YAML `reasoningEffort: off`（不加引号）→
+  // YAML 1.1 读回布尔 false → 卡片显示「跟随模型默认」、新会话拿到非法 effort。
+  const { plainConfig } = await import("../lib/index.mjs");
+  const cfg = { provider: "agnes", model: "agnes-3.0-flash", reasoningEffort: false, permissionPreset: "workspace-write" };
+  const plain = plainConfig(cfg);
+  assert.equal(plain.reasoningEffort, "off", "boolean false round-trips back to the off effort id");
+  const cfgTrue = plainConfig({ provider: "agnes", model: "agnes-3.0-flash", reasoningEffort: true });
+  assert.equal(cfgTrue.reasoningEffort, "", "boolean true degrades to follow-model-default");
+  const cfgOff = plainConfig({ provider: "agnes", model: "agnes-3.0-flash", reasoningEffort: "off" });
+  assert.equal(cfgOff.reasoningEffort, "off", "a proper string off is untouched");
+});
+
+test("per-chat state file keeps session binding only — legacy setting fields are dropped", async () => {
+  const { loadStates } = await import("../lib/index.mjs");
+  const { writeFileSync, mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "connect-lark-state-"));
+  const file = join(dir, "sessions.json");
+  // 旧版文件：把模型/强度/权限存在 per-chat 状态里（= 第二套配置事实源）
+  writeFileSync(file, JSON.stringify({
+    "oc-1": { sessionId: "sess-1", cwd: "/tmp", provider: "agnes", model: "agnes-3.0-flash", reasoningEffort: "high", permissionPreset: "read-only", updatedAt: 1 },
+  }));
+  const loaded = loadStates(file);
+  assert.equal(loaded["oc-1"].sessionId, "sess-1", "session binding is kept");
+  assert.equal(loaded["oc-1"].cwd, "/tmp", "workspace binding is kept");
+  for (const field of ["provider", "model", "reasoningEffort", "permissionPreset"]) {
+    assert.equal(loaded["oc-1"][field], undefined, "legacy per-chat setting field is dropped: " + field);
+  }
+});
 
 test("apply listens for volatile updates and re-reads config before reconnecting", async () => {
   const { readFileSync } = await import("node:fs");

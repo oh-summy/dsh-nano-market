@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const stubUrl = "data:text/javascript," + encodeURIComponent(`
 export function createLarkChannel(options) {
@@ -69,7 +71,8 @@ test("apply connects and disconnects on volatile enabled updates", async () => {
 
   config.appId = "cli_test_changed";
   config.domain = "lark";
-  listeners.get("loader/volatile-update")();
+  // 生产中 cordis 携带变更字段路径——enabled 属于重连字段（连接级配置）
+  listeners.get("loader/volatile-update")([["enabled"]]);
   await settle();
   assert.equal(calls.disconnect, 1, "saving a change reconnects the old channel");
   assert.equal(calls.create, 2);
@@ -82,6 +85,10 @@ test("apply connects and disconnects on volatile enabled updates", async () => {
 
 async function makeMessageHarness({ failStream = false, failUpdate = false, ownedPerChat = false, imageDownloadFails = false, managerOpenId = "", accessMode = "app" } = {}) {
   const calls = { streams: 0, sends: [], followups: [], cards: [], savedImages: 0, modelGates: 0 };
+  // 隔离 per-chat 状态文件（一等公民维度持久化），避免测试污染真实 ~/.dsh/connect-lark-sessions.json
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "connect-lark-state-"));
+  process.env.CONNECT_LARK_SESSION_MAP = path.join(stateDir, "connect-lark-sessions.json");
+  fs.writeFileSync(process.env.CONNECT_LARK_SESSION_MAP, "{}");
   const handlers = new Map();
   const channelHandlers = new Map();
   globalThis.__connectLarkTestChannel = {
@@ -159,7 +166,7 @@ async function makeMessageHarness({ failStream = false, failUpdate = false, owne
     calls, agent,
     message: (msg) => channelHandlers.get("message")(msg),
     emit(name, ...args) { for (const fn of handlers.get(name) ?? []) fn(...args); },
-    async dispose() { await disposer?.(); delete globalThis.__connectLarkTestChannel; },
+    async dispose() { await disposer?.(); delete globalThis.__connectLarkTestChannel; delete process.env.CONNECT_LARK_SESSION_MAP; },
   };
 }
 
@@ -282,6 +289,9 @@ test("apply sends fallback when final update fails and there is no text", async 
 test("apply falls back when stream producer never starts (timeout)", async () => {
   const originalTimeout = process.env.CONNECT_LARK_STREAM_TIMEOUT_MS;
   process.env.CONNECT_LARK_STREAM_TIMEOUT_MS = "100";
+  const stateDir2 = fs.mkdtempSync(path.join(os.tmpdir(), "connect-lark-state-"));
+  process.env.CONNECT_LARK_SESSION_MAP = path.join(stateDir2, "connect-lark-sessions.json");
+  fs.writeFileSync(process.env.CONNECT_LARK_SESSION_MAP, "{}");
   let disposer;
   try {
     const calls = { sends: [], streams: 0, followups: [] };
