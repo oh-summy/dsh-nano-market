@@ -1951,7 +1951,7 @@ function apply(ctx, config = {}) {
 		const effort = overrides?.reasoningEffort !== void 0 ? overrides.reasoningEffort : plain.reasoningEffort ?? "";
 		const hasModel = Boolean(provider && model);
 		const currentSessionId = st.sessionId || deterministicSessionId(chatId, wsPath || process.cwd());
-		const chatSessions = (settingsData?.sessions ?? []).filter((s) => wsPath === void 0 || s.cwd === wsPath).slice(0, 15).map((s) => ({
+		const chatSessions = (settingsData?.sessions ?? []).filter((s) => (wsPath === void 0 || s.cwd === wsPath) && s.blank !== true).slice(0, 15).map((s) => ({
 			sessionId: s.sessionId,
 			title: s.title,
 			cwd: s.cwd,

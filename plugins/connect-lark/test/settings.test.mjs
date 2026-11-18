@@ -204,7 +204,10 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
       modelCatalog: async () => catalogOverride ?? catalog,
       cancel: async () => {},
       // P4：历史会话列表 / 新会话创建（mock 默认返回空列表 / 生成确定性 id）
-      list: async () => ({ items: historySessions ?? [] }),
+      // 动态列表：historySessions + 本次测试中 create 出的会话。宿主的 blank 标记
+      // = 会话是否有过消息：测试里第一个 create 是承载 m1 消息的确定性会话（非 blank），
+      // 其余（新对话/工作区切换产生）在无后续消息时为 blank——与生产路径一致。
+      list: async () => ({ items: [...(historySessions ?? []), ...calls.sessionCreates.map((s, i) => ({ sessionId: s.sessionId, title: "", cwd: s.cwd ?? "", updatedAt: Date.now(), blank: i > 0 }))] }),
       create: async (req) => { calls.sessionCreates.push(req); if (failSessionCreates && calls.sessionCreates.length >= failSessionCreatesFrom) throw new Error("simulated session-create failure"); return { sessionId: "host-uuid-" + (++calls.createSeq) }; },
       rename: async () => {},
     },

@@ -824,7 +824,11 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
     // 没有可辨认的名字，列出来全是「未命名对话」噪音（真机反馈 2026-11-18）。
     // 标题来源 = 最近 80 条的批量冷读；更老的会话不进下拉（可在 Web 端查看）。
     const chatSessions = (settingsData?.sessions ?? [])
-      .filter((s) => wsPath === undefined || s.cwd === wsPath)
+      .filter((s) => (wsPath === undefined || s.cwd === wsPath)
+        // 隐藏零消息空会话（新对话/切工作区产生的空槽位）：切进去没有历史，
+        // 用户分不清 id 是不是真实对话（负责人 2026-11-18 反馈）。下拉只列
+        // 真正有过对话的会话；当前会话若缺失由下方兜底补回。
+        && s.blank !== true)
       .slice(0, 15)
       .map((s) => ({ sessionId: s.sessionId, title: s.title, cwd: s.cwd, updatedAt: s.updatedAt }));
     // 当前会话必须始终在候选里（list 投影偶发缺行时兜底；label 走 id）
