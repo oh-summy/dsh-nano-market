@@ -37,16 +37,16 @@
       "icon": "https://oh-summy.github.io/dsh-nano-market/icons/connect-lark.svg",
       "versions": [
         {
-          "version": "0.2.0",
+          "version": "0.3.0",
           "engines": {
             "dsh": ">=0.2.1-rc.4 || >=0.2.2-0"
           },
           "install": {
-            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#b305cf8e43bb5d3a0e8c1c53207ba0743625b402"
+            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#773f1536d386d8d00e6347744868c50669747605"
           }
         }
       ],
-      "defaultVersion": "0.2.0"
+      "defaultVersion": "0.3.0"
     }
   ]
 }
