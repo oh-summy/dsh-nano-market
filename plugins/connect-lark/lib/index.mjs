@@ -299,7 +299,7 @@ function buildWorkspaceSwitchCard(fromTitle, toTitle, sessions) {
 		const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 8) + "…";
 		const rel = relativeTime(s.updatedAt ?? 0);
 		options.push({
-			label: name + " · " + rel + "前",
+			label: name + " · " + rel,
 			value: s.sessionId
 		});
 	}
@@ -348,21 +348,21 @@ function relativeTime(updatedAt, now = Date.now()) {
 	const diff = Math.max(0, now - updatedAt);
 	const minutes = Math.floor(diff / 6e4);
 	if (minutes < 1) return "刚刚";
-	if (minutes < 60) return minutes + " 分钟";
+	if (minutes < 60) return minutes + " 分钟前";
 	const hours = Math.floor(minutes / 60);
-	if (hours < 24) return hours + " 小时";
+	if (hours < 24) return hours + " 小时前";
 	const days = Math.floor(hours / 24);
-	if (days < 30) return days + " 天";
+	if (days < 30) return days + " 天前";
 	const months = Math.floor(days / 30);
-	if (months < 12) return months + " 个月";
-	return Math.floor(months / 12) + " 年";
+	if (months < 12) return months + " 个月前";
+	return Math.floor(months / 12) + " 年前";
 }
 /** 会话 select：新对话 + 本工作区**全部**会话——有标题显标题，无标题显 id + 相对时间
 *  （跟 DSH 会话列表同口径；真机反馈 2026-11-18：不能只列有标题的）。
 *  选择即切换会话绑定（per-chat 状态），不写插件配置——会话绑定不是配置。 */
 function conversationSelect(opts) {
 	const options = [{
-		label: "➕ 开启新对话",
+		label: "✨ 开启新对话",
 		value: NEW_CONVERSATION_VALUE
 	}];
 	const seen = /* @__PURE__ */ new Set([NEW_CONVERSATION_VALUE]);
@@ -373,7 +373,7 @@ function conversationSelect(opts) {
 		const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 13) + "…";
 		const rel = relativeTime(s.updatedAt ?? 0);
 		options.push({
-			label: (isCurrent ? "📍 " : "") + name + " · " + rel + "前",
+			label: (isCurrent ? "📍 " : "") + name + " · " + rel,
 			value: s.sessionId
 		});
 	}

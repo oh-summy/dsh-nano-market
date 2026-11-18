@@ -332,7 +332,7 @@ export function buildWorkspaceSwitchCard(
   for (const s of sessions.slice(0, 12)) {
     const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 8) + "…";
     const rel = relativeTime(s.updatedAt ?? 0);
-    options.push({ label: name + " · " + rel + "前", value: s.sessionId });
+    options.push({ label: name + " · " + rel, value: s.sessionId });
   }
   return {
     schema: "2.0",
@@ -353,14 +353,14 @@ export function relativeTime(updatedAt: number, now = Date.now()): string {
   const diff = Math.max(0, now - updatedAt);
   const minutes = Math.floor(diff / 60_000);
   if (minutes < 1) return "刚刚";
-  if (minutes < 60) return minutes + " 分钟";
+  if (minutes < 60) return minutes + " 分钟前";
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return hours + " 小时";
+  if (hours < 24) return hours + " 小时前";
   const days = Math.floor(hours / 24);
-  if (days < 30) return days + " 天";
+  if (days < 30) return days + " 天前";
   const months = Math.floor(days / 30);
-  if (months < 12) return months + " 个月";
-  return Math.floor(months / 12) + " 年";
+  if (months < 12) return months + " 个月前";
+  return Math.floor(months / 12) + " 年前";
 }
 
 /** 会话 select：新对话 + 本工作区**全部**会话——有标题显标题，无标题显 id + 相对时间
@@ -368,7 +368,7 @@ export function relativeTime(updatedAt: number, now = Date.now()): string {
  *  选择即切换会话绑定（per-chat 状态），不写插件配置——会话绑定不是配置。 */
 function conversationSelect(opts: SettingsCardOptions): Record<string, unknown> {
   const options: Array<{ label: string; value: string }> = [
-    { label: "➕ 开启新对话", value: NEW_CONVERSATION_VALUE },
+    { label: "✨ 开启新对话", value: NEW_CONVERSATION_VALUE },
   ];
   const seen = new Set<string>([NEW_CONVERSATION_VALUE]);
   for (const s of opts.chatSessions ?? []) {
@@ -377,7 +377,7 @@ function conversationSelect(opts: SettingsCardOptions): Record<string, unknown> 
     const isCurrent = s.sessionId === opts.currentSessionId;
     const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 13) + "…";
     const rel = relativeTime(s.updatedAt ?? 0);
-    options.push({ label: (isCurrent ? "📍 " : "") + name + " · " + rel + "前", value: s.sessionId });
+    options.push({ label: (isCurrent ? "📍 " : "") + name + " · " + rel, value: s.sessionId });
   }
   // initial：当前绑定会话在候选里就指向它；否则指向「新对话」（无绑定 = 默认会话尚未出现在清单）
   const initial = opts.currentSessionId && seen.has(opts.currentSessionId) ? opts.currentSessionId : undefined;
