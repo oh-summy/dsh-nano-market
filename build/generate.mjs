@@ -13,7 +13,10 @@ const OUT = process.env.OUT_PATH || join(root, "dist");
 const UA = { "User-Agent": "dsh-nano-market-build", "Accept": "application/vnd.github+json" };
 
 function ghJson(url) {
-  return fetch(url, { headers: UA }).then((r) => {
+  // CI 注入 GITHUB_TOKEN（认证 5000/h）而非匿名 60/h——共享 runner IP 上匿名
+  // 配额常被耗尽，导致 catalog 解析 403 假红（2026-11-19 PR #28 实测）。
+  const headers = { ...UA, ...(process.env.GITHUB_TOKEN ? { Authorization: "Bearer " + process.env.GITHUB_TOKEN } : {}) };
+  return fetch(url, { headers }).then((r) => {
     if (!r.ok) throw new Error("GitHub API " + r.status + " for " + url);
     return r.json();
   });
