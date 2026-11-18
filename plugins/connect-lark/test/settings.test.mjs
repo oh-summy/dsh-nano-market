@@ -419,9 +419,9 @@ test("apply: workspace switch updates defaultPath, disposes old handle, rebuilds
     assert.equal(mutation.ns, "connect-lark");
     assert.deepEqual(mutation.ops, [{ op: "set", path: ["defaultPath"], value: "/tmp/b" }], "defaultPath written to the plugin config");
     await settle();
-    const notice = h.calls.sends.find((s) => typeof s.input === "object" && s.input.markdown && /已切换到工作区/.test(s.input.markdown));
+    const notice = h.calls.sends.find((s) => typeof s.input === "object" && s.input.markdown && /已切换工作区/.test(s.input.markdown));
     assert.ok(notice, "workspace switch notice sent");
-    assert.match(notice.input.markdown, /下一条消息起/);
+    assert.match(notice.input.markdown, /已开启新对话/, "notice reflects the immediate fresh conversation");
     // 下一条消息：旧 handle 被 dispose，重建（idle 路径）；新会话出身 = 新工作区
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m2", content: "next" });
     await h.endTurn();
@@ -934,25 +934,28 @@ test("apply: conversation dropdown — 新对话真新建、切历史真绑定�
     // 选「新对话」：默认会话**有历史**（确定性会话）→ 必须真正创建全新会话并绑定，
     // 不能 no-op（真机 bug 2026-11-18：误判「已是新对话」导致继续旧上下文）
     const createsBefore = h.calls.sessionCreates.length;
-    const resp0 = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
-    assert.match(resp0.toast.content, /已开启新对话/, "fresh session created and bound");
+    const msgSent = (re) => h.calls.sends.some((s) => typeof s.input?.markdown === "string" && re.test(s.input.markdown));
+    await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
+    await settle();
+    assert.ok(msgSent(/已开启新对话/), "switch record sent as a chat message");
     assert.equal(h.calls.sessionCreates.length, createsBefore + 1, "sessionController.create called once for the fresh session");
     const newId = h.calls.sessionCreates.at(-1).sessionId;
     await h.waitForState('"sessionId": "' + newId + '"');
     // 再点一次：刚绑定的会话不在 list 里（row 缺失 = 按有历史处理）→ 再建一个（诚实语义）
-    const resp1 = await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
-    assert.match(resp1.toast.content, /已开启新对话/, "second 新对话 creates another fresh session");
+    await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
+    await settle();
     assert.equal(h.calls.sessionCreates.length, createsBefore + 2);
-    // 切到有历史的会话 → 绑定
-    const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-3", operator: { openId: "ou-1" }, action: { name: "conversation", option: "sess-x" } });
-    assert.match(resp.toast.content, /已切换对话/, "bind toast returned");
+    // 切到有历史的会话 → 绑定 + 消息记录（从 → 到）
+    await h.cardAction({ chatId: "oc-1", messageId: "card-3", operator: { openId: "ou-1" }, action: { name: "conversation", option: "sess-x" } });
+    await settle();
+    assert.ok(msgSent(/已切换对话/), "switch record sent as a chat message");
     await h.waitForState('"sessionId": "sess-x"');
     // 清单里不存在的会话 → 拒绝伪造绑定
     const denied = await h.cardAction({ chatId: "oc-1", messageId: "card-4", operator: { openId: "ou-1" }, action: { name: "conversation", option: "sess-fake" } });
     assert.match(denied.toast.content, /不存在/, "fake session binding rejected");
     // 切回「新对话」：sess-x 有历史 → 再建新会话
-    const resp2 = await h.cardAction({ chatId: "oc-1", messageId: "card-5", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
-    assert.match(resp2.toast.content, /已开启新对话/, "creates fresh again from a titled session");
+    await h.cardAction({ chatId: "oc-1", messageId: "card-5", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
+    await settle();
     assert.ok(h.calls.sessionCreates.length >= createsBefore + 3, "creates again");
   } finally { await h.dispose(); }
 });
@@ -964,8 +967,9 @@ test("apply: 新对话 on a genuinely blank bound session is a no-op", async () 
   });
   try {
     // 绑定空会话（走正常的切换路径）
-    const bind = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "host-blank" } });
-    assert.match(bind.toast.content, /已切换对话/, "blank session bound via the normal path");
+    await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "host-blank" } });
+    await settle();
+    assert.ok(h.calls.sends.some((s) => typeof s.input?.markdown === "string" && /已切换对话/.test(s.input.markdown)), "bind record sent as a chat message");
     // 新对话：当前绑定的会话是空会话 → 合法 no-op
     const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
     assert.match(resp.toast.content, /已是新对话/, "blank bound session → no-op");

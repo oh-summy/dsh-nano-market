@@ -2056,9 +2056,21 @@ function apply(ctx, config = {}) {
 	*  填充，与 Web 选择器同源；实测 MiniMax = Low/Medium/High/Xhigh/Max、Agnes = Off/High）。
 	*  绝不在卡片回调里 await 网络请求：飞书回调窗口约 3s，超时会报「回调服务超时」。 */
 	const effortOptionsFor = (args) => effortOptions(currentModelValue(args.current, args.catalog), args.catalog);
-	const sendWorkspaceSwitchedNotice = async (chan, chatId, title) => {
+	/** 本地时间戳（消息里的切换记录用）：2026-11-18 14:38 */
+	const nowStamp = () => {
+		const d = /* @__PURE__ */ new Date();
+		const p = (n) => String(n).padStart(2, "0");
+		return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+	};
+	/** 会话显示名：有标题用标题，无标题用 id 前缀（与「对话」下拉同规则）。 */
+	const sessionDisplayName = (sessionId) => {
+		const row = (settingsData?.sessions ?? []).find((s) => s.sessionId === sessionId);
+		if (row?.title) return row.title;
+		return sessionId.replace(/^session-/, "").slice(0, 13) + "…";
+	};
+	const sendWorkspaceSwitchedNotice = async (chan, chatId, fromTitle, toTitle) => {
 		try {
-			await sendBounded(chan, chatId, "✅ 已切换到工作区 **" + title + "**。**下一条消息起**在 " + title + " 的上下文中对话（不继承刚才的对话）；切回原工作区可继续原对话。");
+			await sendBounded(chan, chatId, "🔄 **已切换工作区** · " + nowStamp() + "\n从 **" + (fromTitle || "未知") + "** 切换至 **" + (toTitle || "未知") + "** · 已开启新对话（不继承历史）\n可在「对话」下拉接回之前工作区的历史会话");
 		} catch (e) {
 			ctx.logger?.warn?.("[connect-lark] workspace notice failed: " + e.message);
 		}
@@ -2468,17 +2480,20 @@ function apply(ctx, config = {}) {
 								title: "新对话"
 							});
 						} catch {}
+						Promise.resolve(chan.send(chatId, { markdown: "🆕 **已开启新对话** · " + nowStamp() + "\n之后的对话在新会话进行，不继承之前的历史" })).catch(() => {});
+						let rebuilt;
 						try {
-							rebuildReplyCard(chatId);
+							rebuilt = rebuildReplyCard(chatId);
 						} catch (e2) {
 							ctx.logger?.warn?.("[connect-lark] reply card rebuild failed: " + e2.message);
 						}
-						return { toast: {
-							type: "success",
-							content: "✅ 已开启新对话（立即生效，不继承历史）"
-						} };
+						return rebuilt ? { card: {
+							type: "raw",
+							data: rebuilt
+						} } : void 0;
 					}
-					if (option === (chatState(chatId).sessionId || deterministicSessionId(chatId, currentCwd(chatId)))) return { toast: {
+					const current = chatState(chatId).sessionId || deterministicSessionId(chatId, currentCwd(chatId));
+					if (option === current) return { toast: {
 						type: "success",
 						content: "已是当前对话"
 					} };
@@ -2487,19 +2502,23 @@ function apply(ctx, config = {}) {
 						type: "error",
 						content: "该会话不存在或不在当前工作区"
 					} };
+					const fromTitle = sessionDisplayName(current);
+					const toTitle = known.title || option.replace(/^session-/, "").slice(0, 13) + "…";
 					touchState(chatId, {
 						sessionId: option,
 						cwd: currentCwd(chatId)
 					});
+					Promise.resolve(chan.send(chatId, { markdown: "🔄 **已切换对话** · " + nowStamp() + "\n从「" + fromTitle + "」切换至「" + toTitle + "」\n下一条消息起在新会话继续，历史与设置保留" })).catch(() => {});
+					let rebuilt;
 					try {
-						rebuildReplyCard(chatId);
+						rebuilt = rebuildReplyCard(chatId);
 					} catch (e2) {
 						ctx.logger?.warn?.("[connect-lark] reply card rebuild failed: " + e2.message);
 					}
-					return { toast: {
-						type: "success",
-						content: "✅ 已切换对话：" + (known.title || option.slice(0, 18)) + "（下一条消息起在该会话继续，历史与设置保留）"
-					} };
+					return rebuilt ? { card: {
+						type: "raw",
+						data: rebuilt
+					} } : void 0;
 				}
 				if (controlName === "workspace" || controlName === "model" || controlName === "effort" || controlName === "permission") {
 					if (typeof option !== "string" || option === "") return;
@@ -2510,7 +2529,7 @@ function apply(ctx, config = {}) {
 						type: "error",
 						content: result.error
 					} };
-					if (result.switchedWorkspace) sendWorkspaceSwitchedNotice(chan, chatId, result.workspaceTitle ?? "").catch(() => {});
+					if (result.switchedWorkspace) sendWorkspaceSwitchedNotice(chan, chatId, prevDisplay?.workspace ?? "", result.workspaceTitle ?? "").catch(() => {});
 					if (result.pendingHigh) return { toast: {
 						type: "warning",
 						content: "已选择高权限档，回复「确认」以应用（仅发起人，30s 内）"

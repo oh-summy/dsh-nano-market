@@ -1051,10 +1051,24 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   const effortOptionsFor = (args: SettingsCardOptions): Array<{ label: string; value: string }> =>
     effortOptions(currentModelValue(args.current, args.catalog), args.catalog);
 
-  const sendWorkspaceSwitchedNotice = async (chan: LarkChannel, chatId: string, title: string): Promise<void> => {
+  /** 本地时间戳（消息里的切换记录用）：2026-11-18 14:38 */
+  const nowStamp = (): string => {
+    const d = new Date();
+    const p = (n: number): string => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  };
+  /** 会话显示名：有标题用标题，无标题用 id 前缀（与「对话」下拉同规则）。 */
+  const sessionDisplayName = (sessionId: string): string => {
+    const row = (settingsData?.sessions ?? []).find((s) => s.sessionId === sessionId);
+    if (row?.title) return row.title;
+    return sessionId.replace(/^session-/, "").slice(0, 13) + "…";
+  };
+
+  const sendWorkspaceSwitchedNotice = async (chan: LarkChannel, chatId: string, fromTitle: string, toTitle: string): Promise<void> => {
     try {
-      await sendBounded(chan, chatId, "✅ 已切换到工作区 **" + title + "**。**下一条消息起**在 " + title +
-        " 的上下文中对话（不继承刚才的对话）；切回原工作区可继续原对话。");
+      await sendBounded(chan, chatId, "🔄 **已切换工作区** · " + nowStamp() +
+        "\n从 **" + (fromTitle || "未知") + "** 切换至 **" + (toTitle || "未知") + "** · 已开启新对话（不继承历史）" +
+        "\n可在「对话」下拉接回之前工作区的历史会话");
     } catch (e) {
       ctx.logger?.warn?.("[connect-lark] workspace notice failed: " + (e as Error).message);
     }
@@ -1501,10 +1515,15 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             touchState(chatId, { sessionId: newId, cwd: currentCwd(chatId) });
             // 立即命名（宿主首条消息自动命名会在首轮覆盖它）
             try { await ctx.sessionController.rename({ sessionId: newId, title: "新对话" }); } catch { /* 不影响切换 */ }
-            try { rebuildReplyCard(chatId); } catch (e2) {
+            // 切换记录作为**一条消息**发进对话（负责人 2026-11-18：不要只弹 toast）
+            void Promise.resolve(chan.send(chatId, {
+              markdown: "🆕 **已开启新对话** · " + nowStamp() + "\n之后的对话在新会话进行，不继承之前的历史",
+            })).catch(() => {});
+            let rebuilt: object | undefined;
+            try { rebuilt = rebuildReplyCard(chatId); } catch (e2) {
               ctx.logger?.warn?.("[connect-lark] reply card rebuild failed: " + (e2 as Error).message);
             }
-            return { toast: { type: "success", content: "✅ 已开启新对话（立即生效，不继承历史）" } };
+            return rebuilt ? { card: { type: "raw", data: rebuilt } } : undefined;
           }
           const current = chatState(chatId).sessionId || deterministicSessionId(chatId, currentCwd(chatId));
           if (option === current) {
@@ -1513,11 +1532,18 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           // 校验会话确实存在于本工作区（防伪造回调绑到别的会话）
           const known = (settingsData?.sessions ?? []).find((s) => s.sessionId === option);
           if (!known) return { toast: { type: "error", content: "该会话不存在或不在当前工作区" } };
+          const fromTitle = sessionDisplayName(current);
+          const toTitle = known.title || option.replace(/^session-/, "").slice(0, 13) + "…";
           touchState(chatId, { sessionId: option, cwd: currentCwd(chatId) });
-          try { rebuildReplyCard(chatId); } catch (e2) {
+          // 切换记录作为**一条消息**发进对话（含时间与从→到）
+          void Promise.resolve(chan.send(chatId, {
+            markdown: "🔄 **已切换对话** · " + nowStamp() + "\n从「" + fromTitle + "」切换至「" + toTitle + "」\n下一条消息起在新会话继续，历史与设置保留",
+          })).catch(() => {});
+          let rebuilt: object | undefined;
+          try { rebuilt = rebuildReplyCard(chatId); } catch (e2) {
             ctx.logger?.warn?.("[connect-lark] reply card rebuild failed: " + (e2 as Error).message);
           }
-          return { toast: { type: "success", content: "✅ 已切换对话：" + (known.title || option.slice(0, 18)) + "（下一条消息起在该会话继续，历史与设置保留）" } };
+          return rebuilt ? { card: { type: "raw", data: rebuilt } } : undefined;
         }
         if (controlName === "workspace" || controlName === "model" || controlName === "effort" || controlName === "permission") {
           if (typeof option !== "string" || option === "") return;
@@ -1526,7 +1552,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           const result = applySelect(chatId, controlName, option, openId);
           if (result.error) return { toast: { type: "error", content: result.error } };
           if (result.switchedWorkspace) {
-            void sendWorkspaceSwitchedNotice(chan, chatId, result.workspaceTitle ?? "").catch(() => {});
+            void sendWorkspaceSwitchedNotice(chan, chatId, (prevDisplay as any)?.workspace ?? "", result.workspaceTitle ?? "").catch(() => {});
           }
           if (result.pendingHigh) {
             return { toast: { type: "warning", content: "已选择高权限档，回复「确认」以应用（仅发起人，30s 内）" } };
