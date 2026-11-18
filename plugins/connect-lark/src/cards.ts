@@ -287,8 +287,8 @@ function settingsSelectElements(opts: SettingsCardOptions): Array<Record<string,
 function settingsRow(items: Array<{ label: string; color: string; select: Record<string, unknown> }>): Record<string, unknown> {
   const columns = items.map((it) => [
     // 标签列固定宽 + 标签居中：两字/三字标签的两侧空隙对称，组内贴合度一致（真机反馈 2026-11-18）
-    { tag: "column", width: "auto", horizontal_align: "right", vertical_align: "center",
-      elements: [{ tag: "markdown", content: "<text_tag color='" + it.color + "'>" + it.label + (it.label.length === 2 ? "　" : "") + "</text_tag>" }] },
+    { tag: "column", width: "46px", horizontal_align: "center", vertical_align: "center",
+      elements: [{ tag: "markdown", content: "<text_tag color='" + it.color + "'>" + it.label + "</text_tag>" }] },
     { tag: "column", width: "weighted", weight: 1, vertical_align: "center", horizontal_spacing: "small", elements: [it.select] },
   ]).flat();
   return { tag: "column_set", flex_mode: "none", columns };
@@ -391,7 +391,9 @@ export function buildSettingsPanel(opts: SettingsCardOptions): Record<string, un
   const elements: Array<Record<string, unknown>> = [
     // 引导行：说明语义 + 会话总数（灰字）
     { tag: "markdown", content: "<font color='grey'>选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效 · 本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话</font>" },
-    // 三行布局（标签与下拉同排）：对话下拉占满整行（露出更多标题文字）；模型+强度；工作区+权限
+    // 三行布局（标签与下拉同排）：对话下拉已达组件宽度上限（飞书 select_static
+    // 硬上限 ≈ 334 逻辑像素——2026-11-18 对照实验：无标签列独占整行/860px 列宽/
+    // 99:1 权重均无法突破，与列结构无关）；模型+强度；工作区+权限
     settingsRow([{ label: "对话", color: "indigo", select: chatSelect }]),
     settingsRow([
       { label: "模型", color: "blue", select: selects[1] },

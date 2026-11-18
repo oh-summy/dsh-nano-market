@@ -232,12 +232,12 @@ function settingsRow(items) {
 		flex_mode: "none",
 		columns: items.map((it) => [{
 			tag: "column",
-			width: "auto",
-			horizontal_align: "right",
+			width: "46px",
+			horizontal_align: "center",
 			vertical_align: "center",
 			elements: [{
 				tag: "markdown",
-				content: "<text_tag color='" + it.color + "'>" + it.label + (it.label.length === 2 ? "　" : "") + "</text_tag>"
+				content: "<text_tag color='" + it.color + "'>" + it.label + "</text_tag>"
 			}]
 		}, {
 			tag: "column",
