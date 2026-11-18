@@ -294,6 +294,31 @@ function settingsRow(items: Array<{ label: string; color: string; select: Record
   return { tag: "column_set", flex_mode: "none", columns };
 }
 
+/** 系统提醒卡（轻量）：换对话/新建对话的记录条目——不同维度不同头部色，
+ *  与正常回复卡（绿）区分（负责人 2026-11-18：系统提醒卡片头部颜色应不一样）。 */
+export function buildSwitchRecordCard(
+  headerTitle: string,
+  template: "blue" | "violet" | "turquoise",
+  markdownLines: string[],
+  opts?: { conversationSelect?: { options: Array<{ label: string; value: string }>; initial?: string } },
+): Record<string, unknown> {
+  const elements: Array<Record<string, unknown>> = markdownLines.map((line) => ({ tag: "markdown", content: line }));
+  if (opts?.conversationSelect) {
+    elements.push({
+      tag: "select_static", name: "conversation",
+      placeholder: { tag: "plain_text", content: "切换对话" },
+      options: opts.conversationSelect.options.map((o) => ({ text: { tag: "plain_text", content: o.label }, value: o.value })),
+      behaviors: [{ type: "callback", value: { value: "conversation" } }],
+      ...(opts.conversationSelect.initial ? { initial_option: opts.conversationSelect.initial } : {}),
+    });
+  }
+  return {
+    schema: "2.0",
+    header: { title: { tag: "plain_text", content: headerTitle }, template },
+    body: { elements },
+  };
+}
+
 /** 工作区切换卡：横幅 + 新工作区的「对话」下拉——切换后直接在这条消息里
  *  选历史会话接回（负责人 2026-11-18：每个工作区与会话完全绑定）。 */
 export function buildWorkspaceSwitchCard(

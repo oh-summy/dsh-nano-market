@@ -249,6 +249,45 @@ function settingsRow(items) {
 		}]).flat()
 	};
 }
+/** 系统提醒卡（轻量）：换对话/新建对话的记录条目——不同维度不同头部色，
+*  与正常回复卡（绿）区分（负责人 2026-11-18：系统提醒卡片头部颜色应不一样）。 */
+function buildSwitchRecordCard(headerTitle, template, markdownLines, opts) {
+	const elements = markdownLines.map((line) => ({
+		tag: "markdown",
+		content: line
+	}));
+	if (opts?.conversationSelect) elements.push({
+		tag: "select_static",
+		name: "conversation",
+		placeholder: {
+			tag: "plain_text",
+			content: "切换对话"
+		},
+		options: opts.conversationSelect.options.map((o) => ({
+			text: {
+				tag: "plain_text",
+				content: o.label
+			},
+			value: o.value
+		})),
+		behaviors: [{
+			type: "callback",
+			value: { value: "conversation" }
+		}],
+		...opts.conversationSelect.initial ? { initial_option: opts.conversationSelect.initial } : {}
+	});
+	return {
+		schema: "2.0",
+		header: {
+			title: {
+				tag: "plain_text",
+				content: headerTitle
+			},
+			template
+		},
+		body: { elements }
+	};
+}
 /** 工作区切换卡：横幅 + 新工作区的「对话」下拉——切换后直接在这条消息里
 *  选历史会话接回（负责人 2026-11-18：每个工作区与会话完全绑定）。 */
 function buildWorkspaceSwitchCard(fromTitle, toTitle, sessions) {
@@ -2567,7 +2606,7 @@ function apply(ctx, config = {}) {
 								title: "新对话"
 							});
 						} catch {}
-						Promise.resolve(chan.send(chatId, { markdown: "━━━━━━━━━━ 📢 新建对话 ━━━━━━━━━━\n🆕 已开启全新会话 · " + nowStamp() + "\n之后的对话在新会话进行，不继承之前的历史" })).catch(() => {});
+						Promise.resolve(chan.send(chatId, { card: buildSwitchRecordCard("📢 新建对话", "blue", ["🆕 已开启全新会话 · " + nowStamp(), "之后的对话在新会话进行，不继承之前的历史"]) })).catch(() => {});
 						let rebuilt;
 						try {
 							rebuilt = rebuildReplyCard(chatId);
@@ -2595,7 +2634,7 @@ function apply(ctx, config = {}) {
 						sessionId: option,
 						cwd: known.cwd
 					});
-					Promise.resolve(chan.send(chatId, { markdown: "━━━━━━━━━━ 📢 切换对话 ━━━━━━━━━━\n从「" + fromTitle + "」切换至「" + toTitle + "」 · " + nowStamp() + "\n下一条消息起在新会话继续，历史与设置保留" })).catch(() => {});
+					Promise.resolve(chan.send(chatId, { card: buildSwitchRecordCard("📢 切换对话", "violet", ["从 **" + fromTitle + "** 切换至 **" + toTitle + "** · " + nowStamp(), "下一条消息起在新会话继续，历史与设置保留"]) })).catch(() => {});
 					let rebuilt;
 					try {
 						rebuilt = rebuildReplyCard(chatId);

@@ -25,7 +25,7 @@ import { isVolatile } from "@deepseek-ai/cosmokit";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel, type LarkChannel } from "@larksuite/channel";
 import {
-  buildApprovalCard, buildApprovalFinalCard, buildSettingsPanel, buildWorkspaceSwitchCard,
+  buildApprovalCard, buildApprovalFinalCard, buildSettingsPanel, buildSwitchRecordCard, buildWorkspaceSwitchCard,
   CANCEL_SETTINGS_VALUE, currentModelValue, DEFAULT_OPTION_VALUE, NEW_CONVERSATION_VALUE,
   effortOptions, modelOptions,
   richCard, settingsStatusLine, streamMarkdown,
@@ -1552,7 +1552,10 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             try { await ctx.sessionController.rename({ sessionId: newId, title: "新对话" }); } catch { /* 不影响切换 */ }
             // 切换记录作为**一条消息**发进对话（负责人 2026-11-18：不要只弹 toast）
             void Promise.resolve(chan.send(chatId, {
-              markdown: "━━━━━━━━━━ 📢 新建对话 ━━━━━━━━━━\n🆕 已开启全新会话 · " + nowStamp() + "\n之后的对话在新会话进行，不继承之前的历史",
+              card: buildSwitchRecordCard("📢 新建对话", "blue", [
+                "🆕 已开启全新会话 · " + nowStamp(),
+                "之后的对话在新会话进行，不继承之前的历史",
+              ]),
             })).catch(() => {});
             let rebuilt: object | undefined;
             try { rebuilt = rebuildReplyCard(chatId); } catch (e2) {
@@ -1578,7 +1581,10 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
           touchState(chatId, { sessionId: option, cwd: known.cwd });
           // 切换记录作为**一条消息**发进对话（含时间与从→到）
           void Promise.resolve(chan.send(chatId, {
-            markdown: "━━━━━━━━━━ 📢 切换对话 ━━━━━━━━━━\n从「" + fromTitle + "」切换至「" + toTitle + "」 · " + nowStamp() + "\n下一条消息起在新会话继续，历史与设置保留",
+            card: buildSwitchRecordCard("📢 切换对话", "violet", [
+              "从 **" + fromTitle + "** 切换至 **" + toTitle + "** · " + nowStamp(),
+              "下一条消息起在新会话继续，历史与设置保留",
+            ]),
           })).catch(() => {});
           let rebuilt: object | undefined;
           try { rebuilt = rebuildReplyCard(chatId); } catch (e2) {

@@ -935,7 +935,7 @@ test("apply: conversation dropdown — 新对话真新建、切历史真绑定�
     // 不能 no-op（真机 bug 2026-11-18：误判「已是新对话」导致继续旧上下文）
     const createsBefore = h.calls.sessionCreates.length;
     console.log("[debug] sends:", JSON.stringify(h.calls.sends.map((s) => ({ md: typeof s.input?.markdown === "string" ? s.input.markdown.slice(0, 40) : (s.input?.card ? "CARD" : String(JSON.stringify(s.input)).slice(0, 30)) }))));
-    const msgSent = (re) => { const hit = h.calls.sends.some((s) => typeof s.input?.markdown === "string" && re.test(s.input.markdown)); console.log("[debug] msgSent", re, "->", hit, "sends:", JSON.stringify(h.calls.sends.map((s) => ({ md: typeof s.input?.markdown === "string" ? s.input.markdown.slice(0, 40) : (s.input?.card ? "CARD" : String(JSON.stringify(s.input)).slice(0, 25)) })))); return hit; };
+    const msgSent = (re) => { const hit = h.calls.sends.some((s) => s.input?.card && re.test(String(s.input.card.header?.title?.content || ""))); console.log("[debug] msgSent", re, "->", hit, "sends:", JSON.stringify(h.calls.sends.map((s) => ({ md: typeof s.input?.markdown === "string" ? s.input.markdown.slice(0, 40) : (s.input?.card ? "CARD" : String(JSON.stringify(s.input)).slice(0, 25)) })))); return hit; };
     await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
     await settle();
     assert.ok(msgSent(/📢 新建对话/), "switch record sent as a chat message");
@@ -977,7 +977,7 @@ test("apply: conversation bind rejects sessions from other workspaces (审查 P0
     assert.doesNotMatch(h.readState(), /"sessionId": "sess-other-ws"/, "cross-workspace binding never recorded");
     const ok = await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "conversation", option: "sess-x" } });
     await settle();
-    assert.ok(h.calls.sends.some((s) => typeof s.input?.markdown === "string" && /📢 切换对话/.test(s.input.markdown)), "same-workspace bind accepted (record sent as a message)");
+    assert.ok(h.calls.sends.some((s) => s.input?.card && /📢 切换对话/.test(String(s.input.card.header?.title?.content || ""))), "same-workspace bind accepted (record sent as a message)");
     await h.waitForState('"sessionId": "sess-x"');
   } finally { await h.dispose(); }
 });
@@ -1009,7 +1009,7 @@ test("apply: dedup key is released on failure so the user can retry within TTL (
     const resp2 = await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
     await settle();
     assert.match(resp2.toast.content, /新会话创建失败/, "retry within TTL is NOT silently swallowed");
-    assert.ok(!h.calls.sends.some((s) => typeof s.input?.markdown === "string" && /已开启全新会话/.test(s.input.markdown)), "no success banner (create kept failing)");
+    assert.ok(!h.calls.sends.some((s) => s.input?.card && /已开启全新会话/.test(String(s.input.card.header?.title?.content || ""))), "no success banner (create kept failing)");
   } finally { await h.dispose(); }
 });
 
@@ -1022,7 +1022,7 @@ test("apply: 新对话 on a genuinely blank bound session is a no-op", async () 
     // 绑定空会话（走正常的切换路径）
     await h.cardAction({ chatId: "oc-1", messageId: "card-1", operator: { openId: "ou-1" }, action: { name: "conversation", option: "host-blank" } });
     await settle();
-    assert.ok(h.calls.sends.some((s) => typeof s.input?.markdown === "string" && /📢 切换对话/.test(s.input.markdown)), "bind record sent as a chat message");
+    assert.ok(h.calls.sends.some((s) => s.input?.card && /📢 切换对话/.test(String(s.input.card.header?.title?.content || ""))), "bind record sent as a chat message");
     // 新对话：当前绑定的会话是空会话 → 合法 no-op
     const resp = await h.cardAction({ chatId: "oc-1", messageId: "card-2", operator: { openId: "ou-1" }, action: { name: "conversation", option: "__new_conversation__" } });
     assert.match(resp.toast.content, /已是新对话/, "blank bound session → no-op");
