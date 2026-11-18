@@ -15,12 +15,31 @@
 // Event names (verified against dsh-agent-loop): agent/assistant-stream,
 //   session/event turn/start + turn/end, agent/error, agent/inbox/claimed.
 
+import { stat } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import z from "@deepseek-ai/schemastery";
 import { credentialRef, isCredentialRefName } from "@deepseek-ai/dsh-credentials";
 import { isVolatile } from "@deepseek-ai/cosmokit";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { createLarkChannel, type LarkChannel } from "@larksuite/channel";
-import { richCard, streamMarkdown } from "./cards.js";
+import {
+  buildApprovalCard, buildApprovalFinalCard, buildSettingsPanel, buildSwitchRecordCard, buildWorkspaceSwitchCard,
+  CANCEL_SETTINGS_VALUE, currentModelValue, DEFAULT_OPTION_VALUE, NEW_CONVERSATION_VALUE,
+  effortOptions, modelOptions,
+  richCard, settingsStatusLine, streamMarkdown,
+  type SettingsCardOptions, type SettingsDisplay,
+} from "./cards.js";
+import { cwdTag } from "./overrides.js";
+import { defaultStatePath, loadStates, saveStates, type ChatState, type ChatStateMap } from "./session-map.js";
+
+// 进程级串行链：持久化配置的写入必须**全局**串行。
+// 为什么不能放在 apply() 闭包或模块级变量里：
+//   - 闭包：每个插件实例一条链 → 实例之间并发 → HMR 报「transactions cannot be nested」；
+//   - 模块级变量：HMR 重载 entry 时会创建**新的模块命名空间**（旧实例的模块仍存活），
+//     变量随之重新初始化 → 新旧实例的链仍然不共享 → 同样 nested（真机实证 2026-11-14 23:43）。
+// globalThis 是进程级的，跨模块实例、跨 entry 重载都唯一。
 import { RunManager, type RunSlot } from "./run.js";
 import { fetchDirectory, fetchDirectoryUsers, type Directory } from "./users.js";
 import { startDirectoryService, type DirectoryService } from "./directory-service.js";
@@ -81,10 +100,29 @@ export function plainConfig(input: Config | ParsedConfig): ResolvedConfig {
   for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
     out[key] = isVolatile(value) ? (value as { get(): unknown }).get() : value;
   }
+  normalizeYamlRoundTrip(out);
   return out as ResolvedConfig;
 }
 
-export const inject = ["agents", "llm", "attachments", "credentials", "sessionController", "permissionPresets", "workspaceRegistry"];
+/** 宿主 configEditor 写 YAML 不加引号：effort 档位 id "off" 会被 YAML 1.1 解析成布尔 false
+ *  （真机实证 2026-11-17：选 Off → 落盘 `reasoningEffort: off` → 读回 false）。
+ *  这里把布尔回读归一回档位 id，保证卡片显示与会话创建拿到合法值。 */
+function normalizeYamlRoundTrip(out: Record<string, unknown>): void {
+  if (out.reasoningEffort === false) out.reasoningEffort = "off";
+  else if (out.reasoningEffort === true) out.reasoningEffort = "";
+}
+
+export const inject = [
+  "agents", "llm", "attachments", "credentials",
+  "sessionController", "permissionPresets", "workspaceRegistry",
+  // 标题冷读需要：rc.2 的 sessionListMetadata 只有 {blank, lastPromptAt}（不含标题），
+  // 真实标题在会话日志的 session/title 事件里，经 dsh-session-query 冷读取出。
+  // cordis 的 inject 是拦截器配置（可选），服务不存在时 ctx.get 返回 undefined，不会崩。
+  "sessionQuery",
+  // 卡片与 Web 设置页共用同一份插件配置：卡片经 ctx.settings.mutate 写回宿主配置，
+  // 与 Web 页面走同一条保存路径（settings → configEditor → profile patch）。
+  "settings",
+];
 
 export const Config = z.object({
   enabled: z.boolean().default(false).volatile().comment("启用飞书连接（关闭即断连）"),
@@ -240,10 +278,183 @@ export function resolveAgentModelOptions(
   return { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) };
 }
 
+/**
+ * 让一个会话成为 DSH「一等公民」：
+ *  1) 走宿主标准 sessionController.create（幂等：该 id 已存则复用）→ 进标准会话库 + 投影缓存；
+ *  2) 用 workspaceRegistry.resolveByPath(cwd)（canonical realpath 匹配）把会话挂进工作区归属
+ *     → Web 左栏当场可见（旧代码用 workspaces.find(精确路径) 建会话，冷会话不在归属表，故不可见）；
+ *  3) 命名（有 title 时）。
+ * 全程只调宿主公开 API，不写配置、不写 patch、不触发 HMR。
+ */
+async function ensureFirstClass(ctx: AnyCtx, sessionId: string, cwd: string, title?: string): Promise<void> {
+  // 用 workspaceId（而非裸 cwd）建会话：宿主标准 create({workspaceId, sessionId}) 会
+  //  ① honor 我们给的确定性 sessionId（不会替换成 blank）② 当场 attachSession 进工作区归属
+  // （真机实证 2026-11-15：create({workspaceId, sessionId:custom}) → honored + attached + 进 membership）。
+  // 幂等：该 id 已存且是工作区成员则复用；writer-held / already-exists 由 createOrResumeAgent 兜底。
+  const ws = await ctx.workspaceRegistry?.resolveByPath?.(cwd);
+  try {
+    if (ws) await ctx.sessionController?.create?.({ workspaceId: ws.id, sessionId });
+    else await ctx.sessionController?.create?.({ cwd, sessionId });
+  } catch (error) {
+    if (!/writer-held|already exists|already registered|active write handle|reusable/i.test((error as Error).message)) {
+      ctx.logger?.warn?.("[connect-lark] first-class create: " + (error as Error).message);
+    }
+  }
+  try {
+    if (ws) await ws.attachSession?.(sessionId);
+  } catch (error) {
+    ctx.logger?.warn?.("[connect-lark] first-class attachSession: " + (error as Error).message);
+  }
+  if (title) {
+    try { await ctx.sessionController?.rename?.({ sessionId, title }); } catch { /* 命名失败不阻断 */ }
+  }
+}
+
+/**
+ * P4：列出可 resume 的历史会话（sessionController.list）。
+ * 双版本形状差异归一化：rc.2 的 list() 返回 SessionSummary[]；rc.3 返回
+ * { items: SessionSummary[] }。此处统一为会话行（只取清单需要的字段）。
+ * 失败/无会话 → 空数组（卡片显示「暂无历史会话」）。
+ */
+/** 历史卡最多展示的会话条数（真机实测：实例里 ~300 会话时全量下拉会让飞书建卡超时）。 */
+const HISTORY_LIMIT = 20;
+
+/** 冷读一个会话的标题（session/title 事件的最后一个值）。
+ *  优先用 sessionQuery.readSession（完整日志）；不可用时 inspectSession 读投影。
+ *  读不到 → 空串（调用方用占位标题）。 */
+async function readColdSessionTitle(query: any, sessionId: string): Promise<string> {
+  if (!query) return "";
+  if (typeof query.readSession === "function") {
+    const loaded: any = await query.readSession(sessionId);
+    const events: any[] = loaded?.events ?? [];
+    const titles = events.filter((e) => e?.type === "session/title" && typeof e?.data?.title === "string");
+    const last = titles[titles.length - 1];
+    return last?.data?.title ?? "";
+  }
+  if (typeof query.inspectSession === "function") {
+    return String(await query.inspectSession(sessionId, (session: any) => {
+      try {
+        const events = session?.snapshotEvents?.() ?? [];
+        const titles = events.filter((e: any) => e?.type === "session/title" && typeof e?.data?.title === "string");
+        return titles[titles.length - 1]?.data?.title ?? "";
+      } catch { return ""; }
+    }) ?? "");
+  }
+  return "";
+}
+
+async function listSessions(ctx: AnyCtx, limit: number = HISTORY_LIMIT, cwdFilter?: string, coldRead: boolean | number = true): Promise<{ sessions: Array<{ sessionId: string; title: string; cwd?: string; updatedAt: number }>; total: number; titleError?: string }> {
+  try {
+    const ctrl = ctx.sessionController;
+    if (!ctrl?.list) return { sessions: [], total: 0 };
+    // 双版本签名：rc.2 = list(signal?) → 返回 SessionSummary[]；
+    //              rc.3+ = list(request, signal) → 返回 { items: SessionSummary[] }。
+    // 无参调用对两者都安全（rc.2 的 signal=undefined 跳过 throwIfAborted；
+    // rc.3+ 忽略 request、signal=undefined 亦可）——**不能传 {}**：rc.2 会当 signal 用
+    // 而抛 "signal.throwIfAborted is not a function"（真机实测踩过）。
+    const raw: any = await ctrl.list();
+    const rows: any[] = Array.isArray(raw) ? raw : (raw?.items ?? []);
+    const mapped = rows
+      .filter((r) => typeof (r?.sessionId ?? r?.id) === "string" && (r.sessionId ?? r.id))
+      .map((r) => ({
+        sessionId: r.sessionId ?? r.id,
+        // 标题投影 key 是 **title**（宿主 buildListSnapshot 的 projectionStore.get("title")），
+        // 不是 sessionListMetadata.title——读错 key 会让历史全是「未命名对话」（真机实证 2026-11-18）。
+        title: r.projections?.values?.title ?? r.title ?? "",
+        cwd: typeof r.cwd === "string" ? r.cwd : undefined,
+        updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
+        // blank = 空会话（从未发过消息）：卡片操作会经 ensureFirstClass 创建空会话，
+        // 它们既无标题也无历史，对话下拉里纯属噪音（真机实证 2026-11-18）。
+        blank: typeof r.blank === "boolean" ? r.blank : undefined,
+      }));
+    // 工作区过滤：对话下拉只列**当前工作区**的会话（负责人 2026-11-18 需求）。
+    // cwd 未知的会话不列入（无法证明属于本工作区）。
+    const scoped = (cwdFilter === undefined ? mapped : mapped.filter((s) => s.cwd === cwdFilter))
+      // 最近优先：实例里可能有几百个会话，全量塞进下拉会让飞书建卡超时（真机实测）
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    // 限量：卡片最多展示 limit 条（其余在卡片上注明总数）；校验场景传大 limit 取全集
+    const total = scoped.length;
+    const page = scoped.slice(0, limit);
+    // 真实标题兜底：宿主 list 投影一般已带 title（首条消息自动命名，source=user）；
+    // 投影缺失时才用 dsh-session-query 冷读会话日志的 session/title 事件补齐，
+    // 有限并发 + 每条有超时，任何失败回退到"未命名对话（id 前缀）"。
+    const titles = new Map<string, string>();
+    const query = ctx.get?.("sessionQuery");
+    let titleError: string | undefined;
+    // coldRead: true=读全部 | false=不读 | 数字=只读最终页前 N 条（全量清单 + 少量标题的折中）
+    const coldCount = coldRead === true ? page.length : coldRead === false ? 0 : coldRead;
+    const coldTargets = page.slice(0, coldCount);
+    if (query && typeof query.readTitleSnapshots === "function") {
+      // 批量标题：一次 corpus 观测读全部目标（比逐会话 readSession 轻得多），
+      // 结果按输入顺序返回，per-session 失败被隔离在 status 里。
+      try {
+        // withTimeout 返回带标签的结果对象 {ok, value}（不是裸值），必须先解包
+        const outcome: any = coldTargets.length
+          ? await withTimeout(query.readTitleSnapshots(coldTargets.map((s) => s.sessionId)), 10_000)
+          : { ok: true, value: [] };
+        if (!outcome?.ok) throw new Error("readTitleSnapshots timed out");
+        const results: any = outcome.value ?? [];
+        let hits = 0;
+        results.forEach((r: any, i: number) => {
+          // readTitleSnapshots 的 title 有两种形态：纯字符串，或折叠快照对象 { title, messageSeqs, source }
+          const raw = r?.status === "fulfilled" ? r.value?.title : undefined;
+          const title = typeof raw === "string" ? raw : (raw && typeof raw === "object" && typeof raw.title === "string" ? raw.title : undefined);
+          if (title) {
+            titles.set(coldTargets[i].sessionId, title);
+            hits++;
+          } else if (r?.status === "rejected") {
+            titleError = "readTitleSnapshots rejected: " + String(r.reason?.message ?? r.reason).slice(0, 120);
+          }
+        });
+        if (hits === 0 && results.length > 0) {
+          const first = results[0];
+          const keys = first?.status === "fulfilled" ? Object.keys(first.value ?? {}).join(",") : first?.status;
+          titleError = "0/" + results.length + " 命中，首个快照 keys=[" + keys + "]";
+        }
+      } catch (e) {
+        titleError = "readTitleSnapshots threw: " + (e as Error).message.slice(0, 120);
+      }
+    } else if (coldCount > 0 && query) {
+      // rc.2 老回退：逐会话 readSession（无批量接口的老宿主）
+      const probeTitle = async (sessionId: string): Promise<void> => {
+        try {
+          const result = await withTimeout(readColdSessionTitle(query, sessionId), 5_000);
+          if (result.ok && result.value) titles.set(sessionId, result.value);
+        } catch { /* 读不到就留空，外层用占位标题 */ }
+      };
+      await Promise.all(coldTargets.map((s) => probeTitle(s.sessionId)));
+    } else if (coldCount > 0) {
+      titleError = "sessionQuery service unavailable";
+    }
+    for (const s of page) {
+      // 无标题保持空串：显示层（对话下拉）用 id + 相对时间呈现，不造「未命名对话」包装
+      s.title = titles.get(s.sessionId) ?? "";
+    }
+    return { sessions: page, total, titleError };
+  } catch (e) {
+    ctx.logger?.warn?.("[connect-lark] list sessions failed: " + (e as Error).message);
+    return { sessions: [], total: 0, titleError: "list threw: " + (e as Error).message.slice(0, 120) };
+  }
+}
+
 /** Create a per-chat agent, reusing live agents and resuming persisted sessions. */
 export async function createOrResumeAgent(ctx: AnyCtx, sessionId: string, meta: { cwd?: string }, agentOptions: unknown, permissionPreset = ""): Promise<{ agent: any; sessionId: string; handle: any }> {
   const applyPreset = (agent: any) => {
     if (permissionPreset) ctx.permissionPresets.set(agent.session, permissionPreset);
+    // 模型/强度：插件配置显式设了模型时，用配置覆盖会话里持久化的旧模型投影
+    // （会话投影在 resume 时优先于 agentOptions，会让卡片切换的新模型不生效——
+    //  真机实证 2026-11-14：配置已是 minimax，请求头仍是 agnes）。
+    // 配置未设模型时不动会话投影（继续跟随用户在 DSH 页面的选择）。
+    const opts = agentOptions as { provider?: string; model?: string; reasoningEffort?: string } | undefined;
+    if (opts?.provider && opts?.model) {
+      try {
+        agent.model?.select?.({
+          provider: opts.provider,
+          model: opts.model,
+          ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
+        });
+      } catch { /* 选择失败不阻断会话创建 */ }
+    }
   };
   // Prefer the host's ordinary-session resolver: it can adopt an already live
   // Agent instead of creating a second writer for the same Session.
@@ -312,7 +523,7 @@ function friendlyRunFailure(error: Error): string {
 async function updateRunCard(
   slot: RunSlot,
   thinkingPolicy: ResolvedConfig["thinkingPolicy"],
-  opts: { final?: boolean; legacyThinking?: boolean } = {},
+  opts: { final?: boolean; legacyThinking?: boolean; footer?: { statusLine?: string; panelArgs?: SettingsCardOptions; onBuilt?: (card: object) => void } } = {},
 ): Promise<void> {
   if (!slot.streamController) return;
   const lines: string[] = [];
@@ -354,24 +565,35 @@ async function updateRunCard(
   } else if (opts.final) {
     lines.push("本次回复没有文本输出。");
   }
+  // Issue #17：状态行放在 header.subtitle（官方字段）——与正文彻底分离，一眼可见
   const timestamp = new Date().toISOString();
-  await slot.streamController.update(richCard({
+  const buttons = [{ text: "dsh-nano-market", url: "https://github.com/oh-summy/dsh-nano-market" }];
+  const appendElements = opts.footer?.panelArgs ? [buildSettingsPanel(opts.footer.panelArgs)] : undefined;
+  const card = richCard({
     title,
+    headerSubtitle: opts.footer?.statusLine,
     color: opts.final ? "green" : "blue",
     lines,
     panels,
+    appendElements,
     note: "connect-lark · by @oh-summy · " + timestamp,
-    buttons: [{ text: "dsh-nano-market", url: "https://github.com/oh-summy/dsh-nano-market" }],
-  }));
+    buttons,
+  });
+  await slot.streamController.update(card);
+  if (appendElements) opts.footer?.onBuilt?.(card);
 }
 
 /** 终稿更新：先试折叠面板版式，被飞书拒绝时回退旧版引用块。 */
-async function finalizeRunCard(slot: RunSlot, thinkingPolicy: ResolvedConfig["thinkingPolicy"]): Promise<void> {
+async function finalizeRunCard(
+  slot: RunSlot,
+  thinkingPolicy: ResolvedConfig["thinkingPolicy"],
+  footer?: { statusLine?: string; panelArgs?: SettingsCardOptions; onBuilt?: (card: object) => void },
+): Promise<void> {
   if (!slot.streamController) return;
   try {
-    await updateRunCard(slot, thinkingPolicy, { final: true });
+    await updateRunCard(slot, thinkingPolicy, { final: true, footer });
   } catch (panelError) {
-    try { await updateRunCard(slot, thinkingPolicy, { final: true, legacyThinking: true }); }
+    try { await updateRunCard(slot, thinkingPolicy, { final: true, legacyThinking: true, footer }); }
     catch { throw panelError; }
   }
 }
@@ -380,15 +602,512 @@ async function finalizeRunCard(slot: RunSlot, thinkingPolicy: ResolvedConfig["th
 
 export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
   let plain = plainConfig(config);
+  // 说明：模型/强度/权限/工作区的修改**写插件配置**（卡片与 Web 设置页同一份，
+  // 经 ctx.settings.mutate → 宿主 configEditor 原子写 → patch → loader 热更新，
+  // 绝不直写 patch 文件）；会话绑定（对话/工作区切换产生的会话归属）存 per-chat 状态。
+  // 全字段 .volatile() → 热更新不重启插件，无「配置编辑触发 entry 重载」问题。
   let channel: LarkChannel | null = null;
   let runManager: RunManager | null = null;
   let unsubMessage: (() => void) | null = null;
+  let unsubCardAction: (() => void) | null = null;
   let directoryService: DirectoryService | null = null;
   // 租户管理员（应用的可用范围里的 owner）自动放行，不必手填 open_id。
   let managerOpenId = "";
   let unsubEvents: Array<() => void> = [];
   let generation = 0;
   let transition: Promise<void> = Promise.resolve();
+
+  // ---- Issue #17：卡片内切换（一等公民语义：卡片修改 = 写该 chat 会话的投影
+  // （agent.model.select / permissionPresets.set）+ per-chat 状态（session-map.ts），
+  // 不写插件配置、不写 patch、不触发 HMR；重启后会话投影由宿主重放，不丢）----
+  // chatId → 聊天类型（cardAction 事件不带 chatType，白名单需要它；message 事件时记录）
+  const chatTypeCache = new Map<string, "p2p" | "group">();
+  // chatId → 最近一张终稿回复卡（含内嵌设置面板）。卡片回调选择后用它就地重建，
+  // 不弹新卡；slot 被 TTL 驱逐后仍可用（下一轮回复会重新写入）。
+  const lastReplyCards = new Map<string, object>();
+  // sessionId → chatId（feishu_send_media 工具用：agent 侧发媒体时找到目标对话）
+  const sessionChat = new Map<string, string>();
+  // P5 审批：callId → 待决审批（飞书按钮点击后 resolve）。绑 chatId 用于发卡与终态更新。
+  // 放在 apply() 作用域：审批监听器在 apply 顶层注册，需要跨 boot/cleanup 存活。
+  // 缺 callId 审批用匿名序号（审查 P1-6：不能共用 key "" 互相覆盖）。
+  let approvalSeq = 0;
+  const pendingApprovals = new Map<string, {
+    resolve: (outcome: "allowed-once" | "rejected" | "cancelled") => void;
+    chatId: string;
+    messageId: string;
+    toolName: string;
+    expiresAt: number;
+  }>();
+  const APPROVAL_TTL_MS = 5 * 60_000;
+  // 已注册过媒体工具的 sessionId（agent 域 ctx 重复注册会抛错，按会话幂等）
+  const mediaRegistered = new Set<string>();
+  // per-chat 状态（**只**记会话绑定，持久化到 DSH home 下，重启恢复）：
+  // 该 chat 绑定的会话 id + 该会话所在工作区。
+  // 模型/强度/权限/工作区**不在这里**——它们是插件配置（cordis.patch.yml 的 connect-lark 条目），
+  // 卡片与 Web 设置页读写的是同一份，不存在第二套「卡片专属配置」。
+  const statePath = process.env.CONNECT_LARK_SESSION_MAP || defaultStatePath();
+  const chatStates: ChatStateMap = loadStates(statePath);
+  // 旧版状态文件可能还带着模型/强度/权限字段（= 第二套配置事实源）。loadStates 已在内存剥掉；
+  // 检测到磁盘文件仍有遗留就回写一次，让文件也收敛为「只存会话绑定」（单一事实源 = 插件配置）。
+  try {
+    if (existsSync(statePath) && /"(provider|model|reasoningEffort|permissionPreset)"/.test(readFileSync(statePath, "utf8"))) {
+      saveStates(statePath, chatStates);
+      ctx.logger?.info?.("[connect-lark] sanitized legacy per-chat settings from state file (single source = plugin config)");
+    }
+  } catch { /* 非致命：下次 touchState 时会再收敛 */ }
+  const chatState = (chatId: string): ChatState => chatStates[chatId] ?? { updatedAt: 0 };
+  const touchState = (chatId: string, patch: Partial<ChatState>): void => {
+    const cur = chatStates[chatId] ?? { updatedAt: 0 };
+    chatStates[chatId] = { ...cur, ...patch, updatedAt: Date.now() };
+    try { saveStates(statePath, chatStates); } catch (e) { ctx.logger?.warn?.("[connect-lark] save per-chat state: " + (e as Error).message); }
+  };
+  /** 该 chat 当前的工作区 cwd：绑定会话的工作区 > 插件配置的 defaultPath > 宿主 cwd。 */
+  const currentCwd = (chatId: string): string => chatState(chatId).cwd || plain.defaultPath || process.cwd();
+  /** 默认会话 id：chat + 工作区指纹（工作区变了 → 新会话；切回原工作区 → 继续原会话）。 */
+  const deterministicSessionId = (chatId: string, cwd: string): string =>
+    "connect-lark:" + chatId + cwdTag(cwd);
+  /** 解除会话绑定（换工作区/重开会话）：下一条消息按配置重新推导默认会话。 */
+  const clearSessionBinding = (chatId: string): void => {
+    const cur = chatStates[chatId];
+    if (!cur) return;
+    delete cur.sessionId;
+    delete cur.cwd;
+    cur.updatedAt = Date.now();
+    try { saveStates(statePath, chatStates); } catch (e) { ctx.logger?.warn?.("[connect-lark] save per-chat state: " + (e as Error).message); }
+  };
+  /** 给 owned-per-chat 的 agent 注册桥内发媒体工具：agent 生成图片/文件后
+   *  直接经当前 bot 发给用户，而不是绕道 lark-cli 等其他应用（真机反馈 2026-11-13）。 */
+  const registerMediaTool = (agent: any, chatId: string, sessionId: string): void => {
+    sessionChat.set(sessionId, chatId);
+    if (mediaRegistered.has(sessionId)) return;
+    mediaRegistered.add(sessionId);
+    try {
+      agent.ctx?.tools?.register?.({
+        name: "feishu_send_media",
+        description: "把本机生成的图片或文件通过飞书发给当前对话的用户。图片（png/jpg/jpeg/webp/gif）以图片消息发送，其他扩展名以文件消息发送。path 必须是本机绝对路径。需要把运行产物（图片、海报、文档等）交付给用户时使用。",
+        parameters: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "要发送的本机文件绝对路径" },
+            caption: { type: "string", description: "可选说明文字，随文件以一条纯文本消息发送" },
+          },
+          required: ["path"],
+          additionalProperties: false,
+        },
+        output: {
+          schema: {
+            type: "object",
+            properties: {
+              ok: { type: "boolean", description: "是否发送成功" },
+              kind: { type: "string", description: "image 或 file" },
+              messageId: { type: "string", description: "飞书消息 id" },
+              error: { type: "string", description: "失败原因" },
+            },
+            additionalProperties: false,
+          },
+        },
+        async execute(args: { path: string; caption?: string }, exec: any) {
+          const ch = channel;
+          if (!ch) return { ok: false, error: "飞书连接不可用" };
+          const sid = exec?.agent?.session?.id ?? sessionId;
+          const target = sessionChat.get(sid);
+          if (!target) return { ok: false, error: "找不到该会话对应的飞书对话（可能已过期或被清理）" };
+          const info = await stat(args.path).catch(() => null);
+          if (!info || !info.isFile()) return { ok: false, error: "文件不存在或不可读: " + args.path };
+          const ext = path.extname(args.path).toLowerCase();
+          const isImage = [".png", ".jpg", ".jpeg", ".webp", ".gif"].includes(ext);
+          const input = isImage
+            ? { image: { source: args.path } }
+            : { file: { source: args.path, fileName: path.basename(args.path) } };
+          const sent = await withTimeout(ch.send(target, input as any), 30_000);
+          if (!sent.ok) return { ok: false, error: "发送超时（30s）" };
+          if (args.caption) void Promise.resolve(ch.send(target, { text: args.caption })).catch(() => {});
+          return { ok: true, kind: isImage ? "image" : "file", messageId: (sent.value as any)?.messageId };
+        },
+      });
+      ctx.logger?.info?.("[connect-lark] feishu_send_media tool registered for " + sessionId);
+    } catch (e) {
+      // 重复注册等场景：工具已存在则忽略
+      ctx.logger?.warn?.("[connect-lark] media tool register skipped: " + (e as Error).message);
+    }
+  };
+  /** 重建最近一张回复卡的内嵌设置面板（唯一实现：同步、零 await、零网络）。
+   *  overrides 用于「用户刚选的模型」尚未写入配置时，面板先按新模型渲染
+   *  （档位必须跟着所选模型走，否则会选到别的模型的档位 → DSH 拒绝该 effort）。
+   *  卡片回调里直接用返回值就地更新；其他场景用 fire-and-forget。 */
+  const rebuildReplyCard = (chatId: string, overrides?: { provider?: string; model?: string; reasoningEffort?: string }): object | undefined => {
+    const stored = lastReplyCards.get(chatId);
+    if (!stored) return undefined;
+    const args = settingsCardArgs(chatId, overrides);
+    const effortList = effortOptionsFor(args);
+    const clone = JSON.parse(JSON.stringify(stored)) as { header?: Record<string, unknown>; body?: { elements?: Array<Record<string, unknown>> } };
+    const els = clone.body?.elements ?? [];
+    const idx = els.findIndex((e) => e.tag === "collapsible_panel"
+      && typeof (e.header as any)?.title?.content === "string"
+      && String((e.header as any).title.content).startsWith("⚙️"));
+    if (idx < 0) return undefined;
+    els[idx] = buildSettingsPanel({ ...args, effortList });
+    if (clone.header && typeof clone.header === "object") {
+      const shown = buildDisplay(chatId) ?? {};
+      if (overrides?.model) shown.model = overrides.model;
+      clone.header.subtitle = { tag: "plain_text", content: settingsStatusLine(shown, plain.agentOwnership === "attach-gui") };
+    }
+    lastReplyCards.set(chatId, clone);
+    return clone;
+  };
+  // 卡片回调幂等去重（60s TTL）。选择卡/回复卡发送失败不记入（失败路径会清除键）。
+  const dedupTable = new Map<string, number>();
+  const dedupClaim = (key: string): boolean => {
+    const now = Date.now();
+    if (dedupTable.has(key) && (dedupTable.get(key) ?? 0) > now) return false;
+    // 防长期运行内存增长：超限时顺带清理过期键
+    if (dedupTable.size > 500) {
+      for (const [k, ts] of dedupTable) if (ts <= now) dedupTable.delete(k);
+    }
+    dedupTable.set(key, now + 60_000);
+    return true;
+  };
+  // 高权限档二次确认：per-chat，绑发起人 openId，30s TTL（方案 §4.3 / P1-3）
+  const pendingConfirms = new Map<string, { openId: string; permission: string; expiresAt: number }>();
+  const CONFIRM_TTL_MS = 30_000;
+  // 设置卡片数据缓存（open-settings 时刷新一次；select 回调用缓存同步构建就地更新）
+  let settingsData: {
+    catalog: SettingsCardOptions["catalog"];
+    workspaces: Array<{ id: string; title: string; path: string }>;
+    permissions: Array<{ value: string; name: string }>;
+    defaultPermission: string;
+    /** 全量会话（未按工作区过滤，面板按当前 cwd 过滤后进「对话」下拉） */
+    sessions: Array<{ sessionId: string; title: string; cwd?: string; updatedAt: number; blank?: boolean }>;
+    sessionsTotal: number;
+    titleError?: string;
+  } | null = null;
+
+  const refreshSettingsData = async (): Promise<void> => {
+    try {
+      // catalog / 工作区 / 权限与全量会话**并行**取（对话下拉需要会话清单）
+      const [catalog, sessions] = await Promise.all([
+        ctx.sessionController.modelCatalog(),
+        // 全量 300 条 + 只批量冷读最近 30 条的标题（一次 corpus 观测）——
+        // 对话下拉按工作区过滤后通常都在最近 30 条里；list 投影本身不带标题
+        listSessions(ctx, 300, undefined, 80).catch(() => ({ sessions: [], total: 0, titleError: "list threw in refresh" })),
+      ]);
+      const workspaces = (ctx.workspaceRegistry?.list?.() ?? []).map((w: any) => ({ id: w.id, title: w.title, path: w.path }));
+      const permCat = ctx.permissionPresets?.catalog?.() ?? { options: [], defaultPreset: "" };
+      settingsData = {
+        catalog, workspaces,
+        permissions: permCat.options ?? [], defaultPermission: permCat.defaultPreset ?? "",
+        sessions: sessions.sessions, sessionsTotal: sessions.total,
+        titleError: sessions.titleError,
+      };
+    } catch (e) {
+      ctx.logger?.warn?.("[connect-lark] settings data refresh failed: " + (e as Error).message);
+    }
+  };
+
+  const settingsCardArgs = (chatId: string, overrides?: { provider?: string; model?: string; reasoningEffort?: string }): SettingsCardOptions => {
+    // 唯一事实源 = 插件配置（cordis.patch.yml 的 connect-lark 条目）。
+    // 卡片与 Web 设置页读写的是同一份配置，因此这里显示的就是 Web 页面上看到的值。
+    // overrides 用于「用户刚选的模型」尚未落配置时，面板先按新模型渲染（档位跟随所选模型）。
+    const st = chatState(chatId);
+    // 与 currentCwd() 同源兜底（process.cwd()），否则未配 defaultPath 时
+    // 会话下拉按 cwd === "" 过滤、恒为空（审查 P1-4）
+    const wsPath = st.cwd || plain.defaultPath || process.cwd();
+    const ws = wsPath ? settingsData?.workspaces.find((w) => w.path === wsPath) : undefined;
+    const defaultTitle = wsPath ? "工作区（" + wsPath.split("/").filter(Boolean).pop() + "）" : "默认工作区";
+    const provider = overrides?.provider ?? plain.provider ?? "";
+    const model = overrides?.model ?? plain.model ?? "";
+    const effort = overrides?.reasoningEffort !== undefined ? overrides.reasoningEffort : (plain.reasoningEffort ?? "");
+    const hasModel = Boolean(provider && model);
+    // 对话下拉：当前工作区的会话（投影已带标题），最近优先，最多 15 条
+    const currentSessionId = st.sessionId || deterministicSessionId(chatId, wsPath || process.cwd());
+    // 只显示「有标题」的会话 + 当前会话：无标题的空槽（宿主 GUI 预建、卡片操作残留）
+    // 没有可辨认的名字，列出来全是「未命名对话」噪音（真机反馈 2026-11-18）。
+    // 标题来源 = 最近 80 条的批量冷读；更老的会话不进下拉（可在 Web 端查看）。
+    const chatSessions = (settingsData?.sessions ?? [])
+      .filter((s) => (wsPath === undefined || s.cwd === wsPath)
+        // 隐藏零消息空会话（新对话/切工作区产生的空槽位）：切进去没有历史，
+        // 用户分不清 id 是不是真实对话（负责人 2026-11-18 反馈）。下拉只列
+        // 真正有过对话的会话；当前会话若缺失由下方兜底补回。
+        && s.blank !== true)
+      .slice(0, 15)
+      .map((s) => ({ sessionId: s.sessionId, title: s.title, cwd: s.cwd, updatedAt: s.updatedAt }));
+    // 当前会话必须始终在候选里（list 投影偶发缺行时兜底；label 走 id）
+    if (!chatSessions.some((s) => s.sessionId === currentSessionId)) {
+      chatSessions.unshift({ sessionId: currentSessionId, title: "", cwd: wsPath, updatedAt: Date.now() });
+    }
+    return {
+      catalog: settingsData?.catalog ?? { groups: [] },
+      workspaces: settingsData?.workspaces ?? [],
+      permissions: settingsData?.permissions ?? [],
+      defaultPermission: settingsData?.defaultPermission ?? "",
+      current: {
+        workspaceId: ws ? ws.id : DEFAULT_OPTION_VALUE,
+        provider: hasModel ? provider : undefined,
+        model: hasModel ? model : undefined,
+        reasoningEffort: effort || undefined,
+        permission: plain.permissionPreset || undefined,
+      },
+      hasPendingPermission: pendingConfirms.has(chatId), // 只提示本 chat 的待确认（P2-5）
+      defaultWorkspaceTitle: defaultTitle,
+      chatSessions,
+      currentSessionId,
+      sessionsTotal: settingsData?.sessionsTotal ?? 0,
+      titleError: settingsData?.titleError,
+    };
+  };
+
+  /** 需要二次确认的高危档位（宿主语义，dsh-permission-presets）：
+   *  - danger-full-access：sandbox 全权 + approval **never**（永不询问，无提示直接放行）← 最危险
+   *  - auto：sandbox 全权 + approval **ask**（每次调用都审查）← 比上者安全，不需确认
+   *  只有「永不询问的全权访问」才需要用户点头。 */
+  const isHighPermission = (option: string): boolean =>
+    option === "danger-full-access";
+
+  /** 候选配置的可读展示名（toast A→B 的 next 值）——不依赖配置已提交。 */
+  const nextLabelOf = (field: string, partial: Partial<ResolvedConfig>): string => {
+    if (field === "workspace") {
+      if (!partial.defaultPath) return "默认工作区";
+      const ws = settingsData?.workspaces.find((w) => w.path === partial.defaultPath);
+      return ws?.title ?? partial.defaultPath;
+    }
+    if (field === "model") {
+      const group = (settingsData?.catalog?.groups ?? []).find((g) => g.id === partial.provider);
+      const m = group?.models?.find((mm) => mm.id === partial.model);
+      return (group?.name ? group.name + " · " : "") + (m?.name ?? partial.model ?? "跟随 DSH 默认");
+    }
+    if (field === "effort") {
+      if (!partial.reasoningEffort) return "跟随模型默认";
+      const group = (settingsData?.catalog?.groups ?? []).find((g) => g.id === partial.provider);
+      const m = group?.models?.find((mm) => mm.id === partial.model);
+      const eff = m?.reasoning?.efforts?.find((x) => x.id === partial.reasoningEffort);
+      return eff?.name ?? partial.reasoningEffort;
+    }
+    if (field === "permission") {
+      if (!partial.permissionPreset) return "跟随 DSH 默认";
+      const opt = settingsData?.permissions.find((x) => x.value === partial.permissionPreset);
+      return opt?.name ?? partial.permissionPreset;
+    }
+    return "已设置";
+  };
+
+  /** 同步处理一次 select 回调：校验 → 生成该维度的候选值（高权限档先进 pending，
+   *  确认后才进入候选）。候选由调用方经 writePluginConfig 写插件配置（唯一事实源），
+   *  并由 applyDimension 补会话投影让当前会话立即生效。 */
+  const applySelect = (
+    chatId: string,
+    name: string,
+    option: string,
+    openId: string,
+  ): { error?: string; switchedWorkspace?: boolean; workspaceTitle?: string; partial?: Partial<ResolvedConfig>; pendingHigh?: boolean } => {
+    if (name === "workspace") {
+      if (option === DEFAULT_OPTION_VALUE) return { partial: { defaultPath: "" } };
+      // 校验用实时 registry（settingsData 只是展示缓存）
+      const ws = (ctx.workspaceRegistry?.list?.() ?? []).find((w: any) => w.id === option);
+      if (!ws) return { error: "未知工作区" };
+      // 与 per-chat 当前 cwd 比较（而非配置 defaultPath）：重选当前工作区不触发「新开对话」
+      const switched = currentCwd(chatId) !== ws.path;
+      return { partial: { defaultPath: ws.path }, switchedWorkspace: switched, workspaceTitle: ws.title };
+    }
+    if (name === "model") {
+      if (option === DEFAULT_OPTION_VALUE) return { partial: { provider: "", model: "", reasoningEffort: "" } };
+      const sep = option.indexOf(":");
+      if (sep <= 0) return { error: "无效的模型选项" };
+      // 换模型时重置思考强度（跟随新模型默认），避免残留旧模型的 effort 被 DSH 拒绝
+      return { partial: { provider: option.slice(0, sep), model: option.slice(sep + 1), reasoningEffort: "" } };
+    }
+    if (name === "effort") {
+      if (option === DEFAULT_OPTION_VALUE) return { partial: { reasoningEffort: "" } };
+      // 值由选择卡按当前模型枚举（精确路由解析），此处不再二次校验
+      return { partial: { reasoningEffort: option } };
+    }
+    if (name === "permission") {
+      // 先解析最终落盘值，再判高危——「设为 DSH 默认预设」解析出的默认预设本身可能是
+      // danger-full-access，不能绕过二次确认（独立审查 P0-2）。
+      const value = option === DEFAULT_OPTION_VALUE ? (settingsData?.defaultPermission ?? "") : option;
+      if (isHighPermission(value)) {
+        // 先清理过期的未决确认（防残留）
+        const now = Date.now();
+        for (const [cid, p] of pendingConfirms) if (p.expiresAt <= now) pendingConfirms.delete(cid);
+        pendingConfirms.set(chatId, { openId, permission: value, expiresAt: now + CONFIRM_TTL_MS });
+        return { pendingHigh: true };
+      }
+      pendingConfirms.delete(chatId);
+      return { partial: { permissionPreset: value } };
+    }
+    return { error: "未知控件" };
+  };
+
+  /** 配置写入口：**唯一**的配置保存路径（与 Web 设置页同一处）。
+   *  走宿主 settings 服务 → configEditor → profile patch → loader 热更新，
+   *  与 Web 设置页的 form.actions().save() 完全同源（同一份 cordis.patch.yml 配置）。
+   *  绝不自己写 patch 文件：那会绕过宿主的原子写 + HMR 序列化（曾导致配置被截断）。 */
+  const writePluginConfig = async (patch: Partial<ResolvedConfig>): Promise<void> => {
+    const settings = ctx.get?.("settings") as any;
+    if (!settings?.mutate) throw new Error("宿主 settings 服务不可用，无法保存配置");
+    const ns = "connect-lark";
+    const ops = Object.entries(patch).map(([field, value]) => ({
+      op: "set" as const,
+      path: [field],
+      value: value === "" ? undefined : value,
+    }));
+    await settings.mutate(ns, ops);
+  };
+
+  /** 后台：把本次选择**写入插件配置**（与 Web 设置页同一份），并让当前会话立即生效。
+   *  - 配置写：writePluginConfig → 宿主 settings.mutate → profile patch → loader 热更新；
+   *  - 会话生效：模型/强度 → agent.model.select（会话投影，重启重放）；权限 → permissionPresets.set。
+   *  两步分开报错：配置保存失败 ≠ 会话投影失败。权限切换可能被宿主拒绝
+   *  （持久终端开着时不能改 sandbox 模式——真机实证 2026-11-17），此时配置已保存，
+   *  新会话/关闭终端后按新配置生效，必须如实告知而不是笼统说「设置未生效」。 */
+  const applyDimension = async (chan: LarkChannel, chatId: string, controlName: string, partial: Partial<ResolvedConfig>, dedupKey?: string): Promise<void> => {
+    try {
+      // 1) 写配置（唯一事实源）。工作区切换 → **默认开启新对话**（负责人 2026-11-18 需求；
+      //    历史可在「对话」下拉接回）。立即在新工作区创建全新会话并绑定——不清绑定等
+      //    下一条消息（那会落回确定性会话 = 接回旧历史，与「默认新开」语义冲突）。
+      await writePluginConfig(partial);
+      if (controlName === "workspace") { console.log("[probe-branch] enter");
+        const fromCwd = currentCwd(chatId);
+        const fromWsTitle = (settingsData?.workspaces ?? []).find((w) => w.path === fromCwd)?.title
+          ?? fromCwd.split("/").filter(Boolean).pop() ?? fromCwd;
+        plainWorkspaceTitle = fromWsTitle;
+        console.log("[probe-branch] before clear"); clearSessionBinding(chatId); console.log("[probe-branch] after clear");
+        const newCwd = partial.defaultPath || fromCwd;
+        try {
+          const created: any = await ctx.sessionController.create({ cwd: newCwd });
+          const newId = created?.sessionId ?? created?.value?.sessionId;
+          if (newId) {
+            // 挂工作区归属（Web 左栏立即可见；归属失败不阻断）
+            try {
+              const ws = await ctx.workspaceRegistry?.resolveByPath?.(newCwd);
+              if (ws) await ws.attachSession(newId);
+            } catch { /* 不阻断 */ }
+            touchState(chatId, { sessionId: newId, cwd: newCwd });
+            try { await ctx.sessionController.rename({ sessionId: newId, title: "新对话" }); } catch { /* 不影响切换 */ }
+            // 切换记录 = **可交互卡片**：内嵌新工作区的「对话」下拉，直接接回历史会话
+            const toWsTitle = (settingsData?.workspaces ?? []).find((w) => w.path === newCwd)?.title ?? newCwd.split("/").filter(Boolean).pop() ?? newCwd;
+            const wsSessions = (settingsData?.sessions ?? [])
+              .filter((s) => s.cwd === newCwd && s.sessionId !== newId && s.blank !== true)
+              .slice(0, 12)
+              .map((s) => ({ sessionId: s.sessionId, title: s.title, updatedAt: s.updatedAt }));
+            try {
+              console.log("[probe-branch] before send");
+              const sent = await withTimeout(chan.send(chatId, { card: buildWorkspaceSwitchCard(plainWorkspaceTitle, toWsTitle, wsSessions) }), 8_000);
+              // withTimeout 超时返回 {ok:false} 而不抛——显式转 throw，让降级文案可达（审查 P2-1）
+              if (!sent?.ok) throw new Error("workspace switch card send timeout");
+            } catch (sendError) { console.log("[probe-branch] send catch:", (sendError as Error).message);
+              ctx.logger?.warn?.("[connect-lark] workspace switch card send failed: " + (sendError as Error).message);
+              await sendBounded(chan, chatId, "🔄 **已切换工作区** · " + nowStamp() + "\n从 **" + (plainWorkspaceTitle || "未知") + "** 切换至 **" + toWsTitle + "** · 已开启新对话（不继承历史）\n可在「会话设置 → 对话」下拉接回之前工作区的历史会话");
+            }
+          }
+        } catch (e2) {
+          ctx.logger?.warn?.("[connect-lark] workspace-switch session create failed: " + (e2 as Error).message);
+          // 创建失败 → 保持无绑定：下一条消息按确定性会话兜底
+        }
+        return;
+      }
+      // 2) 让当前会话立刻用上新配置（配置本身已由 loader 热更新；这里补会话投影）。
+      //    投影失败不影响已保存的配置——单独捕获并说明「何时生效」。
+      try {
+        const cwd = currentCwd(chatId);
+        const id = chatState(chatId).sessionId || deterministicSessionId(chatId, cwd);
+        // 目标会话是【空会话】（从未发过消息）时跳过投影：为投影而创建空会话
+        // 会在历史清单里堆积「未命名对话」（真机实证 2026-11-18），而配置在
+        // 下一条消息创建会话时本就会带上（agentOptions + permissionPreset）。
+        // 仅在清单明确标记 blank 时跳过；row 缺失（清单缓存未含/重启后冷会话）
+        // 必须正常走投影——否则切换静默不生效（审查 P1-3）。
+        const row = settingsData?.sessions.find((s) => s.sessionId === id);
+        if (row?.blank === true) {
+          ctx.logger?.info?.("[connect-lark] target session is blank; skip projection (config will apply at creation) id=" + id);
+          return;
+        }
+        // 「跟随 DSH 默认」（partial 全空）跳过投影：保留会话现有投影即可——
+        // 把 catalog.default select 进投影会把会话钉死在当时的默认上，
+        // DSH 默认日后变化该会话不跟随（审查 P2）。新会话由 agentOptions 兜底。
+        const allEmpty = Object.values(partial).every((v) => v === "" || v === undefined);
+        if (allEmpty) {
+          ctx.logger?.info?.("[connect-lark] dimension set to follow DSH default; skip session projection");
+          return;
+        }
+        await ensureFirstClass(ctx, id, cwd);
+        const { agent } = await createOrResumeAgent(ctx, id, { cwd }, {}, plain.permissionPreset);
+        if (controlName === "model" || controlName === "effort") {
+          const sel = resolveAgentModelOptions(plain, await ctx.sessionController.modelCatalog());
+          agent.model?.select?.(sel);
+        }
+        if (controlName === "permission") {
+          const p = plain.permissionPreset || (settingsData?.defaultPermission ?? "");
+          if (p) ctx.permissionPresets?.set?.(agent.session, p);
+        }
+      } catch (e) {
+        ctx.logger?.warn?.("[connect-lark] config saved but session projection failed: " + (e as Error).message);
+        // 投影失败也释放 dedup 键：配置已保存但当前会话未生效，重试是用户最可能
+        // 的动作，不能被 60s dedup 静默吞掉（审查 P2-3）
+        if (dedupKey) dedupTable.delete(dedupKey);
+        // 投影失败也释放 dedup 键：配置已保存但当前会话未生效，重试是用户最可能
+        // 的动作，不能被 60s dedup 静默吞掉（审查 P2-3）
+        if (dedupKey) dedupTable.delete(dedupKey);
+        void Promise.resolve(chan.send(chatId, {
+          markdown: "✅ 已保存到插件配置（Web 设置页同步可见）\n⚠️ 当前会话未能立即切换：" + (e as Error).message + "\n新对话（或关闭持久终端后）会按新配置生效",
+        })).catch(() => {});
+      }
+    } catch (e) {
+      ctx.logger?.warn?.("[connect-lark] apply dimension failed: " + (e as Error).message);
+      // 失败释放 dedup 键：让用户 60s 内可以直接重试（审查 P1-5）
+      if (dedupKey) dedupTable.delete(dedupKey);
+      void Promise.resolve(chan.send(chatId, { markdown: "⚠️ 设置未生效：" + (e as Error).message + "（请重试）" })).catch(() => {});
+    }
+  };
+
+
+  /** 终稿卡片底部状态行的展示值（读插件配置——与 Web 设置页同一份）。 */
+  const buildDisplay = (chatId?: string): SettingsDisplay | undefined => {
+    // 唯一事实源 = 插件配置：卡片显示的就是 Web 页面上看到的值。
+    const st = chatId ? chatState(chatId) : ({} as ChatState);
+    const d: SettingsDisplay = {};
+    // 与 currentCwd() 同源兜底（审查 P2-4）：未配 defaultPath 时状态行仍显示工作区
+    const wsPath = st.cwd || plain.defaultPath || process.cwd();
+    if (wsPath) {
+      const ws = settingsData?.workspaces.find((w) => w.path === wsPath);
+      d.workspace = ws?.title ?? wsPath;
+    }
+    if (plain.model) {
+      const group = (settingsData?.catalog?.groups ?? []).find((g) => g.id === plain.provider);
+      const m = group?.models?.find((mm) => mm.id === plain.model);
+      d.model = (group?.name ? group.name + " · " : "") + (m?.name ?? plain.model);
+    }
+    if (plain.reasoningEffort) {
+      const group = (settingsData?.catalog?.groups ?? []).find((g) => g.id === plain.provider);
+      const m = group?.models?.find((mm) => mm.id === plain.model);
+      const e = m?.reasoning?.efforts?.find((x) => x.id === plain.reasoningEffort);
+      d.effort = e?.name ?? plain.reasoningEffort;
+    }
+    if (plain.permissionPreset) {
+      const p = settingsData?.permissions.find((x) => x.value === plain.permissionPreset);
+      d.permission = p?.name ?? plain.permissionPreset;
+    }
+    return d;
+  };
+
+  /** 思考强度选项——同步计算，零网络（catalog 的档位由宿主用 resolveModelInfo 精确路由解析
+   *  填充，与 Web 选择器同源；实测 MiniMax = Low/Medium/High/Xhigh/Max、Agnes = Off/High）。
+   *  绝不在卡片回调里 await 网络请求：飞书回调窗口约 3s，超时会报「回调服务超时」。 */
+  const effortOptionsFor = (args: SettingsCardOptions): Array<{ label: string; value: string }> =>
+    effortOptions(currentModelValue(args.current, args.catalog), args.catalog);
+
+  // 最近一次工作区切换的来源标题（切换卡「从 X」用；工作区分支写入）
+  let plainWorkspaceTitle = "";
+  /** 本地时间戳（消息里的切换记录用）：2026-11-18 14:38 */
+  const nowStamp = (): string => {
+    const d = new Date();
+    const p = (n: number): string => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  };
+  /** 会话显示名：有标题用标题，无标题用 id 前缀（与「对话」下拉同规则）。 */
+  const sessionDisplayName = (sessionId: string): string => {
+    const row = (settingsData?.sessions ?? []).find((s) => s.sessionId === sessionId);
+    if (row?.title) return row.title;
+    return sessionId.replace(/^session-/, "").slice(0, 13) + "…";
+  };
 
   ctx.effect(() => {
     let dead = false;
@@ -414,6 +1133,11 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         domain: plain.domain === "lark" ? "https://open.larksuite.com" : "https://open.feishu.cn",
         // Group messages always require an @mention; this is not user-configurable.
         policy: { requireMention: plain.requireMention },
+        // feishu_send_media 工具以本地文件路径发图/发文件——SDK 默认拒绝本地媒体源，
+        // 这里显式放行宿主 home、宿主 cwd 与插件默认工作区（个人单机部署的务实白名单）。
+        outbound: {
+          allowedFileDirs: [os.homedir(), process.cwd(), ...(plain.defaultPath ? [plain.defaultPath] : [])],
+        },
         safety: { chatQueue: { enabled: true } },
       });
       channel = chan;
@@ -492,56 +1216,60 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       };
       runManager = new RunManager({
         resolveAgent: async (chatId, title) => {
-          // Reuse existing agent from slot if already created (owned-per-chat).
           const existing = runManager?.getSlot(chatId);
+          if (plain.agentOwnership === "attach-gui") {
+            // attach-gui：共享 GUI 会话，设置入口整体禁用（P0-1 已裁决）。
+            if (!plain.attachSessionId) {
+              throw new Error("[connect-lark] attach-gui requires attachSessionId");
+            }
+            const agent = ctx.agents.get(plain.attachSessionId);
+            if (!agent) throw new Error("[connect-lark] attachSessionId not found in agent registry");
+            // 不 override 权限：attach-gui 共享宿主 GUI 会话，改了会动用户自己的 agent。
+            return { agent, sessionId: plain.attachSessionId, handle: null };
+          }
+          // owned-per-chat：会话 id = 该 chat 的显式会话（「新对话/选历史」= host-uuid，存于 per-chat 状态）
+          // > 确定性默认 connect-lark:<chatId>@<cwdTag(cwd)>。cwd 来自 per-chat 状态（一等公民）。
+          const cwd = currentCwd(chatId);
+          const expectedSessionId = chatState(chatId).sessionId || deterministicSessionId(chatId, cwd);
+          // 一等公民：宿主标准 create + 工作区归属（幂等；不再依赖启动时一次性 bootstrap）。
+          await ensureFirstClass(ctx, expectedSessionId, cwd, title);
           const present = async (sessionId: string) => {
-            if (existing?.titleSet || plain.agentOwnership !== "owned-per-chat") return;
+            if (existing?.titleSet) return;
             try {
-              const cwd = plain.defaultPath || process.cwd();
-              const workspace = ctx.workspaceRegistry.list().find((item: any) => item.path === cwd);
-              if (workspace) await workspace.attachSession(sessionId);
               if (title) await ctx.sessionController.rename({ sessionId, title });
               if (existing) existing.titleSet = true;
             } catch (error) {
               ctx.logger?.warn?.("[connect-lark] session presentation failed: " + (error as Error).message);
             }
           };
-          if (existing?.agent && existing?.sessionId) {
+          // 快路径：同一会话 id 且 agent 还活着 → 直接复用。
+          // 模型/强度/权限是【会话投影】（applyDimension 已写），不再因配置指纹变化而重建会话。
+          if (existing?.agent && existing.sessionId === expectedSessionId) {
+            registerMediaTool(existing.agent, chatId, existing.sessionId);
             await present(existing.sessionId);
             return { agent: existing.agent, sessionId: existing.sessionId, handle: existing.handle };
           }
-          if (plain.agentOwnership === "owned-per-chat") {
-            // 会话 ID 带默认工作区指纹：cwd 是会话的出身属性，resume 不改出身——
-            // 改默认工作区必须换新会话才能生效。指纹用简单多项式即可（只做缓存失效）。
-            const cwdTag = (() => {
-              const path = plain.defaultPath || "";
-              if (!path) return "";
-              let h = 5381;
-              for (let i = 0; i < path.length; i++) h = ((h << 5) + h + path.charCodeAt(i)) >>> 0;
-              return "@" + h.toString(36);
-            })();
-            const sessionId = "connect-lark:" + chatId + cwdTag;
-            const catalog = await ctx.sessionController.modelCatalog();
-            const agentOptions = resolveAgentModelOptions(plain, catalog);
-            const { agent, sessionId: resolvedSessionId, handle } = await createOrResumeAgent(
-              ctx,
-              sessionId,
-              { cwd: plain.defaultPath || undefined },
-              agentOptions,
-              plain.permissionPreset,
-            );
-            await present(resolvedSessionId);
-            return { agent, sessionId: resolvedSessionId, handle };
+          // 会话 id 变化（切工作区/新对话）或 agent 已不在：释放旧 handle，新建/恢复（不 force-push 配置）。
+          if (existing?.handle) {
+            try { await Promise.resolve(existing.handle.dispose()); } catch { /* already gone */ }
+            existing.handle = null;
+            existing.agent = null;
+            existing.sessionId = "";
           }
-          // attach-gui
-          if (!plain.attachSessionId) {
-            throw new Error("[connect-lark] attach-gui requires attachSessionId");
-          }
-          const agent = ctx.agents.get(plain.attachSessionId);
-          if (!agent) throw new Error("[connect-lark] attachSessionId not found in agent registry");
-          // Do NOT apply permissionPreset here: attach-gui shares the host GUI
-          // session, and overriding it would change the user's own agent.
-          return { agent, sessionId: plain.attachSessionId, handle: null };
+          // 新建/恢复会话时带上**插件配置里的模型与权限**（与 Web 设置页同一份配置）：
+          // provider/model 留空 = 跟随 DSH 新会话默认；permissionPreset 留空 = 跟随 DSH 权限。
+          const catalog = await ctx.sessionController.modelCatalog();
+          const agentOptions = resolveAgentModelOptions(plain, catalog);
+          const { agent, sessionId: resolvedSessionId, handle } = await createOrResumeAgent(
+            ctx,
+            expectedSessionId,
+            { cwd },
+            agentOptions,
+            plain.permissionPreset,
+          );
+          await present(resolvedSessionId);
+          registerMediaTool(agent, chatId, resolvedSessionId);
+          return { agent, sessionId: resolvedSessionId, handle };
         },
         buildMessage: (content: any, source: any) => buildUserMessage(content, source),
         subscribe: (agent, targetSessionId, onDelta, onTurnEnd, onError) => {
@@ -563,8 +1291,6 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               onDelta(frame.chunk.text, "text");
             } else if (frame?.type === "chunk" && frame.chunk?.type === "reasoning-delta") {
               onDelta(frame.chunk.text, "reasoning");
-            } else if (frame?.type === "chunk" && frame.chunk?.type === "tool-call-delta") {
-              onDelta("", "tool");
             } else if (frame?.type === "chunk" && frame.chunk?.type === "tool-call-delta") {
               onDelta("", "tool");
             }
@@ -660,8 +1386,26 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
               await sendBounded(chan, slot.chatId, reply);
               return;
             }
+            // 刷新设置卡数据（面板下拉的选项与当前值来自它）；失败时面板降级为占位项
+            await refreshSettingsData();
+            const panelArgs = plain.agentOwnership === "owned-per-chat" ? settingsCardArgs(slot.chatId) : undefined;
+            const effortList = panelArgs ? effortOptionsFor(panelArgs) : undefined;
+            const footer = {
+              statusLine: settingsStatusLine(buildDisplay(slot.chatId), plain.agentOwnership === "attach-gui"),
+              panelArgs: panelArgs ? { ...panelArgs, effortList } : undefined,
+              onBuilt: plain.agentOwnership === "owned-per-chat"
+                ? (card: object) => {
+                  // 上限：长期运行时不无限累积（个人使用 chat 数有限，仍加护栏）
+                  if (lastReplyCards.size > 200) {
+                    const oldest = lastReplyCards.keys().next().value;
+                    if (oldest !== undefined) lastReplyCards.delete(oldest);
+                  }
+                  lastReplyCards.set(slot.chatId, card);
+                }
+                : undefined,
+            };
             try {
-              await finalizeRunCard(slot, plain.thinkingPolicy);
+              await finalizeRunCard(slot, plain.thinkingPolicy, footer);
             } catch (e) {
               const reply = slot.accumulatedText || (slot.failedWith ? friendlyRunFailure(slot.failedWith) : "[connect-lark] 回复未生成");
               await sendBounded(chan, slot.chatId, reply);
@@ -678,8 +1422,27 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         if (!currentAlive()) return;
         if (!passesWhitelist(plain, msg.chatId, msg.senderId, msg.chatType, managerOpenId)) return;
 
+        // 防无界增长：超上限整体清空（chatType 仅 cardAction 鉴权用，miss 时按更严格的
+        // group 规则判，下一条 message 会重新记录——list/restricted 模式最多误拒一次点击）
+        if (chatTypeCache.size > 2000) chatTypeCache.clear();
+        chatTypeCache.set(msg.chatId, msg.chatType);
         const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
         if (!text) return;
+        // Issue #17：高权限档二次确认 —— 仅发起人回复「确认」生效，且不消费进 agent 回合（P1-3）
+        if (plain.agentOwnership === "owned-per-chat" && (text.trim() === "确认" || text.trim().toLowerCase() === "confirm")) {
+          const pending = pendingConfirms.get(msg.chatId);
+          if (pending && pending.openId === msg.senderId && pending.expiresAt > Date.now()) {
+            pendingConfirms.delete(msg.chatId);
+            // 确认 → 写会话投影（一等公民；与卡片下拉同一语义，不写配置/patch/HMR）
+            await applyDimension(chan, msg.chatId, "permission", { permissionPreset: pending.permission });
+            const permName = (settingsData?.permissions ?? []).find((p) => p.value === pending.permission)?.name ?? pending.permission;
+            void Promise.resolve(chan.send(msg.chatId, { markdown: "✅ 已应用权限：" + (permName || "跟随 DSH 默认") })).catch(
+              (e) => ctx.logger?.warn?.("[connect-lark] confirm reply failed: " + (e as Error).message));
+          } else {
+            Promise.resolve(chan.send(msg.chatId, { markdown: "没有待确认的设置，或你不是发起人。" })).catch(() => {});
+          }
+          return;
+        }
 
         // Handle images.
         // content must be ContentBlock[] (not raw string) per UserMessage contract.
@@ -688,8 +1451,9 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         if (images.length > 0) {
           // Gate against the model this chat will actually use. attach-gui lets
           // the host pick the model, so skip the gate there.
-          let gateProvider = plain.provider;
-          let gateModel = plain.model;
+          // 按该 chat 实际使用的模型 gate（插件配置里的模型；未配置则跟随 DSH 默认路由）
+          let gateProvider = plain.provider ?? "";
+          let gateModel = plain.model ?? "";
           let modelCatalogFailed = false;
           if (plain.agentOwnership === "owned-per-chat" && (!gateProvider || !gateModel)) {
             try {
@@ -740,6 +1504,203 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         }
       });
 
+      // 6) 卡片回调：设置入口（open-settings / select 即选即生效 / cancel）—— Issue #17
+      const cardActionHandler = async (evt: any) => {
+        if (!currentAlive()) return;
+        const chatId = evt.chatId;
+        const openId = evt.operator?.openId ?? "";
+        if (!passesWhitelist(plain, chatId, openId, chatTypeCache.get(chatId) ?? "group", managerOpenId)) {
+          return { toast: { type: "error", content: "无权操作设置" } };
+        }
+        const option = evt.action?.option;
+        // 控件标识解析：CardKit 2.0 select_static 回调不携带 action.name（组件 name 仅在
+        // form 容器内生效）——behaviors 自定义回传参数 { value: 控件名 } 是可靠兜底。
+        // action.value 形如 { value: "model" }（select）或 "open-settings"（button）。
+        const rawActionValue = evt.action?.value;
+        const behaviorName = typeof rawActionValue === "object" && rawActionValue !== null
+          ? (rawActionValue as any).value
+          : rawActionValue;
+        const actionName = evt.action?.name;
+        const controlName = (typeof actionName === "string" && actionName)
+          ? actionName
+          : (typeof behaviorName === "string" && behaviorName ? behaviorName : undefined);
+        // 「对话」下拉（面板内嵌）：新对话 / 切到本工作区的历史会话。
+        // 会话绑定存 per-chat 状态（不是配置）——不写 writePluginConfig。
+        if (controlName === "conversation") {
+          if (typeof option !== "string" || option === "") return;
+          if (!dedupClaim(evt.messageId + ":" + controlName + ":" + option)) return;
+          if (option === NEW_CONVERSATION_VALUE) {
+            // 「新对话」= **真正创建全新会话并立即绑定**（不继承任何历史）。
+            // 无绑定时走的是确定性默认会话（connect-lark:chat@工作区）——它**有历史**，
+            // 不能当成「已是新对话」（真机 bug 2026-11-18：误判 no-op 导致继续旧上下文）。
+            // 仅当前会话确实是空会话（从未发过消息）时才是合法 no-op。
+            const boundId = chatState(chatId).sessionId;
+            const targetId = boundId ?? deterministicSessionId(chatId, currentCwd(chatId));
+            const row = (settingsData?.sessions ?? []).find((s) => s.sessionId === targetId);
+            const isBlank = row ? row.blank === true : false;
+            if (isBlank) {
+              return { toast: { type: "success", content: "当前已是新对话（空会话），无需切换" } };
+            }
+            let newId: string | undefined;
+            try {
+              const created: any = await ctx.sessionController.create({ cwd: currentCwd(chatId) });
+              newId = created?.sessionId ?? created?.value?.sessionId;
+              // 挂工作区归属：Web 左栏立即可见（审查 P2；归属失败不阻断）
+              if (newId) {
+                try {
+                  const ws = await ctx.workspaceRegistry?.resolveByPath?.(currentCwd(chatId));
+                  if (ws) await ws.attachSession(newId);
+                } catch { /* 不阻断 */ }
+              }
+            } catch (e2) {
+              // 创建抛错：释放 dedup 键，60s 内可重试（审查 P1-5）
+              dedupTable.delete(evt.messageId + ":" + controlName + ":" + option);
+              return { toast: { type: "error", content: "新会话创建失败：" + (e2 as Error).message + "（请重试）" } };
+            }
+            if (!newId) {
+              dedupTable.delete(evt.messageId + ":" + controlName + ":" + option);
+              return { toast: { type: "error", content: "新会话创建失败，请重试" } };
+            }
+            touchState(chatId, { sessionId: newId, cwd: currentCwd(chatId) });
+            // 立即命名（宿主首条消息自动命名会在首轮覆盖它）
+            try { await ctx.sessionController.rename({ sessionId: newId, title: "新对话" }); } catch { /* 不影响切换 */ }
+            // 切换记录作为**一条消息**发进对话（负责人 2026-11-18：不要只弹 toast）
+            void Promise.resolve(chan.send(chatId, {
+              card: buildSwitchRecordCard("📢 新建对话", "blue", [
+                "✨ 已开启全新会话 · " + nowStamp(),
+                "之后的对话在新会话进行，不继承之前的历史",
+              ]),
+            })).catch(() => {});
+            let rebuilt: object | undefined;
+            try { rebuilt = rebuildReplyCard(chatId); } catch (e2) {
+              ctx.logger?.warn?.("[connect-lark] reply card rebuild failed: " + (e2 as Error).message);
+            }
+            return rebuilt ? { card: { type: "raw", data: rebuilt } } : undefined;
+          }
+          const current = chatState(chatId).sessionId || deterministicSessionId(chatId, currentCwd(chatId));
+          if (option === current) {
+            return { toast: { type: "success", content: "已是当前对话" } };
+          }
+          // 校验会话确实存在于**当前工作区**（settingsData.sessions 是全实例清单，
+          // 含 GUI 会话与其他工作区的会话——只查成员身份会让旧卡片把本 chat
+          // 绑定到任意会话，下一条飞书消息即注入他处上下文，真机审查 P0-1）。
+          // touchState 同时记 known.cwd（会话真实出身），保证后续 resolveAgent 的
+          // meta.cwd 与会话出身一致，而非当前工作区。
+          const known = (settingsData?.sessions ?? []).find((s) => s.sessionId === option);
+          if (!known || known.cwd !== currentCwd(chatId)) {
+            return { toast: { type: "error", content: "该会话不存在或不在当前工作区" } };
+          }
+          const fromTitle = sessionDisplayName(current);
+          const toTitle = known.title || option.replace(/^session-/, "").slice(0, 13) + "…";
+          touchState(chatId, { sessionId: option, cwd: known.cwd });
+          // 切换记录作为**一条消息**发进对话（含时间与从→到）
+          void Promise.resolve(chan.send(chatId, {
+            card: buildSwitchRecordCard("📢 切换对话", "violet", [
+              "从 **" + fromTitle + "** 切换至 **" + toTitle + "** · " + nowStamp(),
+              "下一条消息起在新会话继续，历史与设置保留",
+            ]),
+          })).catch(() => {});
+          let rebuilt: object | undefined;
+          try { rebuilt = rebuildReplyCard(chatId); } catch (e2) {
+            ctx.logger?.warn?.("[connect-lark] reply card rebuild failed: " + (e2 as Error).message);
+          }
+          return rebuilt ? { card: { type: "raw", data: rebuilt } } : undefined;
+        }
+        if (controlName === "workspace" || controlName === "model" || controlName === "effort" || controlName === "permission") {
+          if (typeof option !== "string" || option === "") return;
+          if (!dedupClaim(evt.messageId + ":" + controlName + ":" + option)) return;
+          const prevDisplay = buildDisplay(chatId);
+          const result = applySelect(chatId, controlName, option, openId);
+          if (result.error) return { toast: { type: "error", content: result.error } };
+          if (result.switchedWorkspace) {
+            // 切换记录（含新工作区对话下拉的可交互卡片）由 applyDimension 发送，此处不再重复
+          }
+          if (result.pendingHigh) {
+            return { toast: { type: "warning", content: "已选择高权限档，回复「确认」以应用（仅发起人，30s 内）" } };
+          }
+          if (!result.partial) return;
+          // 强度校验：档位必须属于当前模型，否则 DSH 会拒绝（真机实证：
+          // provider "agnes" model "agnes-3.0-flash" does not support reasoning effort "max"）。
+          // 校验用「已生效配置 + 本次待写候选」的合并视图——不能只看配置：
+          // 持久化是异步的（fire-and-forget），刚选的模型尚未落盘时按旧模型校验会误拒。
+          if (controlName === "effort" && result.partial.reasoningEffort) {
+            // 校验用「已生效配置 + 本次待写候选」的合并视图（刚切的模型已反映在候选里）
+            const allowed = effortOptionsFor(settingsCardArgs(chatId, {
+              provider: result.partial.provider ?? plain.provider,
+              model: result.partial.model ?? plain.model,
+              reasoningEffort: result.partial.reasoningEffort,
+            })).map((o) => o.value);
+            // 只有在「catalog 已知该模型的档位」时才拦截；catalog 缺失（未刷新/
+            // 未知模型）时放行 —— 由 DSH 自己在请求时给出明确错误，比误拒更好。
+            const knowsModel = allowed.length > 1;
+            if (knowsModel && !allowed.includes(result.partial.reasoningEffort)) {
+              return { toast: { type: "error", content: "当前模型不支持该思考强度，请先切换模型" } };
+            }
+          }
+          // 写插件配置（与 Web 设置页同一份）+ 让当前会话立即生效（失败发通知）。
+          // 透传 dedup 键：失败时释放，允许用户立即重试（审查 P1-5）。
+          // 工作区切换的记录（可交互卡片）由 applyDimension 发送——此处不回 toast。
+          void applyDimension(chan, chatId, controlName, result.partial, evt.messageId + ":" + controlName + ":" + option);
+          if (controlName === "workspace") return;
+          const dimLabels: Record<string, string> = { workspace: "工作区", model: "模型", effort: "思考强度", permission: "权限" };
+          const field: string = controlName;
+          const prevLabel = (prevDisplay as any)?.[field] ?? "跟随 DSH 默认";
+          const switchToast = { type: "success", content: prevLabel === nextLabelOf(field, result.partial)
+            ? "✅ 已设置（已保存到插件配置，Web 设置页同步可见）"
+            : "✅ " + dimLabels[controlName] + "已切换：" + prevLabel + " → " + nextLabelOf(field, result.partial) + "（已保存到插件配置，Web 设置页同步可见）" };
+          // 模型切换：面板按新模型同步重建（档位立刻跟随所选模型）→ 就地返回卡片（零 await、零网络）
+          let panel: object | undefined;
+          if (controlName === "model" && result.partial.provider && result.partial.model) {
+            // 换模型：强度清空（与 applySelect 的 partial 一致）——否则 initial_option 会指向
+            // 旧模型的档位值，可能不在新模型的 options 里（独立审查 P1-2）。
+            panel = rebuildReplyCard(chatId, {
+              provider: result.partial.provider,
+              model: result.partial.model,
+              reasoningEffort: "",
+            });
+          } else {
+            try { rebuildReplyCard(chatId); } catch (e) {
+              ctx.logger?.warn?.("[connect-lark] reply card rebuild failed: " + (e as Error).message);
+            }
+          }
+          return panel
+            ? { toast: switchToast, card: { type: "raw", data: panel } }
+            : { toast: switchToast };
+        }
+        // button 回调：action.value = { value: "open-settings" | "cancel-settings" }
+        const rawValue = evt.action?.value;
+        const kind = typeof rawValue === "object" && rawValue !== null ? (rawValue as any).value : rawValue;
+        if (typeof kind !== "string" || kind.length === 0) return;
+        if (!dedupClaim(evt.messageId + ":" + kind)) return;
+        // 历史「取消」按钮（旧版选择卡）仍需响应
+        if (kind === CANCEL_SETTINGS_VALUE) {
+          return { toast: { type: "info", content: "已关闭" } };
+        }
+        // P5：审批按钮（approve:<callId> / reject:<callId>）
+        if (kind.startsWith("approve:") || kind.startsWith("reject:")) {
+          const callId = kind.slice(kind.indexOf(":") + 1);
+          const pending = pendingApprovals.get(callId);
+          if (!pending) return { toast: { type: "error", content: "审批已失效或已处理" } };
+          pendingApprovals.delete(callId);
+          const outcome = kind.startsWith("approve:") ? "allowed-once" : "rejected";
+          pending.resolve(outcome);
+          // 就地更新审批卡为终态（不消失、不撤回）
+          if (pending.messageId) {
+            void Promise.resolve(chan.updateCard(pending.messageId, buildApprovalFinalCard(pending.toolName, outcome)))
+              .catch((e) => ctx.logger?.warn?.("[connect-lark] approval card final update failed: " + (e as Error).message));
+          }
+          return { toast: { type: "success", content: outcome === "allowed-once" ? "✅ 已同意" : "⛔ 已拒绝" } };
+        }
+        // 未识别的按钮：旧版卡片的回调已随面板重构移除，提示用户用最新卡片
+        return { toast: { type: "info", content: "该按钮来自旧版卡片，请展开最新回复卡操作" } };
+      };
+      unsubCardAction = chan.on("cardAction", cardActionHandler);
+
+      // boot 时刷新设置数据（模型目录/权限档/工作区）。
+      // 为什么必须在这里刷新：卡片切换会重载本 entry → 新实例的缓存是空的，
+      // 而 refreshSettingsData 原本只在「回复结束」时调用 → 切换后面板没有模型/
+      // 档位选项、强度校验还会误拒（真机实证 2026-11-15：切模型后选 medium 被拒）。
+      void refreshSettingsData().catch(() => {});
       ctx.logger?.info?.("[connect-lark] ready");
     };
 
@@ -749,6 +1710,8 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       unsubEvents = [];
       if (unsubMessage) try { unsubMessage(); } catch { /* already gone */ }
       unsubMessage = null;
+      if (unsubCardAction) try { unsubCardAction(); } catch { /* already gone */ }
+      unsubCardAction = null;
       const chan = channel;
       channel = null;
       const manager = runManager;
@@ -764,6 +1727,13 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         manager ? Promise.resolve(manager.disposeAll()) : Promise.resolve(),
         directory ? Promise.resolve(directory.close()) : Promise.resolve(),
       ]);
+      sessionChat.clear();
+      mediaRegistered.clear();
+      // P5：清理未决审批（resolve 为 cancelled，不挂死 agent）
+      for (const [, p] of pendingApprovals) {
+        try { p.resolve("cancelled"); } catch { /* already settled */ }
+      }
+      pendingApprovals.clear();
     };
 
     const queueBoot = () => {
@@ -775,7 +1745,22 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       });
     };
 
-    const unsubVolatile = ctx.on("loader/volatile-update", queueBoot);
+    // 配置热更新分流（**卡片与 Web 设置页写的是同一份配置**，都走这里）：
+    // - 连接级字段（appId/密钥/域名/所有权等）→ queueBoot 全量重连；
+    // - 其余字段（defaultPath / provider / model / 思考强度 / 权限）→ 热应用：
+    //   只更新 plain 快照，不重连（避免重连窗口丢失消息/回调）。
+    //   这五个字段是插件配置本身：下一条新会话按它们创建，卡片显示的也是它们。
+    const unsubVolatile = ctx.on("loader/volatile-update", (paths: readonly (readonly string[])[]) => {
+      const fields = new Set((paths ?? []).map((p) => Array.isArray(p) ? p[p.length - 1] : String(p)));
+      const RECONNECT_FIELDS = new Set(["enabled", "appId", "appSecretRef", "domain", "agentOwnership", "attachSessionId", "requireMention"]);
+      const needsReconnect = [...fields].some((f) => RECONNECT_FIELDS.has(f));
+      if (needsReconnect) { queueBoot(); return; }
+      plain = plainConfig(config); // 热应用：刷新插件配置快照（resolveAgent/面板读取）
+      ctx.logger?.info?.("[connect-lark] hot config update (no reconnect): " + [...fields].join(", "));
+    });
+
+    // P5 审批监听器在 apply() 顶层注册（见下），此处不再重复注册。
+
     queueBoot();
 
     return async () => { // disposer
@@ -786,6 +1771,55 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       ctx.logger?.info?.("[connect-lark] disposed");
     };
   });
+
+  // ---- P5 审批：宿主级 waterfall 事件（apply 顶层注册，跨 boot/cleanup 存活）----
+  // 只答自己 agent 的审批（sessionChat 里有该 sessionId → chatId 的归属）；
+  // 其他 agent（如 Web 会话）的审批交给其他 answerer（next()）。
+  //
+  // **必须 prepend**：approval/request 是 waterfall，先问先答者胜。宿主自带的
+  // Web/remote answerer（dsh-api-remotes 把审批转发给 Web UI 客户端）注册更早，
+  // 一旦它挂起等人点，插件就永远轮不到 —— 真机实测：审批请求已产生
+  // （会话日志有 approval/asked、无 decided），但飞书收不到审批卡。
+  // prepend 把本监听器插到 waterfall 最前，抢在 Web answerer 之前。
+  ctx.on("approval/request", (req: any, next: () => Promise<"allowed-once" | "rejected" | "cancelled">) => {
+      const sid = req?.agent?.session?.id;
+      const chatId = sessionChat.get(sid);
+      if (!chatId) return next(); // 非本插件 agent → 不干预
+      if (!channel) return Promise.resolve("cancelled"); // 通道未就绪 → 取消（不挂死 agent）
+      // callId 缺省时用匿名序号：两个缺 callId 的审批不能共用 key ""（审查 P1-6）
+      const callId = req?.callId || "anon-" + (++approvalSeq);
+      return new Promise<"allowed-once" | "rejected" | "cancelled">((resolve) => {
+        // 先清理过期审批（防残留）
+        const now = Date.now();
+        for (const [cid, p] of pendingApprovals) if (p.expiresAt <= now) pendingApprovals.delete(cid);
+        pendingApprovals.set(callId, { resolve, chatId, messageId: "", toolName: req?.toolName ?? "", expiresAt: now + APPROVAL_TTL_MS });
+        // 发审批卡（异步，不阻塞 listener 返回——Promise 已挂起等按钮）
+        void (async () => {
+          try {
+            const sent = await withTimeout(channel!.send(chatId, { card: buildApprovalCard(req?.toolName ?? "", req?.reason ?? req?.displayReason?.en, callId) }), 15_000);
+            if (sent.ok) {
+              const mid = (sent.value as any)?.messageId;
+              const pending = pendingApprovals.get(callId);
+              if (pending) pending.messageId = mid ?? "";
+            } else {
+              // 发卡失败 → 直接取消（不挂死）
+              const pending = pendingApprovals.get(callId);
+              if (pending) { pendingApprovals.delete(callId); pending.resolve("cancelled"); }
+            }
+          } catch (e) {
+            ctx.logger?.warn?.("[connect-lark] approval card send failed: " + (e as Error).message);
+            const pending = pendingApprovals.get(callId);
+            if (pending) { pendingApprovals.delete(callId); pending.resolve("cancelled"); }
+          }
+        })();
+        // TTL 兜底：超时未点 → 取消（不挂死 agent）
+        const timer = setTimeout(() => {
+          const pending = pendingApprovals.get(callId);
+          if (pending) { pendingApprovals.delete(callId); pending.resolve("cancelled"); }
+        }, APPROVAL_TTL_MS);
+        timer.unref?.();
+      });
+  }, { prepend: true });
 }
 
 // ---- Content extraction helpers ----
@@ -815,6 +1849,14 @@ function extractImages(msg: any): Array<{ fileKey: string }> {
 
 // ---- Re-exports (for tests + consumers) ----
 export { richCard, streamMarkdown } from "./cards.js";
+export {
+  buildApprovalCard, buildApprovalFinalCard, buildSettingsPanel,
+  currentModelValue, effortOptions, modelOptions, settingsStatusLine,
+  CANCEL_SETTINGS_VALUE, DEFAULT_OPTION_VALUE,
+} from "./cards.js";
+export type { SettingsCardOptions, SettingsDisplay } from "./cards.js";
+export { cwdTag } from "./overrides.js";
+export { loadStates, saveStates, defaultStatePath, type ChatState, type ChatStateMap } from "./session-map.js";
 export { admitImage, buildImageContent, IMAGE_UNSUPPORTED_REPLY, downloadImageBounded, downloadInboundImage, MAX_IMAGE_BYTES, FEISHU_CDN_HOSTS } from "./images.js";
 export { RunManager } from "./run.js";
 export { fetchDirectoryUsers, listDirectoryUsers } from "./users.js";
@@ -827,6 +1869,8 @@ export type { RunSlot, RunState, RunManagerOptions } from "./run.js";
 
 export const CONTRACT_NOTES = {
   createAgent: "ctx.agents.create({ sessionId, meta: { cwd }, agentOptions: { provider, model } })",
+  modelOverride: "agent.model.select({ provider, model, reasoningEffort }) — 纯会话投影；禁 sessionController.selectModel（其实现会 agentDefaultModel.saveSelection 写全局默认）",
+  settingsCard: "chan.send(chatId, { card }) 发配置卡；select_static 回调 action.name/action.option；CardActionResponse 就地更新 { card: { type: 'raw', data } }",
   userMessage: "createUserMessage({ content, source: { kind: \"user\" } }) from @deepseek-ai/dsh-llm",
   drive: "handle.agent.followup(message) — AgentHandle has no followup(); returns void",
   events: "agent/assistant-stream, agent/inbox/claimed, agent/error, session/event turn/start + turn/end",
