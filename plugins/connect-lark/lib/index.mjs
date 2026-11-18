@@ -223,22 +223,19 @@ function settingsSelectElements(opts) {
 *  每组一个 column_set（左列 label+select，右列 label+select）。
 *  label 用粗体（保守样式：text_tag/font 在真机 2.0 渲染不稳，2026-11-18 实测回退）。 */
 function settingsGroupRow(left, right) {
-	const column = (label, select) => ({
+	const column = (label, color, select) => ({
 		tag: "column",
 		width: "weighted",
 		weight: 1,
 		elements: [{
-			tag: "div",
-			text: {
-				tag: "lark_md",
-				content: "**" + label + "**"
-			}
+			tag: "markdown",
+			content: "<text_tag color='" + color + "'>" + label + "</text_tag>"
 		}, select]
 	});
 	return {
 		tag: "column_set",
 		flex_mode: "stretch",
-		columns: [column(left.label, left.select), column(right.label, right.select)]
+		columns: [column(left.label, left.color, left.select), column(right.label, right.color, right.select)]
 	};
 }
 /** 会话 select：新对话 + 本工作区历史会话（带标题），initial 指向当前绑定。
@@ -264,11 +261,8 @@ function buildSettingsPanel(opts) {
 	const selects = settingsSelectElements(opts);
 	const elements = [
 		{
-			tag: "div",
-			text: {
-				tag: "lark_md",
-				content: "选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效"
-			}
+			tag: "markdown",
+			content: "<font color='grey'>选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效</font>"
 		},
 		{
 			tag: "column_set",
@@ -279,11 +273,8 @@ function buildSettingsPanel(opts) {
 				weight: 1,
 				elements: [
 					{
-						tag: "div",
-						text: {
-							tag: "lark_md",
-							content: "**对话**"
-						}
+						tag: "markdown",
+						content: "<text_tag color='indigo'>对话</text_tag>"
 					},
 					conversationSelect(opts),
 					...(opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0) ? [{
@@ -295,25 +286,26 @@ function buildSettingsPanel(opts) {
 		},
 		settingsGroupRow({
 			label: "模型",
+			color: "blue",
 			select: selects[1]
 		}, {
 			label: "思考强度",
+			color: "turquoise",
 			select: selects[2]
 		}),
 		settingsGroupRow({
 			label: "工作区",
+			color: "green",
 			select: selects[0]
 		}, {
 			label: "权限",
+			color: "orange",
 			select: selects[3]
 		})
 	];
 	if (opts.hasPendingPermission) elements.push({
-		tag: "div",
-		text: {
-			tag: "lark_md",
-			content: "⚠️ 高权限档待确认：回复**确认**以应用（仅发起人有效，30s 内）。"
-		}
+		tag: "markdown",
+		content: "<font color='red'>⚠️ 高权限档待确认：回复**确认**以应用（仅发起人有效，30s 内）</font>"
 	});
 	opts.titleError && "" + opts.titleError;
 	return {
@@ -322,8 +314,8 @@ function buildSettingsPanel(opts) {
 		vertical_spacing: "8px",
 		header: {
 			title: {
-				tag: "plain_text",
-				content: "⚙️ 会话设置"
+				tag: "markdown",
+				content: "⚙️ **会话设置**"
 			},
 			background_color: "grey",
 			vertical_align: "center",

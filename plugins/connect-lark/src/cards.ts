@@ -281,22 +281,22 @@ function settingsSelectElements(opts: SettingsCardOptions): Array<Record<string,
  *  每组一个 column_set（左列 label+select，右列 label+select）。
  *  label 用粗体（保守样式：text_tag/font 在真机 2.0 渲染不稳，2026-11-18 实测回退）。 */
 function settingsGroupRow(
-  left: { label: string; select: Record<string, unknown> },
-  right: { label: string; select: Record<string, unknown> },
+  left: { label: string; color: string; select: Record<string, unknown> },
+  right: { label: string; color: string; select: Record<string, unknown> },
 ): Record<string, unknown> {
-  const column = (label: string, select: Record<string, unknown>) => ({
+  const column = (label: string, color: string, select: Record<string, unknown>) => ({
     tag: "column",
     width: "weighted",
     weight: 1,
     elements: [
-      { tag: "div", text: { tag: "lark_md", content: "**" + label + "**" } },
+      { tag: "markdown", content: "<text_tag color='" + color + "'>" + label + "</text_tag>" },
       select,
     ],
   });
   return {
     tag: "column_set",
     flex_mode: "stretch",
-    columns: [column(left.label, left.select), column(right.label, right.select)],
+    columns: [column(left.label, left.color, left.select), column(right.label, right.color, right.select)],
   };
 }
 
@@ -323,13 +323,13 @@ export function buildSettingsPanel(opts: SettingsCardOptions): Record<string, un
   const selects = settingsSelectElements(opts);
   const chatSelect = conversationSelect(opts);
   const elements: Array<Record<string, unknown>> = [
-    // 引导行：说明语义而非口号
-    { tag: "div", text: { tag: "lark_md", content: "选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效" } },
+    // 引导行：说明语义而非口号（浅色底上用深灰保证可读）
+    { tag: "markdown", content: "<font color='grey'>选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效</font>" },
     // 对话独占一行：标题 + 下拉（带标题的历史会话）
     { tag: "column_set", flex_mode: "stretch", columns: [{
       tag: "column", width: "weighted", weight: 1,
       elements: [
-        { tag: "div", text: { tag: "lark_md", content: "**对话**" } },
+        { tag: "markdown", content: "<text_tag color='indigo'>对话</text_tag>" },
         chatSelect,
         ...((opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0)
           ? [{ tag: "markdown", content: "<font color='grey'>本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉列出其中带标题的 " + (opts.chatSessions?.length ?? 0) + " 个</font>" }]
@@ -337,18 +337,18 @@ export function buildSettingsPanel(opts: SettingsCardOptions): Record<string, un
       ],
     }] },
     settingsGroupRow(
-      { label: "模型", select: selects[1] },
-      { label: "思考强度", select: selects[2] },
+      { label: "模型", color: "blue", select: selects[1] },
+      { label: "思考强度", color: "turquoise", select: selects[2] },
     ),
     settingsGroupRow(
-      { label: "工作区", select: selects[0] },
-      { label: "权限", select: selects[3] },
+      { label: "工作区", color: "green", select: selects[0] },
+      { label: "权限", color: "orange", select: selects[3] },
     ),
   ];
   if (opts.hasPendingPermission) {
     elements.push({
-      tag: "div",
-      text: { tag: "lark_md", content: "⚠️ 高权限档待确认：回复**确认**以应用（仅发起人有效，30s 内）。" },
+      tag: "markdown",
+      content: "<font color='red'>⚠️ 高权限档待确认：回复**确认**以应用（仅发起人有效，30s 内）</font>",
     });
   }
   const overflow: Array<Record<string, unknown>> = opts.titleError
@@ -359,7 +359,7 @@ export function buildSettingsPanel(opts: SettingsCardOptions): Record<string, un
     expanded: false,
     vertical_spacing: "8px",
     header: {
-      title: { tag: "plain_text", content: "⚙️ 会话设置" },
+      title: { tag: "markdown", content: "⚙️ **会话设置**" },
       background_color: "grey",
       vertical_align: "center",
       padding: "6px 0px 6px 10px",

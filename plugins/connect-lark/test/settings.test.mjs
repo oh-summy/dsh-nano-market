@@ -821,7 +821,7 @@ test("apply: finished reply card carries status line and the inline settings pan
       if (el.tag === "select_static") selects.push(el);
     }
     assert.deepEqual(selects.map((s) => s.name), ["conversation", "model", "effort", "workspace", "permission"], "grouped row order");
-    assert.match(JSON.stringify(panel.elements), /\*\*模型\*\*/, "panel labels present above selects");
+    assert.match(JSON.stringify(panel.elements), /<text_tag color='blue'>模型<\/text_tag>/, "panel labels present above selects (colored tags)");
     const modelSel = selects.find((s) => s.name === "model");
     assert.equal(modelSel.initial_option, "kimi:k3.1-pro", "panel reflects the override");
     assert.ok(!finalCard.body.elements.some((e) => e.tag === "div" && String(e.text?.content || "").startsWith("⚙️")), "status line no longer inside body");
