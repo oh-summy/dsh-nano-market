@@ -232,7 +232,7 @@ function settingsRow(items) {
 		flex_mode: "none",
 		columns: items.map((it) => [{
 			tag: "column",
-			width: "56px",
+			width: "auto",
 			horizontal_align: "right",
 			vertical_align: "center",
 			elements: [{
@@ -292,7 +292,7 @@ function buildSwitchRecordCard(headerTitle, template, markdownLines, opts) {
 *  选历史会话接回（负责人 2026-11-18：每个工作区与会话完全绑定）。 */
 function buildWorkspaceSwitchCard(fromTitle, toTitle, sessions) {
 	const options = [{
-		label: "🆕 使用新对话（默认）",
+		label: "✨ 使用新对话（默认）",
 		value: NEW_CONVERSATION_VALUE
 	}];
 	for (const s of sessions.slice(0, 12)) {
@@ -2606,7 +2606,7 @@ function apply(ctx, config = {}) {
 								title: "新对话"
 							});
 						} catch {}
-						Promise.resolve(chan.send(chatId, { card: buildSwitchRecordCard("📢 新建对话", "blue", ["🆕 已开启全新会话 · " + nowStamp(), "之后的对话在新会话进行，不继承之前的历史"]) })).catch(() => {});
+						Promise.resolve(chan.send(chatId, { card: buildSwitchRecordCard("📢 新建对话", "blue", ["✨ 已开启全新会话 · " + nowStamp(), "之后的对话在新会话进行，不继承之前的历史"]) })).catch(() => {});
 						let rebuilt;
 						try {
 							rebuilt = rebuildReplyCard(chatId);

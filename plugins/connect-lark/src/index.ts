@@ -1553,7 +1553,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
             // 切换记录作为**一条消息**发进对话（负责人 2026-11-18：不要只弹 toast）
             void Promise.resolve(chan.send(chatId, {
               card: buildSwitchRecordCard("📢 新建对话", "blue", [
-                "🆕 已开启全新会话 · " + nowStamp(),
+                "✨ 已开启全新会话 · " + nowStamp(),
                 "之后的对话在新会话进行，不继承之前的历史",
               ]),
             })).catch(() => {});

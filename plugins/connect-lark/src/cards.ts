@@ -287,7 +287,7 @@ function settingsSelectElements(opts: SettingsCardOptions): Array<Record<string,
 function settingsRow(items: Array<{ label: string; color: string; select: Record<string, unknown> }>): Record<string, unknown> {
   const columns = items.map((it) => [
     // 标签列固定宽 + 标签居中：两字/三字标签的两侧空隙对称，组内贴合度一致（真机反馈 2026-11-18）
-    { tag: "column", width: "56px", horizontal_align: "right", vertical_align: "center",
+    { tag: "column", width: "auto", horizontal_align: "right", vertical_align: "center",
       elements: [{ tag: "markdown", content: "<text_tag color='" + it.color + "'>" + it.label + "</text_tag>" }] },
     { tag: "column", width: "weighted", weight: 1, vertical_align: "center", horizontal_spacing: "small", elements: [it.select] },
   ]).flat();
@@ -327,7 +327,7 @@ export function buildWorkspaceSwitchCard(
   sessions: ReadonlyArray<{ sessionId: string; title: string; updatedAt?: number }>,
 ): Record<string, unknown> {
   const options: Array<{ label: string; value: string }> = [
-    { label: "🆕 使用新对话（默认）", value: NEW_CONVERSATION_VALUE },
+    { label: "✨ 使用新对话（默认）", value: NEW_CONVERSATION_VALUE },
   ];
   for (const s of sessions.slice(0, 12)) {
     const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 8) + "…";
