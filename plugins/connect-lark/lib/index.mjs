@@ -277,13 +277,20 @@ function buildSettingsPanel(opts) {
 				tag: "column",
 				width: "weighted",
 				weight: 1,
-				elements: [{
-					tag: "div",
-					text: {
-						tag: "lark_md",
-						content: "**对话**"
-					}
-				}, conversationSelect(opts)]
+				elements: [
+					{
+						tag: "div",
+						text: {
+							tag: "lark_md",
+							content: "**对话**"
+						}
+					},
+					conversationSelect(opts),
+					...(opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0) ? [{
+						tag: "markdown",
+						content: "<font color='grey'>本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉列出其中带标题的 " + (opts.chatSessions?.length ?? 0) + " 个</font>"
+					}] : []
+				]
 			}]
 		},
 		settingsGroupRow({
@@ -308,20 +315,7 @@ function buildSettingsPanel(opts) {
 			content: "⚠️ 高权限档待确认：回复**确认**以应用（仅发起人有效，30s 内）。"
 		}
 	});
-	const overflow = (opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0) ? [{
-		tag: "div",
-		text: {
-			tag: "lark_md",
-			content: "（本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉显示最近 " + (opts.chatSessions?.length ?? 0) + " 个）"
-		}
-	}] : [];
-	if (opts.titleError) overflow.push({
-		tag: "div",
-		text: {
-			tag: "lark_md",
-			content: "（标题读取：" + opts.titleError + "）"
-		}
-	});
+	opts.titleError && "" + opts.titleError;
 	return {
 		tag: "collapsible_panel",
 		expanded: false,
@@ -331,14 +325,16 @@ function buildSettingsPanel(opts) {
 				tag: "plain_text",
 				content: "⚙️ 会话设置"
 			},
+			background_color: "grey",
 			vertical_align: "center",
+			padding: "6px 0px 6px 10px",
 			icon: {
 				tag: "standard_icon",
 				token: "down-small_outlined"
 			},
 			icon_position: "follow"
 		},
-		elements: [...elements, ...overflow]
+		elements
 	};
 }
 /** CardKit 2.0 select_static: the component fires card.action.trigger by
@@ -1496,7 +1492,8 @@ async function listSessions(ctx, limit = HISTORY_LIMIT, cwdFilter, coldRead = tr
 			sessionId: r.sessionId ?? r.id,
 			title: r.projections?.values?.title ?? r.title ?? "",
 			cwd: typeof r.cwd === "string" ? r.cwd : void 0,
-			updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0
+			updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
+			blank: typeof r.blank === "boolean" ? r.blank : void 0
 		}));
 		const scoped = (cwdFilter === void 0 ? mapped : mapped.filter((s) => s.cwd === cwdFilter)).sort((a, b) => b.updatedAt - a.updatedAt);
 		const total = scoped.length;
@@ -1923,7 +1920,7 @@ function apply(ctx, config = {}) {
 	};
 	const refreshSettingsData = async () => {
 		try {
-			const [catalog, sessions] = await Promise.all([ctx.sessionController.modelCatalog(), listSessions(ctx, 300, void 0, 30).catch(() => ({
+			const [catalog, sessions] = await Promise.all([ctx.sessionController.modelCatalog(), listSessions(ctx, 300, void 0, 80).catch(() => ({
 				sessions: [],
 				total: 0,
 				titleError: "list threw in refresh"
@@ -1960,7 +1957,7 @@ function apply(ctx, config = {}) {
 		const effort = overrides?.reasoningEffort !== void 0 ? overrides.reasoningEffort : plain.reasoningEffort ?? "";
 		const hasModel = Boolean(provider && model);
 		const currentSessionId = st.sessionId || deterministicSessionId(chatId, wsPath || process.cwd());
-		const chatSessions = (settingsData?.sessions ?? []).filter((s) => wsPath === void 0 || s.cwd === wsPath).slice(0, 15).map((s) => ({
+		const chatSessions = (settingsData?.sessions ?? []).filter((s) => (wsPath === void 0 || s.cwd === wsPath) && s.blank !== true && (s.sessionId === currentSessionId || s.title !== "" && !s.title.startsWith("未命名对话"))).slice(0, 15).map((s) => ({
 			sessionId: s.sessionId,
 			title: s.title,
 			cwd: s.cwd
@@ -2097,6 +2094,11 @@ function apply(ctx, config = {}) {
 			try {
 				const cwd = currentCwd(chatId);
 				const id = chatState(chatId).sessionId || deterministicSessionId(chatId, cwd);
+				const row = settingsData?.sessions.find((s) => s.sessionId === id);
+				if (row ? row.blank === true : ctx.agents?.get?.(id) === void 0) {
+					ctx.logger?.info?.("[connect-lark] target session is blank; skip projection (config will apply at creation) id=" + id + " rowBlank=" + (row ? String(row.blank) : "missing"));
+					return;
+				}
 				await ensureFirstClass(ctx, id, cwd);
 				const { agent } = await createOrResumeAgent(ctx, id, { cwd }, {}, plain.permissionPreset);
 				if (controlName === "model" || controlName === "effort") {

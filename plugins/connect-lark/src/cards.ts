@@ -331,6 +331,9 @@ export function buildSettingsPanel(opts: SettingsCardOptions): Record<string, un
       elements: [
         { tag: "div", text: { tag: "lark_md", content: "**对话**" } },
         chatSelect,
+        ...((opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0)
+          ? [{ tag: "markdown", content: "<font color='grey'>本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉列出其中带标题的 " + (opts.chatSessions?.length ?? 0) + " 个</font>" }]
+          : []),
       ],
     }] },
     settingsGroupRow(
@@ -348,23 +351,22 @@ export function buildSettingsPanel(opts: SettingsCardOptions): Record<string, un
       text: { tag: "lark_md", content: "⚠️ 高权限档待确认：回复**确认**以应用（仅发起人有效，30s 内）。" },
     });
   }
-  const overflow: Array<Record<string, unknown>> = (opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0)
-    ? [{ tag: "div", text: { tag: "lark_md", content: "（本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉显示最近 " + (opts.chatSessions?.length ?? 0) + " 个）" } }]
+  const overflow: Array<Record<string, unknown>> = opts.titleError
+    ? [{ tag: "div", text: { tag: "lark_md", content: "（标题读取：" + opts.titleError + "）" } }]
     : [];
-  if (opts.titleError) {
-    overflow.push({ tag: "div", text: { tag: "lark_md", content: "（标题读取：" + opts.titleError + "）" } });
-  }
   return {
     tag: "collapsible_panel",
     expanded: false,
     vertical_spacing: "8px",
     header: {
       title: { tag: "plain_text", content: "⚙️ 会话设置" },
+      background_color: "grey",
       vertical_align: "center",
+      padding: "6px 0px 6px 10px",
       icon: { tag: "standard_icon", token: "down-small_outlined" },
       icon_position: "follow",
     },
-    elements: [...elements, ...overflow],
+    elements,
   };
 }
 

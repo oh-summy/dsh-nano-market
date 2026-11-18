@@ -363,6 +363,9 @@ async function listSessions(ctx: AnyCtx, limit: number = HISTORY_LIMIT, cwdFilte
         title: r.projections?.values?.title ?? r.title ?? "",
         cwd: typeof r.cwd === "string" ? r.cwd : undefined,
         updatedAt: typeof r.updatedAt === "number" ? r.updatedAt : 0,
+        // blank = 空会话（从未发过消息）：卡片操作会经 ensureFirstClass 创建空会话，
+        // 它们既无标题也无历史，对话下拉里纯属噪音（真机实证 2026-11-18）。
+        blank: typeof r.blank === "boolean" ? r.blank : undefined,
       }));
     // 工作区过滤：对话下拉只列**当前工作区**的会话（负责人 2026-11-18 需求）。
     // cwd 未知的会话不列入（无法证明属于本工作区）。
@@ -772,7 +775,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
     permissions: Array<{ value: string; name: string }>;
     defaultPermission: string;
     /** 全量会话（未按工作区过滤，面板按当前 cwd 过滤后进「对话」下拉） */
-    sessions: Array<{ sessionId: string; title: string; cwd?: string; updatedAt: number }>;
+    sessions: Array<{ sessionId: string; title: string; cwd?: string; updatedAt: number; blank?: boolean }>;
     sessionsTotal: number;
     titleError?: string;
   } | null = null;
@@ -806,7 +809,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         ctx.sessionController.modelCatalog(),
         // 全量 300 条 + 只批量冷读最近 30 条的标题（一次 corpus 观测）——
         // 对话下拉按工作区过滤后通常都在最近 30 条里；list 投影本身不带标题
-        listSessions(ctx, 300, undefined, 30).catch(() => ({ sessions: [], total: 0, titleError: "list threw in refresh" })),
+        listSessions(ctx, 300, undefined, 80).catch(() => ({ sessions: [], total: 0, titleError: "list threw in refresh" })),
       ]);
       const workspaces = (ctx.workspaceRegistry?.list?.() ?? []).map((w: any) => ({ id: w.id, title: w.title, path: w.path }));
       const permCat = ctx.permissionPresets?.catalog?.() ?? { options: [], defaultPreset: "" };
@@ -835,8 +838,13 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
     const hasModel = Boolean(provider && model);
     // 对话下拉：当前工作区的会话（投影已带标题），最近优先，最多 15 条
     const currentSessionId = st.sessionId || deterministicSessionId(chatId, wsPath || process.cwd());
+    // 只显示「有标题」的会话 + 当前会话：无标题的空槽（宿主 GUI 预建、卡片操作残留）
+    // 没有可辨认的名字，列出来全是「未命名对话」噪音（真机反馈 2026-11-18）。
+    // 标题来源 = 最近 80 条的批量冷读；更老的会话不进下拉（可在 Web 端查看）。
     const chatSessions = (settingsData?.sessions ?? [])
-      .filter((s) => wsPath === undefined || s.cwd === wsPath)
+      .filter((s) => (wsPath === undefined || s.cwd === wsPath)
+        && s.blank !== true
+        && (s.sessionId === currentSessionId || (s.title !== "" && !s.title.startsWith("未命名对话"))))
       .slice(0, 15)
       .map((s) => ({ sessionId: s.sessionId, title: s.title, cwd: s.cwd }));
     // 当前会话必须始终在候选里（list 投影偶发缺行时兜底；label 走 id）
@@ -986,6 +994,15 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       try {
         const cwd = currentCwd(chatId);
         const id = chatState(chatId).sessionId || deterministicSessionId(chatId, cwd);
+        // 目标会话是【空会话】（从未发过消息）时跳过投影：为投影而创建空会话
+        // 会在历史清单里堆积「未命名对话」（真机实证 2026-11-18），而配置在
+        // 下一条消息创建会话时本就会带上（agentOptions + permissionPreset）。
+        const row = settingsData?.sessions.find((s) => s.sessionId === id);
+        const isBlank = row ? row.blank === true : ctx.agents?.get?.(id) === undefined;
+        if (isBlank) {
+          ctx.logger?.info?.("[connect-lark] target session is blank; skip projection (config will apply at creation) id=" + id + " rowBlank=" + (row ? String(row.blank) : "missing"));
+          return;
+        }
         await ensureFirstClass(ctx, id, cwd);
         const { agent } = await createOrResumeAgent(ctx, id, { cwd }, {}, plain.permissionPreset);
         if (controlName === "model" || controlName === "effort") {

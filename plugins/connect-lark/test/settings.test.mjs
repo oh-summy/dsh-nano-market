@@ -165,7 +165,7 @@ test("modelOptions flattens provider groups; effortOptions follow the current mo
 
 // ============ apply 集成（cardAction 流程） ============
 
-async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", senderAllowlist = [], resolveAgentReturnsAgent = false, catalog: catalogOverride, defaultPermission = "workspace-write", persistFails = false, mutateFails = false, historySessions = [], historyTitleOf = (sid) => sid, configOverride = {} } = {}) {
+async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", senderAllowlist = [], resolveAgentReturnsAgent = false, catalog: catalogOverride, defaultPermission = "workspace-write", persistFails = false, failCreatesFrom = 0, mutateFails = false, historySessions = [], historyTitleOf = (sid) => sid, configOverride = {} } = {}) {
   const calls = { sends: [], cards: [], selects: [], presetSets: [], disposes: [], followups: [], resolveSessions: [], registered: [], updates: [], creates: [], sessionCreates: [], boots: 0, configEditorEdits: 0, configMutations: [], createSeq: 0, prepended: [] };
   // per-chat 状态文件（一等公民维度的持久化落点）——插件经 CONNECT_LARK_SESSION_MAP 指向这里
   const stateFile = makeStateFile();
@@ -213,8 +213,8 @@ async function makeSettingsHarness({ ownedPerChat = true, accessMode = "app", se
       // 与宿主注册表同形：按 sessionId 返回活着的 agent（找不到才是 undefined），
       // 否则卡片热应用会在回合中途凭空造一个 agent（真机上不存在这个问题）。
       get: (sid) => (ownedPerChat ? liveAgents.get(sid) : agent),
-      create: async (opts) => { calls.creates.push(opts); if (failAgentCreate) throw new Error("simulated session-create failure"); liveAgents.set(opts.sessionId, agent); return { agent, dispose: createHandle.dispose }; },
-      resume: async (opts) => { calls.creates.push(opts); if (failAgentCreate) throw new Error("simulated session-resume failure"); liveAgents.set(opts.resumeSessionId, agent); return { agent, dispose: createHandle.dispose }; },
+      create: async (opts) => { calls.creates.push(opts); if (failAgentCreate && calls.creates.length >= failCreatesFrom) throw new Error("simulated session-create failure"); liveAgents.set(opts.sessionId, agent); return { agent, dispose: createHandle.dispose }; },
+      resume: async (opts) => { calls.creates.push(opts); if (failAgentCreate && calls.creates.length >= failCreatesFrom) throw new Error("simulated session-resume failure"); liveAgents.set(opts.resumeSessionId, agent); return { agent, dispose: createHandle.dispose }; },
     },
     permissionPresets: {
       set(session, name) { calls.presetSets.push({ session, name }); },
@@ -606,7 +606,14 @@ test("apply: high permission cannot be reached via the DSH default preset (P0-2)
 });
 
 test("apply: a failed session projection is reported as saved-config + failed-switch (P1-4)", async () => {
-  const h = await makeSettingsHarness({ persistFails: true });
+  // 目标会话必须是非空的已存在会话——空会话会跳过投影（配置在创建时本就会带上）
+  const { cwdTag } = await import("../lib/index.mjs");
+  const det = "connect-lark:oc-1" + cwdTag(process.cwd());
+  const h = await makeSettingsHarness({
+    persistFails: true,
+    failCreatesFrom: 1, // 首条消息的 create 成功（refresh 有数据、会话非空），卡片投影的 create 失败
+    historySessions: [{ sessionId: det, title: "", cwd: "", updatedAt: 1, blank: false }],
+  });
   try {
     await h.message({ chatId: "oc-1", senderId: "ou-1", chatType: "p2p", messageId: "m1", content: "hello" });
     await h.endTurn();
