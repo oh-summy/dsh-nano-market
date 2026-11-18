@@ -223,14 +223,16 @@ function settingsSelectElements(opts) {
 *  每组一个 column_set（左列 label+select，右列 label+select）。
 *  label 用粗体（保守样式：text_tag/font 在真机 2.0 渲染不稳，2026-11-18 实测回退）。 */
 /** 一行 = 标签与下拉**同排**（负责人 2026-11-18：标题和按钮放一行）。
-*  1 项 = 整行独占；2 项 = 左右各半（标签列 auto 宽 + 下拉列加权宽）。 */
+*  标签列**固定像素宽**（三行统一），保证所有下拉的左边缘对齐（真机反馈 2026-11-18）。
+*  固定宽需 flex_mode "none"（2.0 文档：width 具体数值仅 flex_mode none 生效）。
+*  1 项 = 整行独占；2 项 = 左右各半（下拉列按权重平分剩余宽度）。 */
 function settingsRow(items) {
 	return {
 		tag: "column_set",
-		flex_mode: "stretch",
+		flex_mode: "none",
 		columns: items.map((it) => [{
 			tag: "column",
-			width: "auto",
+			width: "72px",
 			vertical_align: "center",
 			elements: [{
 				tag: "markdown",
@@ -241,6 +243,7 @@ function settingsRow(items) {
 			width: "weighted",
 			weight: 1,
 			vertical_align: "center",
+			horizontal_spacing: "medium",
 			elements: [it.select]
 		}]).flat()
 	};
