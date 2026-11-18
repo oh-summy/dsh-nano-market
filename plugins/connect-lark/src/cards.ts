@@ -187,8 +187,8 @@ export interface SettingsCardOptions {
   effortList?: ReadonlyArray<{ label: string; value: string }>;
   hasPendingPermission?: boolean;
   defaultWorkspaceTitle?: string;
-  /** 「对话」下拉的候选：当前工作区的会话（标题来自宿主首条消息自动命名） */
-  chatSessions?: ReadonlyArray<{ sessionId: string; title: string; cwd?: string }>;
+  /** 「对话」下拉的候选：当前工作区的会话（标题来自宿主首条消息自动命名，无标题的显示 id + 相对时间） */
+  chatSessions?: ReadonlyArray<{ sessionId: string; title: string; cwd?: string; updatedAt?: number }>;
   /** 当前绑定的会话 id（对话下拉的 initial_option） */
   currentSessionId?: string;
   /** 会话总数（超出下拉容量时在面板注明） */
@@ -293,7 +293,23 @@ function settingsRow(items: Array<{ label: string; color: string; select: Record
   return { tag: "column_set", flex_mode: "none", columns };
 }
 
-/** 会话 select：新对话 + 本工作区历史会话（带标题），initial 指向当前绑定。
+/** 相对时间（跟 DSH 会话列表同口径）：10 分钟 / 10 小时 / 3 天 / 2 个月 / 1 年。 */
+export function relativeTime(updatedAt: number, now = Date.now()): string {
+  const diff = Math.max(0, now - updatedAt);
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 1) return "刚刚";
+  if (minutes < 60) return minutes + " 分钟";
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours + " 小时";
+  const days = Math.floor(hours / 24);
+  if (days < 30) return days + " 天";
+  const months = Math.floor(days / 30);
+  if (months < 12) return months + " 个月";
+  return Math.floor(months / 12) + " 年";
+}
+
+/** 会话 select：新对话 + 本工作区**全部**会话——有标题显标题，无标题显 id + 相对时间
+ *  （跟 DSH 会话列表同口径；真机反馈 2026-11-18：不能只列有标题的）。
  *  选择即切换会话绑定（per-chat 状态），不写插件配置——会话绑定不是配置。 */
 function conversationSelect(opts: SettingsCardOptions): Record<string, unknown> {
   const options: Array<{ label: string; value: string }> = [
@@ -304,7 +320,9 @@ function conversationSelect(opts: SettingsCardOptions): Record<string, unknown> 
     if (seen.has(s.sessionId)) continue;
     seen.add(s.sessionId);
     const isCurrent = s.sessionId === opts.currentSessionId;
-    options.push({ label: (isCurrent ? "● 当前 ｜ " : "") + (s.title || s.sessionId.slice(0, 18)), value: s.sessionId });
+    const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 8) + "…";
+    const rel = relativeTime(s.updatedAt ?? 0);
+    options.push({ label: (isCurrent ? "● 当前 ｜ " : "") + name + " · " + rel + "前", value: s.sessionId });
   }
   // initial：当前绑定会话在候选里就指向它；否则指向「新对话」（无绑定 = 默认会话尚未出现在清单）
   const initial = opts.currentSessionId && seen.has(opts.currentSessionId) ? opts.currentSessionId : undefined;
@@ -318,8 +336,14 @@ export function buildSettingsPanel(opts: SettingsCardOptions): Record<string, un
   const elements: Array<Record<string, unknown>> = [
     // 引导行：说明语义而非口号（浅色底上用深灰保证可读）
     { tag: "markdown", content: "<font color='grey'>选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效</font>" },
-    // 三行布局（标签与下拉同排）：对话独占一行；模型+思考强度；工作区+权限
-    settingsRow([{ label: "对话", color: "indigo", select: chatSelect }]),
+    // 三行布局（标签与下拉同排）：对话独占一行（数量说明在下拉右侧）；模型+思考强度；工作区+权限
+    { tag: "column_set", flex_mode: "none", columns: [
+      { tag: "column", width: "48px", vertical_align: "center",
+        elements: [{ tag: "markdown", content: "<text_tag color='indigo'>对话</text_tag>" }] },
+      { tag: "column", width: "weighted", weight: 1, vertical_align: "center", elements: [chatSelect] },
+      { tag: "column", width: "auto", vertical_align: "center",
+        elements: [{ tag: "markdown", content: "<font color='grey'>共 " + (opts.sessionsTotal ?? 0) + " 个</font>" }] },
+    ] },
     settingsRow([
       { label: "模型", color: "blue", select: selects[1] },
       { label: "强度", color: "turquoise", select: selects[2] },
@@ -328,9 +352,6 @@ export function buildSettingsPanel(opts: SettingsCardOptions): Record<string, un
       { label: "工作区", color: "green", select: selects[0] },
       { label: "权限", color: "orange", select: selects[3] },
     ]),
-    ...((opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0)
-      ? [{ tag: "markdown", content: "<font color='grey'>本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉列出其中带标题的 " + (opts.chatSessions?.length ?? 0) + " 个</font>" }]
-      : []),
   ];
   if (opts.hasPendingPermission) {
     elements.push({

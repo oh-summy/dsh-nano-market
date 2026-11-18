@@ -248,7 +248,22 @@ function settingsRow(items) {
 		}]).flat()
 	};
 }
-/** 会话 select：新对话 + 本工作区历史会话（带标题），initial 指向当前绑定。
+/** 相对时间（跟 DSH 会话列表同口径）：10 分钟 / 10 小时 / 3 天 / 2 个月 / 1 年。 */
+function relativeTime(updatedAt, now = Date.now()) {
+	const diff = Math.max(0, now - updatedAt);
+	const minutes = Math.floor(diff / 6e4);
+	if (minutes < 1) return "刚刚";
+	if (minutes < 60) return minutes + " 分钟";
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return hours + " 小时";
+	const days = Math.floor(hours / 24);
+	if (days < 30) return days + " 天";
+	const months = Math.floor(days / 30);
+	if (months < 12) return months + " 个月";
+	return Math.floor(months / 12) + " 年";
+}
+/** 会话 select：新对话 + 本工作区**全部**会话——有标题显标题，无标题显 id + 相对时间
+*  （跟 DSH 会话列表同口径；真机反馈 2026-11-18：不能只列有标题的）。
 *  选择即切换会话绑定（per-chat 状态），不写插件配置——会话绑定不是配置。 */
 function conversationSelect(opts) {
 	const options = [{
@@ -260,8 +275,10 @@ function conversationSelect(opts) {
 		if (seen.has(s.sessionId)) continue;
 		seen.add(s.sessionId);
 		const isCurrent = s.sessionId === opts.currentSessionId;
+		const name = s.title || s.sessionId.replace(/^session-/, "").slice(0, 8) + "…";
+		const rel = relativeTime(s.updatedAt ?? 0);
 		options.push({
-			label: (isCurrent ? "● 当前 ｜ " : "") + (s.title || s.sessionId.slice(0, 18)),
+			label: (isCurrent ? "● 当前 ｜ " : "") + name + " · " + rel + "前",
 			value: s.sessionId
 		});
 	}
@@ -274,11 +291,37 @@ function buildSettingsPanel(opts) {
 			tag: "markdown",
 			content: "<font color='grey'>选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效</font>"
 		},
-		settingsRow([{
-			label: "对话",
-			color: "indigo",
-			select: conversationSelect(opts)
-		}]),
+		{
+			tag: "column_set",
+			flex_mode: "none",
+			columns: [
+				{
+					tag: "column",
+					width: "48px",
+					vertical_align: "center",
+					elements: [{
+						tag: "markdown",
+						content: "<text_tag color='indigo'>对话</text_tag>"
+					}]
+				},
+				{
+					tag: "column",
+					width: "weighted",
+					weight: 1,
+					vertical_align: "center",
+					elements: [conversationSelect(opts)]
+				},
+				{
+					tag: "column",
+					width: "auto",
+					vertical_align: "center",
+					elements: [{
+						tag: "markdown",
+						content: "<font color='grey'>共 " + (opts.sessionsTotal ?? 0) + " 个</font>"
+					}]
+				}
+			]
+		},
 		settingsRow([{
 			label: "模型",
 			color: "blue",
@@ -296,11 +339,7 @@ function buildSettingsPanel(opts) {
 			label: "权限",
 			color: "orange",
 			select: selects[3]
-		}]),
-		...(opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0) ? [{
-			tag: "markdown",
-			content: "<font color='grey'>本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉列出其中带标题的 " + (opts.chatSessions?.length ?? 0) + " 个</font>"
-		}] : []
+		}])
 	];
 	if (opts.hasPendingPermission) elements.push({
 		tag: "markdown",
@@ -1841,15 +1880,17 @@ function apply(ctx, config = {}) {
 		const effort = overrides?.reasoningEffort !== void 0 ? overrides.reasoningEffort : plain.reasoningEffort ?? "";
 		const hasModel = Boolean(provider && model);
 		const currentSessionId = st.sessionId || deterministicSessionId(chatId, wsPath || process.cwd());
-		const chatSessions = (settingsData?.sessions ?? []).filter((s) => (wsPath === void 0 || s.cwd === wsPath) && s.blank !== true && (s.sessionId === currentSessionId || s.title !== "" && !s.title.startsWith("未命名对话"))).slice(0, 15).map((s) => ({
+		const chatSessions = (settingsData?.sessions ?? []).filter((s) => wsPath === void 0 || s.cwd === wsPath).slice(0, 15).map((s) => ({
 			sessionId: s.sessionId,
 			title: s.title,
-			cwd: s.cwd
+			cwd: s.cwd,
+			updatedAt: s.updatedAt
 		}));
 		if (!chatSessions.some((s) => s.sessionId === currentSessionId)) chatSessions.unshift({
 			sessionId: currentSessionId,
 			title: "",
-			cwd: wsPath
+			cwd: wsPath,
+			updatedAt: Date.now()
 		});
 		return {
 			catalog: settingsData?.catalog ?? { groups: [] },

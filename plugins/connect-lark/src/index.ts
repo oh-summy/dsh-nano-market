@@ -820,14 +820,12 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
     // 没有可辨认的名字，列出来全是「未命名对话」噪音（真机反馈 2026-11-18）。
     // 标题来源 = 最近 80 条的批量冷读；更老的会话不进下拉（可在 Web 端查看）。
     const chatSessions = (settingsData?.sessions ?? [])
-      .filter((s) => (wsPath === undefined || s.cwd === wsPath)
-        && s.blank !== true
-        && (s.sessionId === currentSessionId || (s.title !== "" && !s.title.startsWith("未命名对话"))))
+      .filter((s) => wsPath === undefined || s.cwd === wsPath)
       .slice(0, 15)
-      .map((s) => ({ sessionId: s.sessionId, title: s.title, cwd: s.cwd }));
+      .map((s) => ({ sessionId: s.sessionId, title: s.title, cwd: s.cwd, updatedAt: s.updatedAt }));
     // 当前会话必须始终在候选里（list 投影偶发缺行时兜底；label 走 id）
     if (!chatSessions.some((s) => s.sessionId === currentSessionId)) {
-      chatSessions.unshift({ sessionId: currentSessionId, title: "", cwd: wsPath });
+      chatSessions.unshift({ sessionId: currentSessionId, title: "", cwd: wsPath, updatedAt: Date.now() });
     }
     return {
       catalog: settingsData?.catalog ?? { groups: [] },
