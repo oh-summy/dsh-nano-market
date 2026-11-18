@@ -193,6 +193,8 @@ export interface SettingsCardOptions {
   currentSessionId?: string;
   /** 会话总数（超出下拉容量时在面板注明） */
   sessionsTotal?: number;
+  /** 诊断：标题批量读取的失败原因（空 = 读取正常） */
+  titleError?: string;
 }
 
 /** Flat options for the model select: value = "provider:model". */
@@ -346,9 +348,12 @@ export function buildSettingsPanel(opts: SettingsCardOptions): Record<string, un
       text: { tag: "lark_md", content: "⚠️ 高权限档待确认：回复**确认**以应用（仅发起人有效，30s 内）。" },
     });
   }
-  const overflow = (opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0)
+  const overflow: Array<Record<string, unknown>> = (opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0)
     ? [{ tag: "div", text: { tag: "lark_md", content: "（本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉显示最近 " + (opts.chatSessions?.length ?? 0) + " 个）" } }]
     : [];
+  if (opts.titleError) {
+    overflow.push({ tag: "div", text: { tag: "lark_md", content: "（标题读取：" + opts.titleError + "）" } });
+  }
   return {
     tag: "collapsible_panel",
     expanded: false,

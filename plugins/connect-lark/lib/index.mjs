@@ -315,6 +315,13 @@ function buildSettingsPanel(opts) {
 			content: "（本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉显示最近 " + (opts.chatSessions?.length ?? 0) + " 个）"
 		}
 	}] : [];
+	if (opts.titleError) overflow.push({
+		tag: "div",
+		text: {
+			tag: "lark_md",
+			content: "（标题读取：" + opts.titleError + "）"
+		}
+	});
 	return {
 		tag: "collapsible_panel",
 		expanded: false,
@@ -1495,31 +1502,55 @@ async function listSessions(ctx, limit = HISTORY_LIMIT, cwdFilter, coldRead = tr
 		const total = scoped.length;
 		const page = scoped.slice(0, limit);
 		const titles = /* @__PURE__ */ new Map();
-		const query = coldRead ? ctx.get?.("sessionQuery") : void 0;
+		const query = ctx.get?.("sessionQuery");
+		let titleError;
+		const coldCount = coldRead === true ? page.length : coldRead === false ? 0 : coldRead;
+		const coldTargets = page.slice(0, coldCount);
 		if (query && typeof query.readTitleSnapshots === "function") try {
-			(await withTimeout(query.readTitleSnapshots(page.map((s) => s.sessionId)), 1e4)).forEach((r, i) => {
-				if (r?.status === "fulfilled" && typeof r.value?.title === "string" && r.value.title) titles.set(page[i].sessionId, r.value.title);
+			const outcome = coldTargets.length ? await withTimeout(query.readTitleSnapshots(coldTargets.map((s) => s.sessionId)), 1e4) : {
+				ok: true,
+				value: []
+			};
+			if (!outcome?.ok) throw new Error("readTitleSnapshots timed out");
+			const results = outcome.value ?? [];
+			let hits = 0;
+			results.forEach((r, i) => {
+				const raw = r?.status === "fulfilled" ? r.value?.title : void 0;
+				const title = typeof raw === "string" ? raw : raw && typeof raw === "object" && typeof raw.title === "string" ? raw.title : void 0;
+				if (title) {
+					titles.set(coldTargets[i].sessionId, title);
+					hits++;
+				} else if (r?.status === "rejected") titleError = "readTitleSnapshots rejected: " + String(r.reason?.message ?? r.reason).slice(0, 120);
 			});
-		} catch {}
-		else if (query) {
+			if (hits === 0 && results.length > 0) {
+				const first = results[0];
+				const keys = first?.status === "fulfilled" ? Object.keys(first.value ?? {}).join(",") : first?.status;
+				titleError = "0/" + results.length + " 命中，首个快照 keys=[" + keys + "]";
+			}
+		} catch (e) {
+			titleError = "readTitleSnapshots threw: " + e.message.slice(0, 120);
+		}
+		else if (coldCount > 0 && query) {
 			const probeTitle = async (sessionId) => {
 				try {
 					const result = await withTimeout(readColdSessionTitle(query, sessionId), 5e3);
 					if (result.ok && result.value) titles.set(sessionId, result.value);
 				} catch {}
 			};
-			await Promise.all(page.map((s) => probeTitle(s.sessionId)));
-		}
+			await Promise.all(coldTargets.map((s) => probeTitle(s.sessionId)));
+		} else if (coldCount > 0) titleError = "sessionQuery service unavailable";
 		for (const s of page) s.title = titles.get(s.sessionId) ?? "未命名对话（" + s.sessionId.slice(0, 12) + "…）";
 		return {
 			sessions: page,
-			total
+			total,
+			titleError
 		};
 	} catch (e) {
 		ctx.logger?.warn?.("[connect-lark] list sessions failed: " + e.message);
 		return {
 			sessions: [],
-			total: 0
+			total: 0,
+			titleError: "list threw: " + e.message.slice(0, 120)
 		};
 	}
 }
@@ -1892,9 +1923,10 @@ function apply(ctx, config = {}) {
 	};
 	const refreshSettingsData = async () => {
 		try {
-			const [catalog, sessions] = await Promise.all([ctx.sessionController.modelCatalog(), listSessions(ctx, 300, void 0, false).catch(() => ({
+			const [catalog, sessions] = await Promise.all([ctx.sessionController.modelCatalog(), listSessions(ctx, 300, void 0, 30).catch(() => ({
 				sessions: [],
-				total: 0
+				total: 0,
+				titleError: "list threw in refresh"
 			}))]);
 			const workspaces = (ctx.workspaceRegistry?.list?.() ?? []).map((w) => ({
 				id: w.id,
@@ -1911,7 +1943,8 @@ function apply(ctx, config = {}) {
 				permissions: permCat.options ?? [],
 				defaultPermission: permCat.defaultPreset ?? "",
 				sessions: sessions.sessions,
-				sessionsTotal: sessions.total
+				sessionsTotal: sessions.total,
+				titleError: sessions.titleError
 			};
 		} catch (e) {
 			ctx.logger?.warn?.("[connect-lark] settings data refresh failed: " + e.message);
@@ -1953,7 +1986,8 @@ function apply(ctx, config = {}) {
 			defaultWorkspaceTitle: defaultTitle,
 			chatSessions,
 			currentSessionId,
-			sessionsTotal: settingsData?.sessionsTotal ?? 0
+			sessionsTotal: settingsData?.sessionsTotal ?? 0,
+			titleError: settingsData?.titleError
 		};
 	};
 	/** 需要二次确认的高危档位（宿主语义，dsh-permission-presets）：

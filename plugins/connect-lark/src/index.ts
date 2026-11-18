@@ -343,7 +343,7 @@ async function readColdSessionTitle(query: any, sessionId: string): Promise<stri
   return "";
 }
 
-async function listSessions(ctx: AnyCtx, limit: number = HISTORY_LIMIT, cwdFilter?: string, coldRead = true): Promise<{ sessions: Array<{ sessionId: string; title: string; cwd?: string; updatedAt: number }>; total: number }> {
+async function listSessions(ctx: AnyCtx, limit: number = HISTORY_LIMIT, cwdFilter?: string, coldRead: boolean | number = true): Promise<{ sessions: Array<{ sessionId: string; title: string; cwd?: string; updatedAt: number }>; total: number; titleError?: string }> {
   try {
     const ctrl = ctx.sessionController;
     if (!ctrl?.list) return { sessions: [], total: 0 };
@@ -376,34 +376,60 @@ async function listSessions(ctx: AnyCtx, limit: number = HISTORY_LIMIT, cwdFilte
     // 投影缺失时才用 dsh-session-query 冷读会话日志的 session/title 事件补齐，
     // 有限并发 + 每条有超时，任何失败回退到"未命名对话（id 前缀）"。
     const titles = new Map<string, string>();
-    const query = coldRead ? ctx.get?.("sessionQuery") : undefined;
+    const query = ctx.get?.("sessionQuery");
+    let titleError: string | undefined;
+    // coldRead: true=读全部 | false=不读 | 数字=只读最终页前 N 条（全量清单 + 少量标题的折中）
+    const coldCount = coldRead === true ? page.length : coldRead === false ? 0 : coldRead;
+    const coldTargets = page.slice(0, coldCount);
     if (query && typeof query.readTitleSnapshots === "function") {
-      // 批量标题：一次 corpus 观测读全部（比逐会话 readSession 轻得多），
+      // 批量标题：一次 corpus 观测读全部目标（比逐会话 readSession 轻得多），
       // 结果按输入顺序返回，per-session 失败被隔离在 status 里。
       try {
-        const results: any = await withTimeout(query.readTitleSnapshots(page.map((s) => s.sessionId)), 10_000);
+        // withTimeout 返回带标签的结果对象 {ok, value}（不是裸值），必须先解包
+        const outcome: any = coldTargets.length
+          ? await withTimeout(query.readTitleSnapshots(coldTargets.map((s) => s.sessionId)), 10_000)
+          : { ok: true, value: [] };
+        if (!outcome?.ok) throw new Error("readTitleSnapshots timed out");
+        const results: any = outcome.value ?? [];
+        let hits = 0;
         results.forEach((r: any, i: number) => {
-          if (r?.status === "fulfilled" && typeof r.value?.title === "string" && r.value.title) {
-            titles.set(page[i].sessionId, r.value.title);
+          // readTitleSnapshots 的 title 有两种形态：纯字符串，或折叠快照对象 { title, messageSeqs, source }
+          const raw = r?.status === "fulfilled" ? r.value?.title : undefined;
+          const title = typeof raw === "string" ? raw : (raw && typeof raw === "object" && typeof raw.title === "string" ? raw.title : undefined);
+          if (title) {
+            titles.set(coldTargets[i].sessionId, title);
+            hits++;
+          } else if (r?.status === "rejected") {
+            titleError = "readTitleSnapshots rejected: " + String(r.reason?.message ?? r.reason).slice(0, 120);
           }
         });
-      } catch { /* 批量读失败 → 留空用占位标题 */ }
-    } else if (query) {
+        if (hits === 0 && results.length > 0) {
+          const first = results[0];
+          const keys = first?.status === "fulfilled" ? Object.keys(first.value ?? {}).join(",") : first?.status;
+          titleError = "0/" + results.length + " 命中，首个快照 keys=[" + keys + "]";
+        }
+      } catch (e) {
+        titleError = "readTitleSnapshots threw: " + (e as Error).message.slice(0, 120);
+      }
+    } else if (coldCount > 0 && query) {
+      // rc.2 老回退：逐会话 readSession（无批量接口的老宿主）
       const probeTitle = async (sessionId: string): Promise<void> => {
         try {
           const result = await withTimeout(readColdSessionTitle(query, sessionId), 5_000);
           if (result.ok && result.value) titles.set(sessionId, result.value);
         } catch { /* 读不到就留空，外层用占位标题 */ }
       };
-      await Promise.all(page.map((s) => probeTitle(s.sessionId)));
+      await Promise.all(coldTargets.map((s) => probeTitle(s.sessionId)));
+    } else if (coldCount > 0) {
+      titleError = "sessionQuery service unavailable";
     }
     for (const s of page) {
       s.title = titles.get(s.sessionId) ?? "未命名对话（" + s.sessionId.slice(0, 12) + "…）";
     }
-    return { sessions: page, total };
+    return { sessions: page, total, titleError };
   } catch (e) {
     ctx.logger?.warn?.("[connect-lark] list sessions failed: " + (e as Error).message);
-    return { sessions: [], total: 0 };
+    return { sessions: [], total: 0, titleError: "list threw: " + (e as Error).message.slice(0, 120) };
   }
 }
 
@@ -748,6 +774,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
     /** 全量会话（未按工作区过滤，面板按当前 cwd 过滤后进「对话」下拉） */
     sessions: Array<{ sessionId: string; title: string; cwd?: string; updatedAt: number }>;
     sessionsTotal: number;
+    titleError?: string;
   } | null = null;
 
   /** 历史卡的 markdown 兜底：卡片发不出去时，至少把会话清单以文本给出。 */
@@ -777,9 +804,9 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       // catalog / 工作区 / 权限与全量会话**并行**取（对话下拉需要会话清单）
       const [catalog, sessions] = await Promise.all([
         ctx.sessionController.modelCatalog(),
-        // 不做冷读：全量会话的标题走 list 投影（宿主首条消息自动命名），
-        // 冷读只留给最终过滤出的对话下拉页（构建面板前的 refreshSettingsData 阶段做不了）
-        listSessions(ctx, 300, undefined, false).catch(() => ({ sessions: [], total: 0 })),
+        // 全量 300 条 + 只批量冷读最近 30 条的标题（一次 corpus 观测）——
+        // 对话下拉按工作区过滤后通常都在最近 30 条里；list 投影本身不带标题
+        listSessions(ctx, 300, undefined, 30).catch(() => ({ sessions: [], total: 0, titleError: "list threw in refresh" })),
       ]);
       const workspaces = (ctx.workspaceRegistry?.list?.() ?? []).map((w: any) => ({ id: w.id, title: w.title, path: w.path }));
       const permCat = ctx.permissionPresets?.catalog?.() ?? { options: [], defaultPreset: "" };
@@ -787,6 +814,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
         catalog, workspaces,
         permissions: permCat.options ?? [], defaultPermission: permCat.defaultPreset ?? "",
         sessions: sessions.sessions, sessionsTotal: sessions.total,
+        titleError: sessions.titleError,
       };
     } catch (e) {
       ctx.logger?.warn?.("[connect-lark] settings data refresh failed: " + (e as Error).message);
@@ -832,6 +860,7 @@ export function apply(ctx: AnyCtx, config: Config | ParsedConfig = {}) {
       chatSessions,
       currentSessionId,
       sessionsTotal: settingsData?.sessionsTotal ?? 0,
+      titleError: settingsData?.titleError,
     };
   };
 
