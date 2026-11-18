@@ -222,20 +222,27 @@ function settingsSelectElements(opts) {
 /** 两列分组布局（负责人 2026-11-14 要求：模型+思考强度一组、工作区+权限一组）：
 *  每组一个 column_set（左列 label+select，右列 label+select）。
 *  label 用粗体（保守样式：text_tag/font 在真机 2.0 渲染不稳，2026-11-18 实测回退）。 */
-function settingsGroupRow(left, right) {
-	const column = (label, color, select) => ({
-		tag: "column",
-		width: "weighted",
-		weight: 1,
-		elements: [{
-			tag: "markdown",
-			content: "<text_tag color='" + color + "'>" + label + "</text_tag>"
-		}, select]
-	});
+/** 一行 = 标签与下拉**同排**（负责人 2026-11-18：标题和按钮放一行）。
+*  1 项 = 整行独占；2 项 = 左右各半（标签列 auto 宽 + 下拉列加权宽）。 */
+function settingsRow(items) {
 	return {
 		tag: "column_set",
 		flex_mode: "stretch",
-		columns: [column(left.label, left.color, left.select), column(right.label, right.color, right.select)]
+		columns: items.map((it) => [{
+			tag: "column",
+			width: "auto",
+			vertical_align: "center",
+			elements: [{
+				tag: "markdown",
+				content: "<text_tag color='" + it.color + "'>" + it.label + "</text_tag>"
+			}]
+		}, {
+			tag: "column",
+			width: "weighted",
+			weight: 1,
+			vertical_align: "center",
+			elements: [it.select]
+		}]).flat()
 	};
 }
 /** 会话 select：新对话 + 本工作区历史会话（带标题），initial 指向当前绑定。
@@ -264,27 +271,12 @@ function buildSettingsPanel(opts) {
 			tag: "markdown",
 			content: "<font color='grey'>选择后立即保存到插件配置（与 Web 设置页同步）· 切换对话 / 工作区从下一条消息起生效</font>"
 		},
-		{
-			tag: "column_set",
-			flex_mode: "stretch",
-			columns: [{
-				tag: "column",
-				width: "weighted",
-				weight: 1,
-				elements: [
-					{
-						tag: "markdown",
-						content: "<text_tag color='indigo'>对话</text_tag>"
-					},
-					conversationSelect(opts),
-					...(opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0) ? [{
-						tag: "markdown",
-						content: "<font color='grey'>本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉列出其中带标题的 " + (opts.chatSessions?.length ?? 0) + " 个</font>"
-					}] : []
-				]
-			}]
-		},
-		settingsGroupRow({
+		settingsRow([{
+			label: "对话",
+			color: "indigo",
+			select: conversationSelect(opts)
+		}]),
+		settingsRow([{
 			label: "模型",
 			color: "blue",
 			select: selects[1]
@@ -292,8 +284,8 @@ function buildSettingsPanel(opts) {
 			label: "思考强度",
 			color: "turquoise",
 			select: selects[2]
-		}),
-		settingsGroupRow({
+		}]),
+		settingsRow([{
 			label: "工作区",
 			color: "green",
 			select: selects[0]
@@ -301,7 +293,11 @@ function buildSettingsPanel(opts) {
 			label: "权限",
 			color: "orange",
 			select: selects[3]
-		})
+		}]),
+		...(opts.sessionsTotal ?? 0) > (opts.chatSessions?.length ?? 0) ? [{
+			tag: "markdown",
+			content: "<font color='grey'>本工作区共 " + (opts.sessionsTotal ?? 0) + " 个会话，下拉列出其中带标题的 " + (opts.chatSessions?.length ?? 0) + " 个</font>"
+		}] : []
 	];
 	if (opts.hasPendingPermission) elements.push({
 		tag: "markdown",
