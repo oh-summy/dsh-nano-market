@@ -21,7 +21,11 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npm test
+      # 认证调用 GitHub API（5000/h）：catalog 的 ref→commit 解析在共享 runner IP 上
+      # 匿名 60/h 常被耗尽 → 403 假红（2026-11-19 PR #28 实测）
       - run: node build/generate.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: node build/validate.mjs
       - name: Fail build on dry-run-only output
         run: test ! -f dist/index.json || ! grep -q '0.0.0-dry' dist/index.json || { echo 'index contains unresolved dry-run entries'; exit 1; }
