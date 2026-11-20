@@ -64,7 +64,7 @@ The bundle ships disabled (`cordis.patch.yml`: `enabled: false`). Flip it to `tr
 
 ### PATH 说明
 
-- 首选落点 `~/.npm-global/bin/dsh-web`（`dsh` 本身就在那儿）；该目录不可写或已存在非本插件的同名文件时，插件**跳过该软链并保留** `~/.dsh/bin/dsh-web`，日志提示「把 `~/.dsh/bin` 加入 PATH」。
+- 首选落点 `~/.npm-global/bin/dsh-web`（`dsh` 本身就在那儿）；该目录不可写，或同名路径已存在普通文件/指向别处的软链时，插件**只创建、绝不覆盖**，跳过并告警（日志提示「把 `~/.dsh/bin` 加入 PATH」）；两级链接都就绪才打「命令已就绪」。
 - 物化是软链不是拷贝：插件卸载后软链悬空，命令随之消失；不会留下「能敲但啥也干不了」的僵尸命令。
 - 端口硬约束：整条链路写死 DSH 默认端口 **3080**（插件 Caddy 上游 `UPSTREAM_HOST`），改端口会打断链路。
 

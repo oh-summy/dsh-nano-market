@@ -93,44 +93,54 @@ function isSymlinkTo(p: string, target: string): boolean {
   } catch { return false; }
 }
 
+// 只创建、绝不覆盖：路径不存在才建软链；已存在且不是精确自有目标 → 告警并跳过（绝不动用户文件）
+function ensureLink(ctx: AnyCtx, linkPath: string, target: string): "created" | "ok" | "blocked" {
+  let st = null;
+  try { st = lstatSync(linkPath); } catch { /* absent */ }
+  if (!st) { symlinkSync(target, linkPath); return "created"; }
+  if (st.isSymbolicLink() && readlinkSync(linkPath) === target) return "ok";
+  let cur = "";
+  try { cur = String(readlinkSync(linkPath)); } catch { cur = "（非软链）"; }
+  say(ctx, "warn", `[dsh-remote] ${linkPath} 已存在且不指向本插件（${cur}）——不动用户文件，跳过`);
+  return "blocked";
+}
+
 // 装载时物化：必须是软链，绝不拷贝（拷贝会在卸载后留下「能敲但啥也干不了」的僵尸命令）；
-// 卸载 → 目标消失 → 软链悬空 → 命令随之消失。
-function materializeCli(ctx: AnyCtx): void {
+// 卸载 → 目标消失 → 软链悬空 → 命令随之消失。两级链接都就绪才报「命令已就绪」。
+export function materializeCli(ctx: AnyCtx): void {
   try {
     const bin = cliBinPath();
     if (!existsSync(bin)) { say(ctx, "warn", `[dsh-remote] CLI 缺失，跳过物化：${bin}`); return; }
     chmodSync(bin, 0o755);
     mkdirSync(DSH_BIN_DIR, { recursive: true });
-    let st = null;
-    try { st = lstatSync(CLI_LINK); } catch { /* absent */ }
-    if (!st) symlinkSync(bin, CLI_LINK);
-    else if (st.isSymbolicLink()) {
-      if (readlinkSync(CLI_LINK) !== bin) { unlinkSync(CLI_LINK); symlinkSync(bin, CLI_LINK); }
-    } else say(ctx, "warn", `[dsh-remote] ${CLI_LINK} 已存在且不是软链——不动用户文件，物化跳过`);
+    if (ensureLink(ctx, CLI_LINK, bin) === "blocked") return; // 一级被占 → 不再建二级，不报就绪
     try { mkdirSync(dirname(NPM_BIN), { recursive: true }); } catch { /* exists */ }
+    let npmLink: "created" | "ok" | "blocked";
     try {
-      st = null;
-      try { st = lstatSync(NPM_BIN); } catch { /* absent */ }
-      if (!st) symlinkSync(CLI_LINK, NPM_BIN);
-      else if (st.isSymbolicLink()) {
-        if (readlinkSync(NPM_BIN) !== CLI_LINK) say(ctx, "warn", `[dsh-remote] ${NPM_BIN} 已指向别处——不动，命令以既有指向为准`);
-      } else say(ctx, "warn", `[dsh-remote] ${NPM_BIN} 已存在且不是软链——不动用户文件`);
+      npmLink = ensureLink(ctx, NPM_BIN, CLI_LINK);
     } catch (e) {
       say(ctx, "warn", `[dsh-remote] 无法创建 ${NPM_BIN}（${(e as Error).message}）——请把 ${DSH_BIN_DIR} 加入 PATH 后用 dsh-web`);
+      return;
     }
-    say(ctx, "info", "[dsh-remote] 命令已就绪：dsh-web（dsh-web help 看全部命令）");
+    if (npmLink === "ok" || npmLink === "created") {
+      say(ctx, "info", "[dsh-remote] 命令已就绪：dsh-web（dsh-web help 看全部命令）");
+    }
   } catch (e) {
     say(ctx, "warn", "[dsh-remote] dsh-web 命令物化失败：" + (e as Error).message);
   }
 }
 
-// 停用/卸载时只撤自己创建的软链（校验软链目标，绝不误删用户自建文件）
-function dematerializeCli(ctx: AnyCtx): void {
+// 停用/卸载时只撤自己创建的软链（校验软链目标，绝不误删用户自建文件）；两级清理互不阻断
+export function dematerializeCli(ctx: AnyCtx): void {
   try {
     if (isSymlinkTo(NPM_BIN, CLI_LINK)) { unlinkSync(NPM_BIN); say(ctx, "info", `[dsh-remote] 已撤软链 ${NPM_BIN}`); }
+  } catch (e) {
+    say(ctx, "warn", `[dsh-remote] 撤 ${NPM_BIN} 失败：` + (e as Error).message);
+  }
+  try {
     if (isSymlinkTo(CLI_LINK, cliBinPath())) unlinkSync(CLI_LINK);
   } catch (e) {
-    say(ctx, "warn", "[dsh-remote] dsh-web 命令回收失败：" + (e as Error).message);
+    say(ctx, "warn", `[dsh-remote] 撤 ${CLI_LINK} 失败：` + (e as Error).message);
   }
 }
 // ---------- small utils ----------
