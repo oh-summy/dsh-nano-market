@@ -2,9 +2,10 @@ import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import http from "node:http";
 import crypto from "node:crypto";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 // src/index.ts
@@ -56,6 +57,70 @@ const Config = z.object({
 	autoRestart: z.boolean().default(true).describe("隧道进程意外退出时自动重拉（默认开）"),
 	sessionDays: z.number().int().min(1).max(30).default(7).describe("远程会话有效天数（1-30，不可永久）")
 });
+function cliBinPath() {
+	return fileURLToPath(new URL("../bin/dsh-web.mjs", import.meta.url));
+}
+const DSH_BIN_DIR = join(homedir(), ".dsh", "bin");
+const CLI_LINK = join(DSH_BIN_DIR, "dsh-web");
+const NPM_BIN = join(homedir(), ".npm-global", "bin", "dsh-web");
+function isSymlinkTo(p, target) {
+	try {
+		return lstatSync(p).isSymbolicLink() && readlinkSync(p) === target;
+	} catch {
+		return false;
+	}
+}
+function materializeCli(ctx) {
+	try {
+		const bin = cliBinPath();
+		if (!existsSync(bin)) {
+			say(ctx, "warn", `[dsh-remote] CLI 缺失，跳过物化：${bin}`);
+			return;
+		}
+		chmodSync(bin, 493);
+		mkdirSync(DSH_BIN_DIR, { recursive: true });
+		let st = null;
+		try {
+			st = lstatSync(CLI_LINK);
+		} catch {}
+		if (!st) symlinkSync(bin, CLI_LINK);
+		else if (st.isSymbolicLink()) {
+			if (readlinkSync(CLI_LINK) !== bin) {
+				unlinkSync(CLI_LINK);
+				symlinkSync(bin, CLI_LINK);
+			}
+		} else say(ctx, "warn", `[dsh-remote] ${CLI_LINK} 已存在且不是软链——不动用户文件，物化跳过`);
+		try {
+			mkdirSync(dirname(NPM_BIN), { recursive: true });
+		} catch {}
+		try {
+			st = null;
+			try {
+				st = lstatSync(NPM_BIN);
+			} catch {}
+			if (!st) symlinkSync(CLI_LINK, NPM_BIN);
+			else if (st.isSymbolicLink()) {
+				if (readlinkSync(NPM_BIN) !== CLI_LINK) say(ctx, "warn", `[dsh-remote] ${NPM_BIN} 已指向别处——不动，命令以既有指向为准`);
+			} else say(ctx, "warn", `[dsh-remote] ${NPM_BIN} 已存在且不是软链——不动用户文件`);
+		} catch (e) {
+			say(ctx, "warn", `[dsh-remote] 无法创建 ${NPM_BIN}（${e.message}）——请把 ${DSH_BIN_DIR} 加入 PATH 后用 dsh-web`);
+		}
+		say(ctx, "info", "[dsh-remote] 命令已就绪：dsh-web（dsh-web help 看全部命令）");
+	} catch (e) {
+		say(ctx, "warn", "[dsh-remote] dsh-web 命令物化失败：" + e.message);
+	}
+}
+function dematerializeCli(ctx) {
+	try {
+		if (isSymlinkTo(NPM_BIN, CLI_LINK)) {
+			unlinkSync(NPM_BIN);
+			say(ctx, "info", `[dsh-remote] 已撤软链 ${NPM_BIN}`);
+		}
+		if (isSymlinkTo(CLI_LINK, cliBinPath())) unlinkSync(CLI_LINK);
+	} catch (e) {
+		say(ctx, "warn", "[dsh-remote] dsh-web 命令回收失败：" + e.message);
+	}
+}
 function say(ctx, method, msg) {
 	const logger = ctx.logger;
 	if (logger && typeof logger[method] === "function") logger[method](msg);
@@ -1070,6 +1135,7 @@ function apply(ctx, config = {}) {
 	};
 	mkdirSync(RUN_DIR, { recursive: true });
 	ctx.effect(() => {
+		materializeCli(ctx);
 		let dead = false;
 		const isAlive = () => !dead;
 		fiberAlive = isAlive;
@@ -1108,6 +1174,7 @@ function apply(ctx, config = {}) {
 		});
 		return () => {
 			dead = true;
+			dematerializeCli(ctx);
 			fiberAlive = null;
 			if (urlTimer) {
 				clearInterval(urlTimer);

@@ -9,7 +9,7 @@ Secure remote access to **DeepSeek Harness (DSH)** from anywhere — **Cloudflar
 3. **配置**：在 Plugins → Nano Market → dsh-remote → 「配置」打开详情页，里面就是完整的远程访问管理面（隧道地址、密码门、飞书通知）
 4. **验证**：访问 Cloudflare 隧道地址，输入密码门进入 DSH
 
-> **注意**：旧版独立脚本网关在旧仓库 oh-summy/dsh-remote-control。两者不要同时启用——端口 4080 冲突时插件会明确报错。
+> **注意**：旧版独立脚本网关（仓库 oh-summy/dsh-remote-control）已退役——远程访问的唯一实现与控制面是本插件，终端入口 `dsh-web` 命令现在由插件自带（见下文「dsh-web 命令」）。若 4080 仍被旧网关占用，插件会明确报错而不是抢端口。
 
 ## 致谢与参考
 
@@ -33,6 +33,40 @@ dsh plugin --profile web add @oh-summy/dsh-remote
 The bundle ships disabled (`cordis.patch.yml`: `enabled: false`). Flip it to `true` and restart the host — the plugin starts the chain and its management page appears on the plugin's own detail page (Plugins → Nano Market → dsh-remote → 配置), showing the entry URL, the password gate, and the notification configuration.
 
 > v0.3.0 起，管理页从 Plugins 页的独立页签迁到插件详情页；页签由 @oh-summy/nano-market 提供的「Nano Market」市场页承担。
+
+## dsh-web 命令（v0.4.0 起，随插件走）
+
+装好本插件且 entry 打开后，机器上就有 `dsh-web` 命令——插件装载时把包内 `bin/dsh-web.mjs` 以**软链**物化到 `~/.dsh/bin/dsh-web`，再软链 `~/.npm-global/bin/dsh-web`（该目录已在 PATH 内）；插件停用/卸载时只撤自己创建的软链（校验目标，绝不误删用户自建文件）。**裸 `dsh-web` = start**，每条命令执行完都附全量命令速查表。
+
+| 命令 | 行为 |
+|---|---|
+| `dsh-web` | **= start**：后台拉起 DSH（detached + unref，终端可关）→ 起隧道 → 打印 URL + 访问密码 + 速查表；幂等（已在跑时不重复拉起） |
+| `dsh-web help` | 只打印命令速查表 |
+| `dsh-web stop` | 停隧道（本机 API toggle）+ 停 DSH 进程（按 3080 端口属主核对后终止，非 DSH 拒绝） |
+| `dsh-web restart` | stop → start |
+| `dsh-web status` | DSH 进程 / 插件装载 / 隧道 / 通知通道 / 开机自启 agent 在不在 |
+| `dsh-web url` | 当前公网入口 URL |
+| `dsh-web password` | 访问密码明文（仅本机打印） |
+| `dsh-web logs [caddy\|cloudflared\|access\|dsh]` | 尾部日志（缺省 `cloudflared`） |
+
+### 闸门语义：插件是唯一入口（三态探测，顺序不可调换）
+
+| 插件状态 | 命令 | 行为 |
+|---|---|---|
+| 未安装（profile 里没有插件包） | 不该存在 | 报「插件未安装：`dsh plugin --profile web add @oh-summy/dsh-remote`」并退出，**不产生任何副作用进程** |
+| 已安装未打开（profile entry `enabled` 非 true） | 不该存在 | 报「插件未打开：Plugins → Nano Market → dsh-remote → 配置 → 打开 enabled」并退出，**不产生任何副作用进程** |
+| 已打开、DSH 没跑 | 存在 | detached 后台拉起 DSH → 等插件 API 就绪 → 起隧道 → 打印 URL + 密码 |
+| 已打开、DSH 在跑 | 存在 | 幂等：只打印 URL + 密码 |
+
+判定依据（全部本机级检查，CLI 不依赖宿主）：① 插件包在不在（`~/.dsh/profiles/web/node_modules/@oh-summy/dsh-remote`）；② profile `cordis.patch.yml` 中 `- id: dsh-remote` 块的 `enabled`（entry 级优先，config 级兜底）；③ 插件本机 API `127.0.0.1:9091/rc-api/state`。
+
+**两个开关不要混**：插件装载开关（profile entry `enabled`）决定命令是否存在；隧道运行时开关（插件 settings 的 `enabled`/`autoStart`）决定隧道在不在——`start` 发现隧道没开会经本机 API 自动打开。
+
+### PATH 说明
+
+- 首选落点 `~/.npm-global/bin/dsh-web`（`dsh` 本身就在那儿）；该目录不可写或已存在非本插件的同名文件时，插件**跳过该软链并保留** `~/.dsh/bin/dsh-web`，日志提示「把 `~/.dsh/bin` 加入 PATH」。
+- 物化是软链不是拷贝：插件卸载后软链悬空，命令随之消失；不会留下「能敲但啥也干不了」的僵尸命令。
+- 端口硬约束：整条链路写死 DSH 默认端口 **3080**（插件 Caddy 上游 `UPSTREAM_HOST`），改端口会打断链路。
 
 ## How it works
 

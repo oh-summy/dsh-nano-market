@@ -4,15 +4,17 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import http from "node:http";
 import crypto from "node:crypto";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 
 // ---------- constants ----------
 
 const RUN_DIR = join(homedir(), ".remote-control", "run-plugin");
+
 const UPSTREAM_HOST = "127.0.0.1:3080"; // DSH web 的 authority（Host 头必须是裸 host:port，不能带 scheme）
 const UPSTREAM = "http://" + UPSTREAM_HOST; // Caddy 的上游
 const TUNNEL_ENTRY = "http://127.0.0.1:4080"; // cloudflared 的 --url 指向 Caddy 门（绝不直连 DSH）
@@ -74,6 +76,63 @@ export const Config = z.object({
   sessionDays: z.number().int().min(1).max(30).default(7).describe("远程会话有效天数（1-30，不可永久）"),
 });
 
+// ---------- dsh-web 命令物化（issue #29：装插件即有命令；停用/卸载即回收） ----------
+
+// 运行时真实路径：lib/index.mjs → ../bin/dsh-web.mjs（开发期 src/ 下同样成立），不写死仓库路径
+function cliBinPath(): string {
+  return fileURLToPath(new URL("../bin/dsh-web.mjs", import.meta.url));
+}
+const DSH_BIN_DIR = join(homedir(), ".dsh", "bin");
+const CLI_LINK = join(DSH_BIN_DIR, "dsh-web"); // 第一级软链 → 插件已安装副本内的 bin
+const NPM_BIN = join(homedir(), ".npm-global", "bin", "dsh-web"); // 第二级软链（PATH 已含 ~/.npm-global/bin）
+
+function isSymlinkTo(p: string, target: string): boolean {
+  try {
+    const st = lstatSync(p);
+    return st.isSymbolicLink() && readlinkSync(p) === target;
+  } catch { return false; }
+}
+
+// 装载时物化：必须是软链，绝不拷贝（拷贝会在卸载后留下「能敲但啥也干不了」的僵尸命令）；
+// 卸载 → 目标消失 → 软链悬空 → 命令随之消失。
+function materializeCli(ctx: AnyCtx): void {
+  try {
+    const bin = cliBinPath();
+    if (!existsSync(bin)) { say(ctx, "warn", `[dsh-remote] CLI 缺失，跳过物化：${bin}`); return; }
+    chmodSync(bin, 0o755);
+    mkdirSync(DSH_BIN_DIR, { recursive: true });
+    let st = null;
+    try { st = lstatSync(CLI_LINK); } catch { /* absent */ }
+    if (!st) symlinkSync(bin, CLI_LINK);
+    else if (st.isSymbolicLink()) {
+      if (readlinkSync(CLI_LINK) !== bin) { unlinkSync(CLI_LINK); symlinkSync(bin, CLI_LINK); }
+    } else say(ctx, "warn", `[dsh-remote] ${CLI_LINK} 已存在且不是软链——不动用户文件，物化跳过`);
+    try { mkdirSync(dirname(NPM_BIN), { recursive: true }); } catch { /* exists */ }
+    try {
+      st = null;
+      try { st = lstatSync(NPM_BIN); } catch { /* absent */ }
+      if (!st) symlinkSync(CLI_LINK, NPM_BIN);
+      else if (st.isSymbolicLink()) {
+        if (readlinkSync(NPM_BIN) !== CLI_LINK) say(ctx, "warn", `[dsh-remote] ${NPM_BIN} 已指向别处——不动，命令以既有指向为准`);
+      } else say(ctx, "warn", `[dsh-remote] ${NPM_BIN} 已存在且不是软链——不动用户文件`);
+    } catch (e) {
+      say(ctx, "warn", `[dsh-remote] 无法创建 ${NPM_BIN}（${(e as Error).message}）——请把 ${DSH_BIN_DIR} 加入 PATH 后用 dsh-web`);
+    }
+    say(ctx, "info", "[dsh-remote] 命令已就绪：dsh-web（dsh-web help 看全部命令）");
+  } catch (e) {
+    say(ctx, "warn", "[dsh-remote] dsh-web 命令物化失败：" + (e as Error).message);
+  }
+}
+
+// 停用/卸载时只撤自己创建的软链（校验软链目标，绝不误删用户自建文件）
+function dematerializeCli(ctx: AnyCtx): void {
+  try {
+    if (isSymlinkTo(NPM_BIN, CLI_LINK)) { unlinkSync(NPM_BIN); say(ctx, "info", `[dsh-remote] 已撤软链 ${NPM_BIN}`); }
+    if (isSymlinkTo(CLI_LINK, cliBinPath())) unlinkSync(CLI_LINK);
+  } catch (e) {
+    say(ctx, "warn", "[dsh-remote] dsh-web 命令回收失败：" + (e as Error).message);
+  }
+}
 // ---------- small utils ----------
 
 type AnyCtx = any;
@@ -947,6 +1006,7 @@ export function apply(ctx: AnyCtx, config: Config = {}) {
   // 命令式启停）都必须检查，否则 fiber 销毁后仍会拉起进程（第 1 轮自审 P1-2 的根因）。
   // 管理 listener（登录页 + /rc-api）常驻：不随隧道启停——否则停止后连"启动按钮"都没有。
   ctx.effect(() => {
+    materializeCli(ctx); // dsh-web 命令物化（软链；幂等，entry 重启重挂也无碍）
     let dead = false;
     const isAlive = () => !dead;
     fiberAlive = isAlive;
@@ -986,6 +1046,7 @@ export function apply(ctx: AnyCtx, config: Config = {}) {
 
     return () => { // disposer
       dead = true;
+      dematerializeCli(ctx); // 只撤自己创建的软链
       fiberAlive = null;
       if (urlTimer) { clearInterval(urlTimer); urlTimer = null; }
       for (const t of timers) clearTimeout(t);
