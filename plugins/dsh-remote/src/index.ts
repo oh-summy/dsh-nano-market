@@ -93,18 +93,29 @@ function isSymlinkTo(p: string, target: string): boolean {
   } catch { return false; }
 }
 
-// 只创建、绝不覆盖：路径不存在才建软链；已存在且不是精确自有目标 → 告警并跳过（绝不动用户文件）
-function ensureLink(ctx: AnyCtx, linkPath: string, target: string): "created" | "ok" | "blocked" {
+// 只创建、绝不覆盖：路径不存在才建软链；已存在且指向精确自有目标 → ok；
+// 悬空且目标含 ownStaleMarker（本插件旧安装残留：宿主被杀没跑 disposer 的合法悬空链）→ 接管重建；
+// 其余（外来软链/普通文件/目录）→ 告警并跳过，绝不动用户文件。
+function ensureLink(ctx: AnyCtx, linkPath: string, target: string, ownStaleMarker = ""): "created" | "ok" | "blocked" {
   let st = null;
   try { st = lstatSync(linkPath); } catch { /* absent */ }
   if (!st) { symlinkSync(target, linkPath); return "created"; }
   if (st.isSymbolicLink() && readlinkSync(linkPath) === target) return "ok";
-  let cur = "";
-  try { cur = String(readlinkSync(linkPath)); } catch { cur = "（非软链）"; }
-  say(ctx, "warn", `[dsh-remote] ${linkPath} 已存在且不指向本插件（${cur}）——不动用户文件，跳过`);
+  if (ownStaleMarker && st.isSymbolicLink()) {
+    let stale = "";
+    try { stale = String(readlinkSync(linkPath)); } catch { stale = ""; }
+    if (stale.includes(ownStaleMarker) && !existsSync(stale)) {
+      unlinkSync(linkPath);
+      symlinkSync(target, linkPath);
+      say(ctx, "info", `[dsh-remote] 接管旧安装残留的悬空链 ${linkPath}（原指向 ${stale}）`);
+      return "created";
+    }
+  }
+  let curDesc = "";
+  try { curDesc = String(readlinkSync(linkPath)); } catch { curDesc = "（非软链）"; }
+  say(ctx, "warn", `[dsh-remote] ${linkPath} 已存在且不指向本插件（${curDesc}）——不动用户文件，跳过`);
   return "blocked";
 }
-
 // 装载时物化：必须是软链，绝不拷贝（拷贝会在卸载后留下「能敲但啥也干不了」的僵尸命令）；
 // 卸载 → 目标消失 → 软链悬空 → 命令随之消失。两级链接都就绪才报「命令已就绪」。
 export function materializeCli(ctx: AnyCtx): void {
@@ -113,7 +124,8 @@ export function materializeCli(ctx: AnyCtx): void {
     if (!existsSync(bin)) { say(ctx, "warn", `[dsh-remote] CLI 缺失，跳过物化：${bin}`); return; }
     chmodSync(bin, 0o755);
     mkdirSync(DSH_BIN_DIR, { recursive: true });
-    if (ensureLink(ctx, CLI_LINK, bin) === "blocked") return; // 一级被占 → 不再建二级，不报就绪
+    // 一级用插件包名做 stale 标记：宿主被杀留下的自有悬空链可接管；外来链接一律不动
+    if (ensureLink(ctx, CLI_LINK, bin, "@oh-summy/dsh-remote") === "blocked") return; // 一级被外来占用 → 不再建二级，不报就绪
     try { mkdirSync(dirname(NPM_BIN), { recursive: true }); } catch { /* exists */ }
     let npmLink: "created" | "ok" | "blocked";
     try {

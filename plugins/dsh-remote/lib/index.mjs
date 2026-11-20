@@ -70,7 +70,7 @@ function isSymlinkTo(p, target) {
 		return false;
 	}
 }
-function ensureLink(ctx, linkPath, target) {
+function ensureLink(ctx, linkPath, target, ownStaleMarker = "") {
 	let st = null;
 	try {
 		st = lstatSync(linkPath);
@@ -80,13 +80,27 @@ function ensureLink(ctx, linkPath, target) {
 		return "created";
 	}
 	if (st.isSymbolicLink() && readlinkSync(linkPath) === target) return "ok";
-	let cur = "";
-	try {
-		cur = String(readlinkSync(linkPath));
-	} catch {
-		cur = "（非软链）";
+	if (ownStaleMarker && st.isSymbolicLink()) {
+		let stale = "";
+		try {
+			stale = String(readlinkSync(linkPath));
+		} catch {
+			stale = "";
+		}
+		if (stale.includes(ownStaleMarker) && !existsSync(stale)) {
+			unlinkSync(linkPath);
+			symlinkSync(target, linkPath);
+			say(ctx, "info", `[dsh-remote] 接管旧安装残留的悬空链 ${linkPath}（原指向 ${stale}）`);
+			return "created";
+		}
 	}
-	say(ctx, "warn", `[dsh-remote] ${linkPath} 已存在且不指向本插件（${cur}）——不动用户文件，跳过`);
+	let curDesc = "";
+	try {
+		curDesc = String(readlinkSync(linkPath));
+	} catch {
+		curDesc = "（非软链）";
+	}
+	say(ctx, "warn", `[dsh-remote] ${linkPath} 已存在且不指向本插件（${curDesc}）——不动用户文件，跳过`);
 	return "blocked";
 }
 function materializeCli(ctx) {
@@ -98,7 +112,7 @@ function materializeCli(ctx) {
 		}
 		chmodSync(bin, 493);
 		mkdirSync(DSH_BIN_DIR, { recursive: true });
-		if (ensureLink(ctx, CLI_LINK, bin) === "blocked") return;
+		if (ensureLink(ctx, CLI_LINK, bin, "@oh-summy/dsh-remote") === "blocked") return;
 		try {
 			mkdirSync(dirname(NPM_BIN), { recursive: true });
 		} catch {}

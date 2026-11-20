@@ -19,6 +19,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const API_ORIGIN = "http://127.0.0.1:9091";
 export const DSH_PORT = 3080; // 硬约束：插件 Caddy 上游写死 127.0.0.1:3080，不得改端口
+const GATE_PORT = 4080;  // stop 终验对象：caddy 门
+const LOGIN_PORT = 9091; // stop 终验对象：登录页/管理 API（随 DSH 进程消失）
 
 // ---------- 命令速查表（每条命令执行完都追加；help 只打印它） ----------
 
@@ -47,6 +49,7 @@ export function createDeps(overrides = {}) {
     env: overrides.env ?? process.env,
     existsSync: overrides.existsSync ?? ((p) => fs.existsSync(p)),
     readFileSync: overrides.readFileSync ?? ((p, enc) => fs.readFileSync(p, enc)),
+    realpathSync: overrides.realpathSync ?? ((p) => fs.realpathSync(p)),
     mkdirSync: overrides.mkdirSync ?? ((p, o) => fs.mkdirSync(p, o)),
     openSync: overrides.openSync ?? ((p, f) => fs.openSync(p, f)),
     closeSync: overrides.closeSync ?? ((fd) => fs.closeSync(fd)),
@@ -55,7 +58,7 @@ export function createDeps(overrides = {}) {
     spawnSync: overrides.spawnSync ?? nodeSpawnSync,
     kill: overrides.kill ?? ((pid, sig) => process.kill(pid, sig)),
     sleep: overrides.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
-    now: overrides.now ?? (() => Date.now()), // 单调时钟可注入：poll 用真实 deadline 而非累计 sleep
+    now: overrides.now ?? (() => performance.now()), // 单调时钟：Date.now 会受系统回拨影响
     out,
     err: overrides.err ?? ((s) => process.stderr.write(s + "\n")),
     apiTimeoutMs: overrides.apiTimeoutMs ?? 4000,
@@ -172,7 +175,8 @@ function portOwner(deps, port) {
     const pid = line ? parseInt(line, 10) : 0;
     return { state: Number.isFinite(pid) && pid > 0 ? "found" : "none", pid };
   }
-  return { state: "none", pid: 0 }; // lsof 无匹配时以非零码退出 = 无监听
+  if (r.status === 1) return { state: "none", pid: 0 }; // 明确的「无匹配」（lsof -t 无命中退出码 1）
+  return { state: "error", pid: 0 }; // 其余退出码（权限/用法错误）= 侦察失败，绝不当作无监听
 }
 
 function procArgs(deps, pid) {
@@ -196,7 +200,26 @@ function procAlive(deps, pid) {
 // 反例 "python worker.py dsh --port 3080" 的入口是 worker.py → 不判为 DSH。
 const INTERPRETERS = new Set(["node", "nodejs", "deno", "bun", "python", "python3", "bash", "sh"]);
 
-function isDshProcess(args) {
+// 可信 DSH 入口集合：which dsh 与 ~/.npm-global/bin/dsh 的 realpath。
+// 身份判定只认「与可信入口 realpath 相等」的进程——任意路径下 basename 叫 dsh 的脚本不算。
+function trustedDshPaths(deps) {
+  const trusted = new Set();
+  const r = deps.spawnSync("which", ["dsh"], { encoding: "utf8" });
+  if (r.status === 0) {
+    const p = (r.stdout || "").trim();
+    if (p) { try { trusted.add(deps.realpathSync(p)); } catch { trusted.add(p); } }
+  }
+  const fallback = path.join(deps.homedir(), ".npm-global", "bin", "dsh");
+  if (deps.existsSync(fallback)) {
+    try { trusted.add(deps.realpathSync(fallback)); } catch { trusted.add(fallback); }
+  }
+  return trusted;
+}
+
+// DSH 身份判定：解释器（node 等）后面那个 token 才是真实入口；
+// 入口 realpath 必须命中可信 DSH 入口集合；且第一个子命令是 web（或不带任何参数）。
+// 反例：python /tmp/dsh web、bash /tmp/dsh web、node /tmp/dsh web、python worker.py dsh --port 3080 —— 全部拒绝。
+function isDshProcess(deps, args, trusted = trustedDshPaths(deps)) {
   const parts = String(args).trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return false;
   let entry = parts[0];
@@ -205,10 +228,10 @@ function isDshProcess(args) {
     entry = rest[0];
     rest = rest.slice(1);
   }
-  const base = entry.split("/").pop();
-  const isDshBin = base === "dsh" || entry.includes("@deepseek-ai/dsh");
-  if (!isDshBin) return false;
-  return rest.length === 0 || rest.includes("web");
+  let real;
+  try { real = deps.realpathSync(entry); } catch { return false; } // 入口不存在（进程正退出）→ 不判定为 DSH
+  if (!trusted.has(real)) return false;
+  return rest.length === 0 || rest[0] === "web"; // web 必须在子命令位，不搜整行
 }
 
 // API 不可达时插件回收不了自己的子进程：按 RUN_DIR 的 pid 文件兜底（核对进程名，绝不误杀）
@@ -224,7 +247,42 @@ function reapChildren(deps, st) {
   return reaped;
 }
 
-// 兜底回收后仍存活的插件子进程（stop 终验用）
+// stop 终验：3080/4080/9091 全部明确无监听 + 兜底回收的子进程确实不在。
+// 任何 found / error 都算未清理干净——不干净就不报成功。
+function verifyStopClean(deps, st) {
+  const leftovers = [];
+  for (const port of [DSH_PORT, GATE_PORT, LOGIN_PORT]) {
+    const own = portOwner(deps, port);
+    if (own.state === "found") leftovers.push("端口 " + port + " 仍有监听（pid " + own.pid + " → " + procArgs(deps, own.pid) + "）");
+    else if (own.state === "error") leftovers.push("端口 " + port + " 状态无法确认（lsof 不可用）");
+  }
+  leftovers.push(...survivingChildren(deps, st).map((s) => s + " 仍在运行"));
+  return leftovers;
+}
+
+async function waitChildrenGone(deps, st, budgetMs = 3000) {
+  const deadline = deps.now() + budgetMs;
+  for (;;) {
+    if (survivingChildren(deps, st).length === 0) return true;
+    if (deps.now() >= deadline) return false;
+    await deps.sleep(200);
+  }
+}
+
+// 所有清理路径共用一个出口：终验决定退出码，不允许任何分支提前报成功
+async function finishStop(deps, st, opts) {
+  const leftovers = verifyStopClean(deps, st);
+  if (leftovers.length > 0) {
+    deps.err("✗ stop 未清理干净：" + leftovers.join("；") + "\n" +
+      "  下一步：按上面的 pid 逐个确认（可能是 PID 复用或外部拉起），处理后再 dsh-web status 复核");
+    if (opts.sheet !== false) deps.out(renderCheatsheet());
+    return 1;
+  }
+  if (opts.sheet !== false) deps.out(renderCheatsheet());
+  return 0;
+}
+
+// 兜底回收后仍存活的插件子进程（终验用）
 function survivingChildren(deps, st) {
   const alive = [];
   for (const name of ["caddy", "cloudflared"]) {
@@ -250,15 +308,17 @@ function findDshBin(deps) {
 // 避免「累计 sleep 名义 90s、实际含请求耗时拖到 450s」的失真。
 async function pollUntil(deps, budgetMs, tryOnce) {
   const deadline = deps.now() + budgetMs;
-  while (deps.now() < deadline) {
-    await deps.sleep(Math.min(deps.startPollStepMs, Math.max(0, deadline - deps.now())));
-    const left = Math.max(250, deadline - deps.now());
+  for (;;) {
+    const left = deadline - deps.now();
+    if (left <= 0) return false;
+    await deps.sleep(Math.min(deps.startPollStepMs, left));
+    const left2 = deadline - deps.now();
+    if (left2 <= 0) return false; // 耗尽即停：不发越界请求
     try {
-      const hit = await tryOnce(left);
-      if (hit) return true;
+      const hit = await tryOnce(left2);
+      if (hit) return deps.now() <= deadline; // 命中但已越过 deadline 的晚到结果 = 失败
     } catch { /* 瞬断重试 */ }
   }
-  return false;
 }
 
 async function cmdStart(deps, st, opts = {}) {
@@ -334,7 +394,6 @@ async function cmdStart(deps, st, opts = {}) {
 
 async function cmdStop(deps, st, opts = {}) {
   const out = deps.out, err = deps.err;
-  const sheet = () => { if (opts.sheet !== false) out(renderCheatsheet()); };
   let tunnelConfirmed = false;
   if (st.state === "ready") {
     if (st.apiState.running) {
@@ -354,29 +413,32 @@ async function cmdStop(deps, st, opts = {}) {
   }
   const own = portOwner(deps, DSH_PORT);
   if (own.state === "error") {
-    err("✗ 无法确认端口 " + DSH_PORT + " 的属主（lsof 不可用？）——为避免误杀，本次不终止任何进程\n" +
-      "  下一步：手动 lsof -nP -iTCP:" + DSH_PORT + " -sTCP:LISTEN 确认后处理");
-    reapChildren(deps, st); // 隧道兜底照做
-    sheet();
-    return 1;
+    err("✗ 无法确认端口 " + DSH_PORT + " 的属主（lsof 不可用？）——为避免误杀，本次不终止 DSH；插件子进程仍按 pid 文件兜底回收");
+    reapChildren(deps, st);
+    await waitChildrenGone(deps, st);
+    return finishStop(deps, st, opts); // 终验决定退出码：子进程没死透也不算成功
   }
   if (own.state === "none") {
     out("✅ 端口 " + DSH_PORT + " 无监听——DSH 未在运行");
     reapChildren(deps, st);
-    if (!tunnelConfirmed) {
-      err("⚠ 隧道停用请求失败且 DSH 已不在——caddy/cloudflared 可能残留，上面兜底回收的结果请人工确认");
-      sheet();
-      return 1;
-    }
-    sheet();
-    return 0;
+    if (!tunnelConfirmed) err("⚠ 隧道停用请求失败——caddy/cloudflared 可能残留，以下终验为准");
+    await waitChildrenGone(deps, st); // 有界等待兜底回收生效，而不是发完 SIGTERM 就报成功
+    return finishStop(deps, st, opts);
   }
   const pid = own.pid;
+  const trusted = trustedDshPaths(deps);
+  if (trusted.size === 0) {
+    err("✗ 无法核实 DSH 身份（找不到可信的 dsh 入口）——拒绝终止任何进程\n" +
+      "  下一步：确认 DeepSeek Harness 安装正常（which dsh）；处理后再跑 dsh-web stop");
+    reapChildren(deps, st);
+    await waitChildrenGone(deps, st);
+    return finishStop(deps, st, opts);
+  }
   const args = procArgs(deps, pid);
-  if (!isDshProcess(args)) {
+  if (!isDshProcess(deps, args, trusted)) {
     err("✗ 端口 " + DSH_PORT + " 的属主不是 DSH，拒绝终止：pid " + pid + " → " + (args || "（未知命令行）") + "\n" +
       "  下一步：确认该进程是什么；若确属 DSH 残留，手动处理后再跑 dsh-web stop");
-    sheet();
+    if (opts.sheet !== false) out(renderCheatsheet());
     return 1;
   }
   try { deps.kill(pid, "SIGTERM"); } catch { /* gone */ }
@@ -388,12 +450,12 @@ async function cmdStop(deps, st, opts = {}) {
   if (!gone) {
     // SIGKILL 前重核身份：等待期间 PID 可能被复用给别人
     const args2 = procArgs(deps, pid);
-    if (!isDshProcess(args2)) {
+    if (!isDshProcess(deps, args2, trusted)) {
       err("✗ pid " + pid + " 在等待退出期间易主（现为：" + (args2 || "?") + "）——不升级 SIGKILL\n" +
         "  下一步：人工确认 pid " + pid + " 现属谁；DSH 若换 pid 重现，再跑 dsh-web stop");
       reapChildren(deps, st);
-      sheet();
-      return 1;
+      await waitChildrenGone(deps, st);
+      return finishStop(deps, st, opts);
     }
     try { deps.kill(pid, "SIGKILL"); } catch { /* gone */ }
     out("（5s 未退出，已升级 SIGKILL）");
@@ -404,28 +466,16 @@ async function cmdStop(deps, st, opts = {}) {
     if (!gone) {
       err("✗ SIGKILL 后 pid " + pid + " 仍未退出——不报告成功\n" +
         "  下一步：人工处理（kill -9 " + pid + " / 检查 zombie），随后 dsh-web status 复核");
-      sheet();
+      await finishStop(deps, st, { ...opts, sheet: false }); // 附终验信息，不重复附表
+      if (opts.sheet !== false) out(renderCheatsheet());
       return 1;
     }
   }
   out("✅ DSH 已停止（pid " + pid + "）");
   reapChildren(deps, st);
-  // 终验：DSH 端口已释放 + 兜底回收的子进程确实不在——不干净就不报成功
-  const leftovers = [];
-  const own2 = portOwner(deps, DSH_PORT);
-  if (own2.state === "found") leftovers.push("端口 " + DSH_PORT + " 仍有监听（pid " + own2.pid + " → " + procArgs(deps, own2.pid) + "）");
-  const survivors = survivingChildren(deps, st);
-  leftovers.push(...survivors.map((s) => s + " 仍在运行"));
-  if (leftovers.length > 0) {
-    err("✗ stop 未清理干净：" + leftovers.join("；") + "\n" +
-      "  下一步：按上面的 pid 逐个确认（可能是 PID 复用或外部拉起），处理后再 dsh-web status 复核");
-    sheet();
-    return 1;
-  }
-  sheet();
-  return 0;
+  await waitChildrenGone(deps, st);
+  return finishStop(deps, st, opts);
 }
-
 async function cmdRestart(deps, st) {
   // 内部步骤不各自附表，外层统一附一次
   const code = await cmdStop(deps, st, { sheet: false });
@@ -453,7 +503,7 @@ async function cmdStatus(deps, st) {
     lines.push("⚠ 无法确认端口 " + DSH_PORT + " 的属主（lsof 不可用）");
   } else if (own.state === "found") {
     const args = procArgs(deps, own.pid);
-    lines.push(isDshProcess(args)
+    lines.push(isDshProcess(deps, args)
       ? "✅ DSH 进程在跑：pid " + own.pid + "（端口 " + DSH_PORT + "）"
       : "⚠ 端口 " + DSH_PORT + " 被非 DSH 进程占用：pid " + own.pid + " → " + (args || "（未知命令行）"));
   } else {
