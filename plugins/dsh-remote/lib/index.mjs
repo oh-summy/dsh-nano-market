@@ -330,6 +330,9 @@ function fallbackSecrets() {
 		return {};
 	}
 }
+function withTimeout(p, ms, fallback) {
+	return Promise.race([p, new Promise((resolve) => setTimeout(() => resolve(fallback), ms))]);
+}
 async function getSecret(ref) {
 	const ctx = globalThis.__dshRemoteCtx;
 	if (ctx?.credentials) return (await ctx.credentials.resolve(ref))?.value ?? null;
@@ -520,7 +523,7 @@ function startLoginServer(ctx) {
 					return;
 				}
 				if (req.method === "GET" && path === "/rc-api/state") {
-					const appSecret = await getSecret(APP_SECRET_REF);
+					const appSecret = await withTimeout(getSecret(APP_SECRET_REF), 2500, null);
 					const mask = (v, n) => v ? String(v).slice(0, n) + "••••••" : "";
 					res.writeHead(200, { "Content-Type": "application/json" });
 					res.end(JSON.stringify({
@@ -531,7 +534,7 @@ function startLoginServer(ctx) {
 						autoRestart: cfg.autoRestart !== false,
 						sessionDays: Number(cfg.sessionDays) || 7,
 						channel: cfg.notifyChannel || "off",
-						hasWebhook: !!await getSecret(WEBHOOK_REF),
+						hasWebhook: !!await withTimeout(getSecret(WEBHOOK_REF), 2500, null),
 						hasAppSecret: !!appSecret,
 						appIdMask: mask(cfg.notifyAppId, 6),
 						openIdMask: mask(cfg.notifyOpenId, 6),

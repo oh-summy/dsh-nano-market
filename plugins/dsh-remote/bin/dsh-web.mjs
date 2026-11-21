@@ -12,6 +12,7 @@
 // 测试性：fs/fetch/spawn/时钟全部经 deps 注入（createDeps 的 overrides），单测不打真机。
 
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from "node:child_process";
+import nodeNet from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -57,6 +58,13 @@ export function createDeps(overrides = {}) {
     spawn: overrides.spawn ?? nodeSpawn, // spawn 原语可注入：单测据此验证 detached 契约
     spawnSync: overrides.spawnSync ?? nodeSpawnSync,
     kill: overrides.kill ?? ((pid, sig) => process.kill(pid, sig)),
+    netProbe: overrides.netProbe ?? ((port) => new Promise((resolve) => {
+      const s = nodeNet.connect({ port, host: "127.0.0.1" });
+      s.once("connect", () => { s.destroy(); resolve(true); });
+      s.once("error", () => { s.destroy(); resolve(false); });
+      s.setTimeout(1000, () => { s.destroy(); resolve(false); });
+    })),
+    pollTimeoutMs: overrides.pollTimeoutMs ?? 3000, // 单次状态轮询上限：凭据缝挂起时不吃掉整个等待预算
     sleep: overrides.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
     now: overrides.now ?? (() => performance.now()), // 单调时钟：Date.now 会受系统回拨影响
     out,
@@ -402,11 +410,18 @@ async function cmdStart(deps, st, opts = {}) {
       }
       out("🚀 DSH 未在运行——已在后台拉起（detached，终端可以直接关闭；日志：" + st.dshLogDir + "/dsh-web.cli.*.log）");
     }
+    // 就绪探测：state 接口单次短超时（凭据缝在 boot 早期可能挂起——2026-11-21 实测）；
+    // 9091 端口已监听 = 登录服务就绪，同样算就绪（URL 走 url 文件兜底，密码走 reveal——两者不碰缝）
     const ok = await pollUntil(deps, deps.startWaitMs, async (left) => {
-      apiState = await apiCall(deps, "/rc-api/state", { timeoutMs: left });
-      return true; // API 一通即视为就绪（装载与隧道状态在后续阶段判断）
+      try {
+        apiState = await apiCall(deps, "/rc-api/state", { timeoutMs: Math.min(deps.pollTimeoutMs, left) });
+        return true;
+      } catch {
+        if (await deps.netProbe(9091)) return true;
+        return false; // 未就绪，继续轮询
+      }
     }, (s) => out("⏳ 等待 DSH 就绪…" + Math.round(s / 1000) + "s"));
-    if (!ok || !apiState) {
+    if (!ok) {
       const jobNow = launchdDshJob(deps);
       const launchdErr = path.join(st.dshLogDir, "dsh-web.launchd.err.log");
       let tail = "";
@@ -420,11 +435,15 @@ async function cmdStart(deps, st, opts = {}) {
       sheet();
       return 1;
     }
-    out("✅ DSH 就绪，插件已装载");
+    out(apiState
+      ? "✅ DSH 就绪，插件已装载"
+      : "✅ DSH 就绪（登录服务已监听；状态接口仍在初始化，URL/密码走兜底通道）");
   } else {
     out("✅ DSH 已在运行（幂等：不重复拉起第二个实例）");
   }
-  if (!apiState.running) {
+  // apiState=null（state 接口挂起）时跳过 toggle：隧道状态未知，贸然 toggle 可能把已开的隧道关掉；
+  // URL 阶段会轮询 state / url 文件兜底，缝恢复后自然拿到 URL
+  if (apiState && !apiState.running) {
     out("🔌 隧道未开启——正在通过本机 API 打开（运行时开关，与插件装载开关是两回事）…");
     try { await apiCall(deps, "/rc-api/toggle", { method: "POST" }); }
     catch (e) {
@@ -436,20 +455,25 @@ async function cmdStart(deps, st, opts = {}) {
   }
   // 统一等 URL——无论隧道是刚 toggle 的、autoStart 已在跑但还没捕获到 URL（running=true,url=""），
   // 最终必须拿到非空 URL 才算成功，绝不打印空入口。
-  let got = false;
+  const readUrlFile = () => {
+    try { return String(deps.readFileSync(path.join(st.runDir, "url"), "utf8")).trim() || null; } catch { return null; }
+  };
+  let url = apiState?.url || null;
   const waited = await pollUntil(deps, deps.urlWaitMs, async (left) => {
-    apiState = await apiCall(deps, "/rc-api/state", { timeoutMs: left });
-    return !!apiState.url;
+    try {
+      apiState = await apiCall(deps, "/rc-api/state", { timeoutMs: Math.min(deps.pollTimeoutMs, left) });
+    } catch { /* state 挂起/瞬断：走 url 文件兜底 */ }
+    url = apiState?.url || readUrlFile();
+    return !!url;
   }, (s) => out("⏳ 等待隧道 URL…" + Math.round(s / 1000) + "s"));
-  if (!waited || !apiState.url) {
+  if (!url) {
     err("✗ " + deps.urlWaitMs / 1000 + "s 内没拿到隧道 URL（隧道进程可能没起来或 quick tunnel 暂慢）\n" +
       "  下一步：dsh-web logs cloudflared 看隧道日志；稍后再跑 dsh-web url");
     sheet();
     return 1;
   }
-  const url = apiState.url;
   let password = null;
-  try { password = (await apiCall(deps, "/rc-api/reveal", { method: "POST" })).password; }
+  try { password = (await apiCall(deps, "/rc-api/reveal", { method: "POST", timeoutMs: deps.pollTimeoutMs })).password; }
   catch (e) {
     err("✗ 密码获取失败：" + e.message + "\n" +
       "  下一步：确认 DSH 在跑（dsh-web status）；或在插件详情页查看密码（Plugins → Nano Market → dsh-remote → 配置）");
@@ -636,7 +660,7 @@ async function cmdUrl(deps, st) {
 
 async function cmdPassword(deps, st) {
   try {
-    const { password } = await apiCall(deps, "/rc-api/reveal", { method: "POST" });
+    const { password } = await apiCall(deps, "/rc-api/reveal", { method: "POST", timeoutMs: deps.pollTimeoutMs });
     deps.out("🔑 访问密码：" + password + renderCheatsheet());
     return 0;
   } catch (e) {

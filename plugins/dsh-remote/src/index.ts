@@ -322,6 +322,11 @@ function fallbackSecrets(): Record<string, string> {
   catch { return {}; }
 }
 
+// 凭据缝 resolve 可能在宿主启动早期挂起（2026-11-21 launchd boot 实测）：
+// 管理面接口一律带超时兜底——宁可短暂显示「未配置」，也不能把接口挂死（CLI 轮询/页面都会卡）。
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]);
+}
 async function getSecret(ref: string): Promise<string | null> {
   const ctx = (globalThis as any).__dshRemoteCtx;
   if (ctx?.credentials) {
@@ -493,7 +498,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
         if (!authed) { res.writeHead(401); res.end("unauthorized"); return; }
 
         if (req.method === "GET" && path === "/rc-api/state") {
-          const appSecret = await getSecret(APP_SECRET_REF);
+          const appSecret = await withTimeout(getSecret(APP_SECRET_REF), 2500, null);
           // 掩码只到前几位：页面能看出"已配置"，但完整身份串不出管理面
           const mask = (v: unknown, n: number) => (v ? String(v).slice(0, n) + "••••••" : "");
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -505,7 +510,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
             autoRestart: cfg.autoRestart !== false,
             sessionDays: Number(cfg.sessionDays) || 7,
             channel: cfg.notifyChannel || "off",
-            hasWebhook: !!(await getSecret(WEBHOOK_REF)),
+            hasWebhook: !!(await withTimeout(getSecret(WEBHOOK_REF), 2500, null)),
             hasAppSecret: !!appSecret,
             appIdMask: mask(cfg.notifyAppId, 6),
             openIdMask: mask(cfg.notifyOpenId, 6),

@@ -76,7 +76,10 @@ function makeWorld(opts = {}) {
       return { status: 1, stdout: "" };
     },
     kill: (pid, sig) => log.kills.push({ pid, sig }),
+    netProbe: opts.netProbe ?? (async () => false),
     sleep: async (ms) => { clock.now += ms; }, // 注入时钟随 sleep 前进：deadline 语义真实可测
+    pollTimeoutMs: opts.pollTimeoutMs,
+    apiTimeoutMs: opts.apiTimeoutMs,
     now: () => clock.now,
     out: (s) => outLines.push(s),
     err: (s) => errLines.push(s),
@@ -692,6 +695,51 @@ test("start：agent 已装未装载 → bootstrap 重新装载，不自行 spawn
   assert.ok(w.log.spawnSync.some((s) => s.cmd === "launchctl" && s.args[0] === "bootstrap"), "必须 bootstrap");
   assert.ok(w.outLines.join("\n").includes("bootstrap 重新装载"));
   assert.ok(w.outLines.join("\n").includes(URL));
+});
+
+test("凭据缝挂起（boot 早期）→ 9091 探活兜底就绪 + URL 走 url 文件 + reveal 密码", async () => {
+  const w = makeWorld({
+    files: { [PATCH_FILE]: PATCH_ENABLED, [join(HOME, ".remote-control", "run-plugin", "url")]: URL + "\n" },
+    fetch: async (url, o) => {
+      if (url.endsWith("/rc-api/state")) {
+        // 模拟凭据缝挂起：state 请求永不返回，直到信号中止（AbortSignal.timeout 会触发 abort）
+        return new Promise((resolve, reject) => {
+          if (o && o.signal) o.signal.addEventListener("abort", () => reject(new Error("AbortError")));
+        });
+      }
+      if (url.endsWith("/rc-api/reveal")) return jsonResponse({ password: "pw-demo" }); // reveal 不碰缝
+      throw new Error("unexpected " + url);
+    },
+    netProbe: async (port) => port === 9091, // 登录服务已监听
+    pollTimeoutMs: 60,
+    apiTimeoutMs: 60,
+  });
+  const code = await runCommand([], w.deps);
+  assert.equal(code, 0, "缝挂起不应导致启动失败");
+  assert.equal(w.log.spawn.length, 1, "launchd 缺席时应自行拉起一个实例");
+  const text = w.outLines.join("\n");
+  assert.ok(text.includes(URL), "URL 从 url 文件兜底获得");
+  assert.ok(text.includes("pw-demo"), "密码走 reveal（不碰缝）");
+  assert.ok(text.includes("命令速查表"));
+});
+
+test("凭据缝挂起且 9091 未监听 → 按 deadline 超时并给出诊断", async () => {
+  const w = makeWorld({
+    files: { [PATCH_FILE]: PATCH_ENABLED },
+    fetch: async (url, o) => {
+      if (url.endsWith("/rc-api/state")) {
+        return new Promise((resolve, reject) => {
+          if (o && o.signal) o.signal.addEventListener("abort", () => reject(new Error("AbortError")));
+        });
+      }
+      throw new Error("unexpected " + url);
+    },
+    netProbe: async () => false, // 9091 也一直不监听
+    pollTimeoutMs: 60,
+  });
+  const code = await runCommand([], w.deps);
+  assert.equal(code, 1);
+  assert.ok(w.errLines.join("\n").includes("等待 DSH 就绪超时"));
 });
 
 test("readPatchEntry：entry 级 enabled 优先于 config 级；config 级兜底；缺失=false", () => {
