@@ -367,6 +367,25 @@ async function cmdStart(deps, st, opts = {}) {
         sheet();
         return 1;
       }
+      // 实测（2026-11-21）：bootstrap 偶发 exit 0 但 job 并未装载——必须复查，未装载就回退自行拉起
+      const recheck = launchdDshJob(deps);
+      if (!recheck.exists) {
+        err("⚠ launchctl bootstrap 返回成功但 agent 未装载（macOS 偶发）——回退为 detached 自行拉起");
+        const dshBin = findDshBin(deps);
+        if (!dshBin) {
+          err("✗ 找不到 dsh 命令——先安装 DeepSeek Harness（npm i -g @deepseek-ai/dsh）");
+          sheet();
+          return 1;
+        }
+        try {
+          defaultSpawnDsh(deps, { dshBin, logDir: st.dshLogDir });
+        } catch (e) {
+          err("✗ 后台拉起 DSH 失败：" + e.message + "\n  下一步：前台跑 dsh web 看真实报错");
+          sheet();
+          return 1;
+        }
+        out("🚀 DSH 未在运行——已在后台拉起（detached，终端可以直接关闭）");
+      }
     } else {
       const dshBin = findDshBin(deps);
       if (!dshBin) {
@@ -388,9 +407,15 @@ async function cmdStart(deps, st, opts = {}) {
       return true; // API 一通即视为就绪（装载与隧道状态在后续阶段判断）
     }, (s) => out("⏳ 等待 DSH 就绪…" + Math.round(s / 1000) + "s"));
     if (!ok || !apiState) {
+      const jobNow = launchdDshJob(deps);
+      const launchdErr = path.join(st.dshLogDir, "dsh-web.launchd.err.log");
+      let tail = "";
+      try { tail = String(deps.readFileSync(launchdErr, "utf8")).split("\n").filter((l) => l.length > 0).slice(-5).join("\n  "); } catch { /* absent */ }
       err("✗ 等待 DSH 就绪超时（" + deps.startWaitMs / 1000 + "s）——插件 API（127.0.0.1:9091）没有应答\n" +
         (job.exists && job.running
-          ? "  下一步：launchctl print gui/$(id -u)/com.deepseek.dsh-web 看 agent 状态；或 launchctl kickstart -k gui/$(id -u)/com.deepseek.dsh-web 强制重启"
+          ? "  诊断：launchd job 现状=" + (jobNow.exists ? (jobNow.running ? "running(pid " + jobNow.pid + ")" : "已装载未运行（DSH 启动中失败或被 watchdog 关闭）") : "已被 launchd 移除") + "\n" +
+            (tail ? "  launchd 日志尾部：\n    " + tail + "\n" : "") +
+            "  下一步：launchctl kickstart -k gui/$(id -u)/com.deepseek.dsh-web 重试；或前台跑 dsh web 看真实报错"
           : "  下一步：dsh-web logs dsh 看启动日志；或前台跑 dsh web 看真实报错"));
       sheet();
       return 1;

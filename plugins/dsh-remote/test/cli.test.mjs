@@ -675,12 +675,17 @@ test("start：agent 已装未装载 → bootstrap 重新装载，不自行 spawn
     },
     spawnSync: (cmd, a) => {
       if (cmd === "id") return { status: 0, stdout: "501\n" };
-      if (cmd === "launchctl" && a[0] === "print") return { status: 1, stdout: "" }; // 未装载
+      if (cmd === "launchctl" && a[0] === "print") {
+        // 第一次 print（探测）= 未装载；bootstrap 后复查 = 已装载运行（正常路径）
+        printCalls++;
+        return printCalls === 1 ? { status: 1, stdout: "" } : { status: 0, stdout: "state = running\npid = 48000\n" };
+      }
       if (cmd === "launchctl" && a[0] === "bootstrap") return { status: 0, stdout: "" };
       if (cmd === "which") return { status: 0, stdout: TRUSTED_DSH + "\n" };
       return { status: 1, stdout: "" };
     },
   });
+  let printCalls = 0;
   const code = await runCommand([], w.deps);
   assert.equal(code, 0);
   assert.equal(w.log.spawn.length, 0, "有 agent 就交还 launchd，不自行 spawn");
