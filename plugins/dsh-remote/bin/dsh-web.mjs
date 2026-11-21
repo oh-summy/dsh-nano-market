@@ -27,7 +27,7 @@ const LOGIN_PORT = 9091; // stop 终验对象：登录页/管理 API（随 DSH �
 export const COMMANDS = [
   { cmd: "dsh-web", desc: "启动：后台拉起 DSH（终端可关）+ 开隧道，打印访问地址与密码（幂等）" },
   { cmd: "dsh-web help", desc: "只看这张命令速查表" },
-  { cmd: "dsh-web stop", desc: "停隧道（本机 API）+ 停 DSH 进程（按 3080 端口属主核对后终止）" },
+  { cmd: "dsh-web stop", desc: "停隧道（本机 API）+ 停 DSH（launchd 在管时卸载 agent，防止 KeepAlive 复活）" },
   { cmd: "dsh-web restart", desc: "重启：stop → start" },
   { cmd: "dsh-web status", desc: "DSH 进程 / 插件装载 / 隧道 / 通知通道 / 开机自启 agent" },
   { cmd: "dsh-web url", desc: "当前公网入口 URL" },
@@ -298,14 +298,20 @@ function survivingChildren(deps, st) {
 // start 在 dsh-down 时只等待、不 spawn，避免与 launchd 的 KeepAlive 重拉赛跑出双实例
 //（实测事故：重启窗口期裸 dsh-web 与 launchd 各起一个实例，抢 3080/9091，CLI 90s 误报超时）。
 function launchdDshJob(deps) {
-  const uid = deps.spawnSync("id", ["-u"], { encoding: "utf8" });
-  if (uid.status !== 0) return { exists: false, running: false, pid: 0 };
-  const r = deps.spawnSync("launchctl", ["print", "gui/" + uid.stdout.trim() + "/com.deepseek.dsh-web"], { encoding: "utf8" });
-  if (r.status !== 0) return { exists: false, running: false, pid: 0 };
+  const uidR = deps.spawnSync("id", ["-u"], { encoding: "utf8" });
+  const uid = uidR.status === 0 ? uidR.stdout.trim() : "";
+  if (!uid) return { exists: false, running: false, pid: 0, uid: "" };
+  const r = deps.spawnSync("launchctl", ["print", "gui/" + uid + "/com.deepseek.dsh-web"], { encoding: "utf8" });
+  if (r.status !== 0) return { exists: false, running: false, pid: 0, uid };
   const text = (r.stdout || "") + (r.stderr || "");
   const pidM = /^[ \t]*pid = (\d+)/m.exec(text);
   const stateM = /^[ \t]*state = (\S+)/m.exec(text);
-  return { exists: true, running: stateM ? stateM[1] === "running" : false, pid: pidM ? parseInt(pidM[1], 10) : 0 };
+  return { exists: true, running: stateM ? stateM[1] === "running" : false, pid: pidM ? parseInt(pidM[1], 10) : 0, uid };
+}
+
+// agent plist 路径（install-autostart.sh 安装的那个）
+function agentPlist(deps) {
+  return path.join(deps.homedir(), "Library", "LaunchAgents", "com.deepseek.dsh-web.plist");
 }
 
 function findDshBin(deps) {
@@ -347,9 +353,20 @@ async function cmdStart(deps, st, opts = {}) {
   let apiState = st.state === "ready" ? st.apiState : null;
   if (st.state === "dsh-down") {
     const job = launchdDshJob(deps);
+    const plist = agentPlist(deps);
     if (job.exists && job.running) {
       // launchd 在管：绝不另起实例（双实例抢 3080/9091），只等 launchd 拉起的那个就绪
       out("ℹ 检测到 launchd 正在管理 DSH（com.deepseek.dsh-web，pid " + job.pid + "）——等待它就绪，不另起实例");
+    } else if (!job.exists && deps.existsSync(plist)) {
+      // agent 已安装但未装载（上次 stop bootout 卸载了它）：bootstrap 重新装载，仍由 launchd 拉起
+      out("ℹ 检测到 launchd agent 已安装未装载——bootstrap 重新装载，由 launchd 拉起 DSH");
+      const bs = deps.spawnSync("launchctl", ["bootstrap", "gui/" + job.uid, plist], { encoding: "utf8" });
+      if (bs.status !== 0) {
+        err("✗ launchctl bootstrap 失败：" + ((bs.stderr || "").trim() || (bs.error && bs.error.message) || "exit " + bs.status) + "\n" +
+          "  下一步：手动 launchctl bootstrap gui/$(id -u) " + plist + "；或前台跑 dsh web");
+        sheet();
+        return 1;
+      }
     } else {
       const dshBin = findDshBin(deps);
       if (!dshBin) {
@@ -438,6 +455,25 @@ async function cmdStop(deps, st, opts = {}) {
     }
   } else {
     out("ℹ 插件 API 不可达（DSH 未运行或未装载）——停 DSH 后按 pid 文件兜底回收子进程");
+  }
+  const job = launchdDshJob(deps);
+  if (job.exists) {
+    // 实测事故（2026-11-21）：直接 kill 会被 KeepAlive 立即复活并抢占 3080，导致「已停止」是假的、
+    // 手动 dsh web 撞 EADDRINUSE。正确停法 = 停隧道后 bootout 卸载 agent，让 DSH 真正停下。
+    out("ℹ DSH 由 launchd 管理（com.deepseek.dsh-web）——卸载 agent（bootout），防止 KeepAlive 复活");
+    const bo = deps.spawnSync("launchctl", ["bootout", "gui/" + job.uid + "/com.deepseek.dsh-web"], { encoding: "utf8" });
+    if (bo.status === 0) {
+      const freed = await pollUntil(deps, 15_000, async () => portOwner(deps, DSH_PORT).state === "none");
+      if (freed) {
+        out("✅ DSH 已停止（agent 已卸载，KeepAlive 不会复活；下次跑 dsh-web 会自动重新装载）");
+        reapChildren(deps, st);
+        await waitChildrenGone(deps, st);
+        return finishStop(deps, st, opts);
+      }
+      err("⚠ bootout 后 3080 仍未释放——回退为按属主核对终止");
+    } else {
+      err("⚠ launchctl bootout 失败：" + ((bo.stderr || "").trim() || (bo.error && bo.error.message) || "exit " + bo.status) + "（回退为按属主核对终止）");
+    }
   }
   const own = portOwner(deps, DSH_PORT);
   if (own.state === "error") {
@@ -545,10 +581,15 @@ async function cmdStatus(deps, st) {
   } else {
     lines.push("ℹ 插件 API（127.0.0.1:9091）不可达——DSH 未运行或插件未装载");
   }
-  const plist = path.join(st.home, "Library", "LaunchAgents", "com.deepseek.dsh-web.plist");
-  lines.push(deps.existsSync(plist)
-    ? "✅ 开机自启 agent：已安装（" + plist + "）"
-    : "ℹ 开机自启 agent：未安装（可选，不影响手动 dsh-web）");
+  const job2 = launchdDshJob(deps);
+  const plist = agentPlist(deps);
+  lines.push(job2.exists && job2.running
+    ? "✅ 开机自启 agent：已装载并在运行（com.deepseek.dsh-web）"
+    : job2.exists
+      ? "⚠ 开机自启 agent：已装载但未运行"
+      : deps.existsSync(plist)
+        ? "ℹ 开机自启 agent：已安装未装载（上次 dsh-web stop 卸载；跑 dsh-web 会自动重新装载）"
+        : "ℹ 开机自启 agent：未安装（可选，不影响手动 dsh-web）");
   out(lines.join("\n") + renderCheatsheet());
   return 0;
 }

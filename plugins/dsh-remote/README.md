@@ -42,7 +42,7 @@ The bundle ships disabled (`cordis.patch.yml`: `enabled: false`). Flip it to `tr
 |---|---|
 | `dsh-web` | **= start**：后台拉起 DSH（detached + unref，终端可关）→ 起隧道 → 打印 URL + 访问密码 + 速查表；幂等（已在跑时不重复拉起） |
 | `dsh-web help` | 只打印命令速查表 |
-| `dsh-web stop` | 停隧道（本机 API toggle）+ 停 DSH 进程（按 3080 端口属主核对后终止，非 DSH 拒绝） |
+| `dsh-web stop` | 停隧道（本机 API toggle）+ 停 DSH 进程（按 3080 端口属主核对后终止，非 DSH 拒绝）；装了开机自启 agent 的机器会先 `bootout` 卸载 agent，防止 KeepAlive 复活 |
 | `dsh-web restart` | stop → start |
 | `dsh-web status` | DSH 进程 / 插件装载 / 隧道 / 通知通道 / 开机自启 agent 在不在 |
 | `dsh-web url` | 当前公网入口 URL |
@@ -67,6 +67,7 @@ The bundle ships disabled (`cordis.patch.yml`: `enabled: false`). Flip it to `tr
 - 首选落点 `~/.npm-global/bin/dsh-web`（`dsh` 本身就在那儿）；该目录不可写，或同名路径已存在普通文件/指向别处的软链时，插件**只创建、绝不覆盖**，跳过并告警（日志提示「把 `~/.dsh/bin` 加入 PATH」）；两级链接都就绪才打「命令已就绪」。
 - 物化是软链不是拷贝：插件卸载后软链悬空，命令随之消失；不会留下「能敲但啥也干不了」的僵尸命令。
 - 端口硬约束：整条链路写死 DSH 默认端口 **3080**（插件 Caddy 上游 `UPSTREAM_HOST`），改端口会打断链路。
+- **launchd 协同**（装了开机自启 agent 的 macOS）：DSH 的启停只归一方管理，绝不双实例——`start` 在 DSH 未运行时优先 `bootstrap` 重新装载 agent（由 launchd 拉起）；`stop` 停隧道后 `bootout` 卸载 agent（否则 KeepAlive 会立刻复活 DSH，「已停止」就是假的）；无 agent 的机器由 CLI 直接 detached 拉起。
 
 ## How it works
 

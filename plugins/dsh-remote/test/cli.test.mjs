@@ -639,6 +639,56 @@ test("P2 回归：launchd 在管时超时报错给出 launchd 指引", async () 
   assert.ok(text.includes("launchctl kickstart"), "launchd 场景给 launchd 指引");
 });
 
+test("stop：launchd 在管 → 停隧道后 bootout 卸载 agent（KeepAlive 不复活）", async () => {
+  const w = makeWorld({
+    files: { [PATCH_FILE]: PATCH_ENABLED },
+    fetch: async (url) => {
+      if (url.endsWith("/rc-api/state")) return jsonResponse(STATE());
+      if (url.endsWith("/rc-api/toggle")) return jsonResponse({ ok: true, enabled: false });
+      throw new Error("unexpected " + url);
+    },
+    spawnSync: (cmd, a) => {
+      if (cmd === "id") return { status: 0, stdout: "501\n" };
+      if (cmd === "launchctl" && a[0] === "print") return { status: 0, stdout: "state = running\npid = 44135\n" };
+      if (cmd === "launchctl" && a[0] === "bootout") return { status: 0, stdout: "" };
+      const ls = lsofMock({})(cmd, a); // bootout 后三端口全清
+      if (ls) return ls;
+      if (cmd === "which") return { status: 0, stdout: TRUSTED_DSH + "\n" };
+      return { status: 1, stdout: "" };
+    },
+  });
+  const code = await runCommand(["stop"], w.deps);
+  assert.equal(code, 0);
+  assert.ok(w.log.spawnSync.some((s) => s.cmd === "launchctl" && s.args[0] === "bootout"), "必须 bootout 卸载 agent");
+  assert.equal(w.log.kills.length, 0, "bootout 成功则无需手动 kill");
+  assert.ok(w.outLines.join("\n").includes("KeepAlive 不会复活"));
+});
+
+test("start：agent 已装未装载 → bootstrap 重新装载，不自行 spawn", async () => {
+  const PLIST = join(HOME, "Library", "LaunchAgents", "com.deepseek.dsh-web.plist");
+  const w = makeWorld({
+    files: { [PATCH_FILE]: PATCH_ENABLED, [PLIST]: "plist" },
+    fetch: async (url, o, n) => {
+      if (url.endsWith("/rc-api/state")) return n === 1 ? Promise.reject(new Error("ECONNREFUSED")) : jsonResponse(STATE());
+      if (url.endsWith("/rc-api/reveal")) return jsonResponse({ password: "pw-demo" });
+      throw new Error("unexpected " + url);
+    },
+    spawnSync: (cmd, a) => {
+      if (cmd === "id") return { status: 0, stdout: "501\n" };
+      if (cmd === "launchctl" && a[0] === "print") return { status: 1, stdout: "" }; // 未装载
+      if (cmd === "launchctl" && a[0] === "bootstrap") return { status: 0, stdout: "" };
+      if (cmd === "which") return { status: 0, stdout: TRUSTED_DSH + "\n" };
+      return { status: 1, stdout: "" };
+    },
+  });
+  const code = await runCommand([], w.deps);
+  assert.equal(code, 0);
+  assert.equal(w.log.spawn.length, 0, "有 agent 就交还 launchd，不自行 spawn");
+  assert.ok(w.log.spawnSync.some((s) => s.cmd === "launchctl" && s.args[0] === "bootstrap"), "必须 bootstrap");
+  assert.ok(w.outLines.join("\n").includes("bootstrap 重新装载"));
+  assert.ok(w.outLines.join("\n").includes(URL));
+});
+
 test("readPatchEntry：entry 级 enabled 优先于 config 级；config 级兜底；缺失=false", () => {
   const mk = (text) => createDeps({
     readFileSync: (p) => {
