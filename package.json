@@ -1,6 +1,6 @@
 {
   "name": "@oh-summy/dsh-remote",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "icon": "./icon.svg",
   "private": true,
   "description": "Remote access to your local DSH via a Cloudflare quick tunnel with a password gate and Feishu notifications (group or DM).",
@@ -51,6 +51,10 @@
     "cordis.patch.yml",
     "icon.svg",
     "lib",
-    "locale/*.json"
-  ]
+    "locale/*.json",
+    "bin"
+  ],
+  "bin": {
+    "dsh-web": "./bin/dsh-web.mjs"
+  }
 }
