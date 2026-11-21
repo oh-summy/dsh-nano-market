@@ -62,7 +62,7 @@ export function createDeps(overrides = {}) {
     out,
     err: overrides.err ?? ((s) => process.stderr.write(s + "\n")),
     apiTimeoutMs: overrides.apiTimeoutMs ?? 4000,
-    startWaitMs: overrides.startWaitMs ?? 90_000, // DSH 冷启动就绪超时
+    startWaitMs: overrides.startWaitMs ?? 180_000, // DSH 冷启动就绪超时（launchd 拉起窗口实测可超 90s）
     startPollStepMs: overrides.startPollStepMs ?? 1000,
     urlWaitMs: overrides.urlWaitMs ?? 50_000, // 等 URL（插件侧 URL_TIMEOUT_MS=45s）
     tailLines: overrides.tailLines ?? 40,
@@ -294,6 +294,20 @@ function survivingChildren(deps, st) {
   return alive;
 }
 
+// launchd agent（开机自启）探测：job 存在 = DSH 的启停归 launchd 管——
+// start 在 dsh-down 时只等待、不 spawn，避免与 launchd 的 KeepAlive 重拉赛跑出双实例
+//（实测事故：重启窗口期裸 dsh-web 与 launchd 各起一个实例，抢 3080/9091，CLI 90s 误报超时）。
+function launchdDshJob(deps) {
+  const uid = deps.spawnSync("id", ["-u"], { encoding: "utf8" });
+  if (uid.status !== 0) return { exists: false, running: false, pid: 0 };
+  const r = deps.spawnSync("launchctl", ["print", "gui/" + uid.stdout.trim() + "/com.deepseek.dsh-web"], { encoding: "utf8" });
+  if (r.status !== 0) return { exists: false, running: false, pid: 0 };
+  const text = (r.stdout || "") + (r.stderr || "");
+  const pidM = /^[ \t]*pid = (\d+)/m.exec(text);
+  const stateM = /^[ \t]*state = (\S+)/m.exec(text);
+  return { exists: true, running: stateM ? stateM[1] === "running" : false, pid: pidM ? parseInt(pidM[1], 10) : 0 };
+}
+
 function findDshBin(deps) {
   const r = deps.spawnSync("which", ["dsh"], { encoding: "utf8" });
   if (r.status === 0) { const p = (r.stdout || "").trim(); if (p) return p; }
@@ -306,14 +320,20 @@ function findDshBin(deps) {
 
 // deadline 式轮询：按注入时钟算真实剩余预算，单次请求的 abort 不超过剩余时间——
 // 避免「累计 sleep 名义 90s、实际含请求耗时拖到 450s」的失真。
-async function pollUntil(deps, budgetMs, tryOnce) {
+async function pollUntil(deps, budgetMs, tryOnce, onTick) {
   const deadline = deps.now() + budgetMs;
+  const startedAt = deps.now();
+  let lastTick = -Infinity;
   for (;;) {
     const left = deadline - deps.now();
     if (left <= 0) return false;
     await deps.sleep(Math.min(deps.startPollStepMs, left));
     const left2 = deadline - deps.now();
     if (left2 <= 0) return false; // 耗尽即停：不发越界请求
+    if (onTick) {
+      const elapsed = deps.now() - startedAt;
+      if (elapsed - lastTick >= 5000) { lastTick = elapsed; onTick(elapsed); }
+    }
     try {
       const hit = await tryOnce(left2);
       if (hit) return deps.now() <= deadline; // 命中但已越过 deadline 的晚到结果 = 失败
@@ -326,27 +346,35 @@ async function cmdStart(deps, st, opts = {}) {
   const sheet = () => { if (opts.sheet !== false) out(renderCheatsheet()); };
   let apiState = st.state === "ready" ? st.apiState : null;
   if (st.state === "dsh-down") {
-    const dshBin = findDshBin(deps);
-    if (!dshBin) {
-      err("✗ 找不到 dsh 命令——先安装 DeepSeek Harness（npm i -g @deepseek-ai/dsh），再跑 dsh-web");
-      sheet();
-      return 1;
+    const job = launchdDshJob(deps);
+    if (job.exists && job.running) {
+      // launchd 在管：绝不另起实例（双实例抢 3080/9091），只等 launchd 拉起的那个就绪
+      out("ℹ 检测到 launchd 正在管理 DSH（com.deepseek.dsh-web，pid " + job.pid + "）——等待它就绪，不另起实例");
+    } else {
+      const dshBin = findDshBin(deps);
+      if (!dshBin) {
+        err("✗ 找不到 dsh 命令——先安装 DeepSeek Harness（npm i -g @deepseek-ai/dsh），再跑 dsh-web");
+        sheet();
+        return 1;
+      }
+      try {
+        defaultSpawnDsh(deps, { dshBin, logDir: st.dshLogDir });
+      } catch (e) {
+        err("✗ 后台拉起 DSH 失败：" + e.message + "\n  下一步：前台跑 dsh web 看真实报错");
+        sheet();
+        return 1;
+      }
+      out("🚀 DSH 未在运行——已在后台拉起（detached，终端可以直接关闭；日志：" + st.dshLogDir + "/dsh-web.cli.*.log）");
     }
-    try {
-      defaultSpawnDsh(deps, { dshBin, logDir: st.dshLogDir });
-    } catch (e) {
-      err("✗ 后台拉起 DSH 失败：" + e.message + "\n  下一步：前台跑 dsh web 看真实报错");
-      sheet();
-      return 1;
-    }
-    out("🚀 DSH 未在运行——已在后台拉起（detached，终端可以直接关闭；日志：" + st.dshLogDir + "/dsh-web.cli.*.log）");
-    const ok = await pollUntil(deps, deps.startWaitMs, async (budget) => {
-      apiState = await apiCall(deps, "/rc-api/state", { timeoutMs: budget });
+    const ok = await pollUntil(deps, deps.startWaitMs, async (left) => {
+      apiState = await apiCall(deps, "/rc-api/state", { timeoutMs: left });
       return true; // API 一通即视为就绪（装载与隧道状态在后续阶段判断）
-    });
+    }, (s) => out("⏳ 等待 DSH 就绪…" + Math.round(s / 1000) + "s"));
     if (!ok || !apiState) {
       err("✗ 等待 DSH 就绪超时（" + deps.startWaitMs / 1000 + "s）——插件 API（127.0.0.1:9091）没有应答\n" +
-        "  下一步：dsh-web logs dsh 看启动日志；或前台跑 dsh web 看真实报错");
+        (job.exists && job.running
+          ? "  下一步：launchctl print gui/$(id -u)/com.deepseek.dsh-web 看 agent 状态；或 launchctl kickstart -k gui/$(id -u)/com.deepseek.dsh-web 强制重启"
+          : "  下一步：dsh-web logs dsh 看启动日志；或前台跑 dsh web 看真实报错"));
       sheet();
       return 1;
     }
@@ -367,10 +395,10 @@ async function cmdStart(deps, st, opts = {}) {
   // 统一等 URL——无论隧道是刚 toggle 的、autoStart 已在跑但还没捕获到 URL（running=true,url=""），
   // 最终必须拿到非空 URL 才算成功，绝不打印空入口。
   let got = false;
-  const waited = await pollUntil(deps, deps.urlWaitMs, async (budget) => {
-    apiState = await apiCall(deps, "/rc-api/state", { timeoutMs: budget });
+  const waited = await pollUntil(deps, deps.urlWaitMs, async (left) => {
+    apiState = await apiCall(deps, "/rc-api/state", { timeoutMs: left });
     return !!apiState.url;
-  });
+  }, (s) => out("⏳ 等待隧道 URL…" + Math.round(s / 1000) + "s"));
   if (!waited || !apiState.url) {
     err("✗ " + deps.urlWaitMs / 1000 + "s 内没拿到隧道 URL（隧道进程可能没起来或 quick tunnel 暂慢）\n" +
       "  下一步：dsh-web logs cloudflared 看隧道日志；稍后再跑 dsh-web url");

@@ -85,6 +85,7 @@ function cliBinPath(): string {
 const DSH_BIN_DIR = join(homedir(), ".dsh", "bin");
 const CLI_LINK = join(DSH_BIN_DIR, "dsh-web"); // 第一级软链 → 插件已安装副本内的 bin
 const NPM_BIN = join(homedir(), ".npm-global", "bin", "dsh-web"); // 第二级软链（PATH 已含 ~/.npm-global/bin）
+const CLI_OWNER_FILE = join(homedir(), ".remote-control", "run-plugin", "cli-links-owner.json"); // 软链属主登记（世代守卫）
 
 function isSymlinkTo(p: string, target: string): boolean {
   try {
@@ -118,32 +119,47 @@ function ensureLink(ctx: AnyCtx, linkPath: string, target: string, ownStaleMarke
 }
 // 装载时物化：必须是软链，绝不拷贝（拷贝会在卸载后留下「能敲但啥也干不了」的僵尸命令）；
 // 卸载 → 目标消失 → 软链悬空 → 命令随之消失。两级链接都就绪才报「命令已就绪」。
-export function materializeCli(ctx: AnyCtx): void {
+// 返回本次的属主代（世代守卫）：entry 重启/多实例竞态下，只有「属主仍是自己」的 disposer 才回收软链。
+// 实测事故（2026-11-21）：CLI 拉起的实例 boot 失败，其 disposer 把 launchd 实例正在用的链接删了。
+export function materializeCli(ctx: AnyCtx): string | null {
+  const gen = hex(8);
   try {
     const bin = cliBinPath();
-    if (!existsSync(bin)) { say(ctx, "warn", `[dsh-remote] CLI 缺失，跳过物化：${bin}`); return; }
+    if (!existsSync(bin)) { say(ctx, "warn", `[dsh-remote] CLI 缺失，跳过物化：${bin}`); return null; }
     chmodSync(bin, 0o755);
     mkdirSync(DSH_BIN_DIR, { recursive: true });
-    // 一级用插件包名做 stale 标记：宿主被杀留下的自有悬空链可接管；外来链接一律不动
-    if (ensureLink(ctx, CLI_LINK, bin, "@oh-summy/dsh-remote") === "blocked") return; // 一级被外来占用 → 不再建二级，不报就绪
+    if (ensureLink(ctx, CLI_LINK, bin, "@oh-summy/dsh-remote") === "blocked") return null; // 一级被外来占用 → 不再建二级，不报就绪
     try { mkdirSync(dirname(NPM_BIN), { recursive: true }); } catch { /* exists */ }
     let npmLink: "created" | "ok" | "blocked";
     try {
       npmLink = ensureLink(ctx, NPM_BIN, CLI_LINK);
     } catch (e) {
       say(ctx, "warn", `[dsh-remote] 无法创建 ${NPM_BIN}（${(e as Error).message}）——请把 ${DSH_BIN_DIR} 加入 PATH 后用 dsh-web`);
-      return;
+      return null;
     }
     if (npmLink === "ok" || npmLink === "created") {
       say(ctx, "info", "[dsh-remote] 命令已就绪：dsh-web（dsh-web help 看全部命令）");
+      try { mkdirSync(dirname(CLI_OWNER_FILE), { recursive: true }); writeFileSync(CLI_OWNER_FILE, JSON.stringify({ pid: process.pid, gen })); } catch { /* best effort */ }
+      return gen;
     }
+    return null;
   } catch (e) {
     say(ctx, "warn", "[dsh-remote] dsh-web 命令物化失败：" + (e as Error).message);
+    return null;
   }
 }
 
-// 停用/卸载时只撤自己创建的软链（校验软链目标，绝不误删用户自建文件）；两级清理互不阻断
-export function dematerializeCli(ctx: AnyCtx): void {
+// 停用/卸载时只撤自己创建的软链（校验软链目标，绝不误删用户自建文件）；两级清理互不阻断。
+// 世代守卫：属主代不匹配（entry 重启后新 fiber 已接管 / 另一实例已接管）→ 跳过回收。
+export function dematerializeCli(ctx: AnyCtx, gen: string | null): void {
+  if (!gen) return; // 本次装载未接管链接，无权回收
+  try {
+    const owner = JSON.parse(readFileSync(CLI_OWNER_FILE, "utf8")) as { pid?: number; gen?: string };
+    if (owner.pid !== process.pid || owner.gen !== gen) {
+      say(ctx, "info", `[dsh-remote] dsh-web 链接属主已更替（owner pid ${owner.pid ?? "?"}），跳过回收`);
+      return;
+    }
+  } catch { /* 属主文件缺失：仍按本次属主处理 */ }
   try {
     if (isSymlinkTo(NPM_BIN, CLI_LINK)) { unlinkSync(NPM_BIN); say(ctx, "info", `[dsh-remote] 已撤软链 ${NPM_BIN}`); }
   } catch (e) {
@@ -154,6 +170,7 @@ export function dematerializeCli(ctx: AnyCtx): void {
   } catch (e) {
     say(ctx, "warn", `[dsh-remote] 撤 ${CLI_LINK} 失败：` + (e as Error).message);
   }
+  try { rmSync(CLI_OWNER_FILE); } catch { /* absent */ }
 }
 // ---------- small utils ----------
 
@@ -1028,7 +1045,7 @@ export function apply(ctx: AnyCtx, config: Config = {}) {
   // 命令式启停）都必须检查，否则 fiber 销毁后仍会拉起进程（第 1 轮自审 P1-2 的根因）。
   // 管理 listener（登录页 + /rc-api）常驻：不随隧道启停——否则停止后连"启动按钮"都没有。
   ctx.effect(() => {
-    materializeCli(ctx); // dsh-web 命令物化（软链；幂等，entry 重启重挂也无碍）
+    const cliOwnerGen = materializeCli(ctx); // dsh-web 命令物化（软链；幂等，entry 重启重挂也无碍）
     let dead = false;
     const isAlive = () => !dead;
     fiberAlive = isAlive;
@@ -1068,7 +1085,7 @@ export function apply(ctx: AnyCtx, config: Config = {}) {
 
     return () => { // disposer
       dead = true;
-      dematerializeCli(ctx); // 只撤自己创建的软链
+      dematerializeCli(ctx, cliOwnerGen); // 只撤自己创建的软链（世代守卫：属主已更替则跳过）
       fiberAlive = null;
       if (urlTimer) { clearInterval(urlTimer); urlTimer = null; }
       for (const t of timers) clearTimeout(t);

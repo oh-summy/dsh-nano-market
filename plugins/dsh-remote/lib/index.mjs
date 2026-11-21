@@ -63,6 +63,7 @@ function cliBinPath() {
 const DSH_BIN_DIR = join(homedir(), ".dsh", "bin");
 const CLI_LINK = join(DSH_BIN_DIR, "dsh-web");
 const NPM_BIN = join(homedir(), ".npm-global", "bin", "dsh-web");
+const CLI_OWNER_FILE = join(homedir(), ".remote-control", "run-plugin", "cli-links-owner.json");
 function isSymlinkTo(p, target) {
 	try {
 		return lstatSync(p).isSymbolicLink() && readlinkSync(p) === target;
@@ -104,15 +105,16 @@ function ensureLink(ctx, linkPath, target, ownStaleMarker = "") {
 	return "blocked";
 }
 function materializeCli(ctx) {
+	const gen = hex(8);
 	try {
 		const bin = cliBinPath();
 		if (!existsSync(bin)) {
 			say(ctx, "warn", `[dsh-remote] CLI 缺失，跳过物化：${bin}`);
-			return;
+			return null;
 		}
 		chmodSync(bin, 493);
 		mkdirSync(DSH_BIN_DIR, { recursive: true });
-		if (ensureLink(ctx, CLI_LINK, bin, "@oh-summy/dsh-remote") === "blocked") return;
+		if (ensureLink(ctx, CLI_LINK, bin, "@oh-summy/dsh-remote") === "blocked") return null;
 		try {
 			mkdirSync(dirname(NPM_BIN), { recursive: true });
 		} catch {}
@@ -121,14 +123,34 @@ function materializeCli(ctx) {
 			npmLink = ensureLink(ctx, NPM_BIN, CLI_LINK);
 		} catch (e) {
 			say(ctx, "warn", `[dsh-remote] 无法创建 ${NPM_BIN}（${e.message}）——请把 ${DSH_BIN_DIR} 加入 PATH 后用 dsh-web`);
-			return;
+			return null;
 		}
-		if (npmLink === "ok" || npmLink === "created") say(ctx, "info", "[dsh-remote] 命令已就绪：dsh-web（dsh-web help 看全部命令）");
+		if (npmLink === "ok" || npmLink === "created") {
+			say(ctx, "info", "[dsh-remote] 命令已就绪：dsh-web（dsh-web help 看全部命令）");
+			try {
+				mkdirSync(dirname(CLI_OWNER_FILE), { recursive: true });
+				writeFileSync(CLI_OWNER_FILE, JSON.stringify({
+					pid: process.pid,
+					gen
+				}));
+			} catch {}
+			return gen;
+		}
+		return null;
 	} catch (e) {
 		say(ctx, "warn", "[dsh-remote] dsh-web 命令物化失败：" + e.message);
+		return null;
 	}
 }
-function dematerializeCli(ctx) {
+function dematerializeCli(ctx, gen) {
+	if (!gen) return;
+	try {
+		const owner = JSON.parse(readFileSync(CLI_OWNER_FILE, "utf8"));
+		if (owner.pid !== process.pid || owner.gen !== gen) {
+			say(ctx, "info", `[dsh-remote] dsh-web 链接属主已更替（owner pid ${owner.pid ?? "?"}），跳过回收`);
+			return;
+		}
+	} catch {}
 	try {
 		if (isSymlinkTo(NPM_BIN, CLI_LINK)) {
 			unlinkSync(NPM_BIN);
@@ -142,6 +164,9 @@ function dematerializeCli(ctx) {
 	} catch (e) {
 		say(ctx, "warn", `[dsh-remote] 撤 ${CLI_LINK} 失败：` + e.message);
 	}
+	try {
+		rmSync(CLI_OWNER_FILE);
+	} catch {}
 }
 function say(ctx, method, msg) {
 	const logger = ctx.logger;
@@ -1157,7 +1182,7 @@ function apply(ctx, config = {}) {
 	};
 	mkdirSync(RUN_DIR, { recursive: true });
 	ctx.effect(() => {
-		materializeCli(ctx);
+		const cliOwnerGen = materializeCli(ctx);
 		let dead = false;
 		const isAlive = () => !dead;
 		fiberAlive = isAlive;
@@ -1196,7 +1221,7 @@ function apply(ctx, config = {}) {
 		});
 		return () => {
 			dead = true;
-			dematerializeCli(ctx);
+			dematerializeCli(ctx, cliOwnerGen);
 			fiberAlive = null;
 			if (urlTimer) {
 				clearInterval(urlTimer);

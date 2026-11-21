@@ -233,7 +233,7 @@ test("P2 回归：命中但已越过 deadline 的晚到结果不算成功", asyn
       }
       throw new Error("unexpected " + url);
     },
-    afterFetch: (n) => { if (n === 2) w.clock.now += 91_000; }, // 请求返回的瞬间把时钟推过 90s deadline（模拟请求耗时吞掉预算）
+    afterFetch: (n) => { if (n === 2) w.clock.now += 181_000; }, // 请求返回的瞬间把时钟推过 180s deadline（模拟请求耗时吞掉预算）
   });
   const code = await runCommand([], w.deps);
   assert.equal(code, 1, "晚到命中 = 失败");
@@ -573,6 +573,70 @@ test("status：DSH 在跑（node 入口形态）→ 识别为 DSH；非 DSH 占�
   const code2 = await rc(["status"], w2.deps);
   assert.equal(code2, 0);
   assert.ok(w2.outLines.join("\n").includes("被非 DSH 进程占用"));
+});
+
+test("P2 回归：launchd 在管 DSH → start 不另起实例，只等待其就绪", async () => {
+  const w = makeWorld({
+    files: { [PATCH_FILE]: PATCH_ENABLED },
+    fetch: async (url, o, n) => {
+      if (url.endsWith("/rc-api/state")) return n === 1 ? Promise.reject(new Error("ECONNREFUSED")) : jsonResponse(STATE());
+      if (url.endsWith("/rc-api/reveal")) return jsonResponse({ password: "pw-demo" });
+      throw new Error("unexpected " + url);
+    },
+    spawnSync: (cmd, a) => {
+      if (cmd === "id") return { status: 0, stdout: "501\n" };
+      if (cmd === "launchctl") return { status: 0, stdout: "state = running\npid = 42401\n" };
+      if (cmd === "which") return { status: 0, stdout: TRUSTED_DSH + "\n" };
+      return { status: 1, stdout: "" };
+    },
+  });
+  const code = await runCommand([], w.deps);
+  assert.equal(code, 0);
+  assert.equal(w.log.spawn.length, 0, "launchd 在管时绝不 spawn 第二个实例");
+  const text = w.outLines.join("\n");
+  assert.ok(text.includes("不另起实例"));
+  assert.ok(text.includes(URL) && text.includes("pw-demo"));
+});
+
+test("P2 回归：launchd 等待期间有进度输出（不再 90s 静默）", async () => {
+  const w = makeWorld({
+    files: { [PATCH_FILE]: PATCH_ENABLED },
+    fetch: async (url, o, n) => {
+      if (url.endsWith("/rc-api/state")) {
+        if (n <= 6) throw new Error("ECONNREFUSED"); // 探测 + 前 5 次轮询失败（模拟冷启动）
+        return jsonResponse(STATE());
+      }
+      if (url.endsWith("/rc-api/reveal")) return jsonResponse({ password: "pw-demo" });
+      throw new Error("unexpected " + url);
+    },
+    spawnSync: (cmd) => {
+      if (cmd === "id") return { status: 0, stdout: "501\n" };
+      if (cmd === "launchctl") return { status: 0, stdout: "state = running\npid = 42401\n" };
+      if (cmd === "which") return { status: 0, stdout: TRUSTED_DSH + "\n" };
+      return { status: 1, stdout: "" };
+    },
+  });
+  const code = await runCommand([], w.deps);
+  assert.equal(code, 0);
+  assert.ok(w.outLines.join("\n").includes("⏳ 等待 DSH 就绪"), "应有进度行");
+});
+
+test("P2 回归：launchd 在管时超时报错给出 launchd 指引", async () => {
+  const w = makeWorld({
+    files: { [PATCH_FILE]: PATCH_ENABLED },
+    fetch: async () => { throw new Error("ECONNREFUSED"); }, // 一直不通
+    spawnSync: (cmd) => {
+      if (cmd === "id") return { status: 0, stdout: "501\n" };
+      if (cmd === "launchctl") return { status: 0, stdout: "state = running\npid = 42401\n" };
+      if (cmd === "which") return { status: 0, stdout: TRUSTED_DSH + "\n" };
+      return { status: 1, stdout: "" };
+    },
+  });
+  const code = await runCommand([], w.deps);
+  assert.equal(code, 1);
+  const text = w.errLines.join("\n");
+  assert.ok(text.includes("等待 DSH 就绪超时"));
+  assert.ok(text.includes("launchctl kickstart"), "launchd 场景给 launchd 指引");
 });
 
 test("readPatchEntry：entry 级 enabled 优先于 config 级；config 级兜底；缺失=false", () => {
