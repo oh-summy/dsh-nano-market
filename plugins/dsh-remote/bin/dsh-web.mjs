@@ -65,6 +65,7 @@ export function createDeps(overrides = {}) {
       s.setTimeout(1000, () => { s.destroy(); resolve(false); });
     })),
     pollTimeoutMs: overrides.pollTimeoutMs ?? 3000, // 单次状态轮询上限：凭据缝挂起时不吃掉整个等待预算
+    toggleTimeoutMs: overrides.toggleTimeoutMs ?? 20_000, // toggle 是命令不是轮询：reapOrphans 等端口+spawn 属合法耗时（实测 >4s）
     sleep: overrides.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
     now: overrides.now ?? (() => performance.now()), // 单调时钟：Date.now 会受系统回拨影响
     out,
@@ -443,21 +444,39 @@ async function cmdStart(deps, st, opts = {}) {
   }
   // apiState=null（state 接口挂起）时跳过 toggle：隧道状态未知，贸然 toggle 可能把已开的隧道关掉；
   // URL 阶段会轮询 state / url 文件兜底，缝恢复后自然拿到 URL
+  const readUrlFile = () => {
+    try { return String(deps.readFileSync(path.join(st.runDir, "url"), "utf8")).trim() || null; } catch { return null; }
+  };
   if (apiState && !apiState.running) {
     out("🔌 隧道未开启——正在通过本机 API 打开（运行时开关，与插件装载开关是两回事）…");
-    try { await apiCall(deps, "/rc-api/toggle", { method: "POST" }); }
+    let toggleOk = true;
+    try { await apiCall(deps, "/rc-api/toggle", { method: "POST", timeoutMs: deps.toggleTimeoutMs }); }
     catch (e) {
-      err("✗ 打开隧道失败：" + e.message + "\n" +
-        "  下一步：DSH → Plugins → Nano Market → dsh-remote → 配置 → 点「启动」");
-      sheet();
-      return 1;
+      // 实测（2026-11-21）：4s 客户端超时误报——服务端 reapOrphans 等端口+spawn 属合法耗时，
+      // 且客户端超时并不取消服务端执行。以状态复查为准，不急于报错。
+      toggleOk = false;
+      err("⚠ 打开隧道请求超时/失败：" + e.message + "——服务端可能仍在执行，以状态复查为准…");
+    }
+    if (!toggleOk) {
+      const reOk = await pollUntil(deps, 10_000, async (left) => {
+        try {
+          apiState = await apiCall(deps, "/rc-api/state", { timeoutMs: Math.min(deps.pollTimeoutMs, left) });
+          if (apiState.running || apiState.url) return true;
+        } catch { /* 瞬断 */ }
+        try { if (readUrlFile()) return true; } catch { /* absent */ }
+        return false;
+      }, (s) => out("⏳ 复查隧道状态…" + Math.round(s / 1000) + "s"));
+      if (!reOk) {
+        err("✗ 打开隧道失败（复查也未完成）\n" +
+          "  下一步：DSH → Plugins → Nano Market → dsh-remote → 配置 → 点「启动」；或 dsh-web logs cloudflared");
+        sheet();
+        return 1;
+      }
+      out("ℹ 复查确认：隧道实际上已打开（刚才的请求超时是客户端侧误报）");
     }
   }
   // 统一等 URL——无论隧道是刚 toggle 的、autoStart 已在跑但还没捕获到 URL（running=true,url=""），
   // 最终必须拿到非空 URL 才算成功，绝不打印空入口。
-  const readUrlFile = () => {
-    try { return String(deps.readFileSync(path.join(st.runDir, "url"), "utf8")).trim() || null; } catch { return null; }
-  };
   let url = apiState?.url || null;
   const waited = await pollUntil(deps, deps.urlWaitMs, async (left) => {
     try {

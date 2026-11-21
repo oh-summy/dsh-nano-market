@@ -80,6 +80,7 @@ function makeWorld(opts = {}) {
     sleep: async (ms) => { clock.now += ms; }, // 注入时钟随 sleep 前进：deadline 语义真实可测
     pollTimeoutMs: opts.pollTimeoutMs,
     apiTimeoutMs: opts.apiTimeoutMs,
+    toggleTimeoutMs: opts.toggleTimeoutMs,
     now: () => clock.now,
     out: (s) => outLines.push(s),
     err: (s) => errLines.push(s),
@@ -740,6 +741,41 @@ test("凭据缝挂起且 9091 未监听 → 按 deadline 超时并给出诊断",
   const code = await runCommand([], w.deps);
   assert.equal(code, 1);
   assert.ok(w.errLines.join("\n").includes("等待 DSH 就绪超时"));
+});
+
+test("toggle 请求超时但服务端完成 → 复查确认后成功，不误报失败", async () => {
+  let toggled = false;
+  const w = makeWorld({
+    files: { [PATCH_FILE]: PATCH_ENABLED },
+    fetch: async (url, o) => {
+      if (url.endsWith("/rc-api/state")) {
+        // toggle「挂起」期间 running=false；服务端完成后（abort 触发）state 变为 running+url
+        return toggled ? jsonResponse(STATE()) : jsonResponse(STATE({ running: false, url: "" }));
+      }
+      if (url.endsWith("/rc-api/toggle")) {
+        toggled = true; // 服务端其实已完成
+        return new Promise((resolve, reject) => {
+          if (o && o.signal) o.signal.addEventListener("abort", () => reject(new Error("AbortError")));
+        });
+      }
+      if (url.endsWith("/rc-api/reveal")) return jsonResponse({ password: "pw-demo" });
+      throw new Error("unexpected " + url);
+    },
+    spawnSync: (cmd) => {
+      if (cmd === "id") return { status: 0, stdout: "501\n" };
+      if (cmd === "launchctl") return { status: 0, stdout: "state = running\npid = 48000\n" };
+      if (cmd === "which") return { status: 0, stdout: TRUSTED_DSH + "\n" };
+      return { status: 1, stdout: "" };
+    },
+    pollTimeoutMs: 60,
+    toggleTimeoutMs: 60,
+    netProbe: async (port) => port === 9091, // state 正常响应（running 由 mock 控制）
+  });
+  const code = await runCommand([], w.deps);
+  assert.equal(code, 0, "客户端超时不应误报失败——服务端已完成");
+  const text = w.outLines.join("\n");
+  assert.ok(text.includes("复查确认"), "应有复查确认输出");
+  assert.ok(text.includes(URL) && text.includes("pw-demo"));
 });
 
 test("readPatchEntry：entry 级 enabled 优先于 config 级；config 级兜底；缺失=false", () => {
