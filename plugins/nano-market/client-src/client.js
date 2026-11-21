@@ -37,6 +37,8 @@ const zh = {
   stateEnabled: "已启用",
   stateProvided: "宿主内置",
   stateUpdate: "可更新",
+  update: "更新",
+  updateTitle: "更新 {name} {version}",
   empty: "这个市场还没有注册任何插件。",
   unknownState: "读取已安装清单失败，暂不显示启用状态。",
   stateUnknownShort: "状态未知",
@@ -83,6 +85,8 @@ const en = {
   stateEnabled: "Enabled",
   stateProvided: "Bundled with DSH",
   stateUpdate: "Update available",
+  update: "Update",
+  updateTitle: "Update {name} {version}",
   empty: "This market has no plugins yet.",
   unknownState: "The installed list could not be read, so the enable state is hidden.",
   stateUnknownShort: "Unknown",
@@ -142,6 +146,7 @@ const CSS = `
 .nmk-cardOpen:focus-visible:after{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
 .nmk-cardDesc{color:var(--dsw-alias-label-tertiary);-webkit-line-clamp:1;-webkit-box-orient:vertical;font-size:13px;line-height:18px;display:-webkit-box;overflow:hidden;margin:0}
 .nmk-cardEnd{z-index:1;flex:none;display:inline-flex;align-items:center;gap:8px;position:relative}
+.nmk-cardEndStack{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
 .nmk-versionTag{font-variant-numeric:tabular-nums;flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .nmk-statusTag{height:18px;padding:0 7px;font-size:10px;line-height:1;flex:none}
 .nmk-msg{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;margin:0}
@@ -234,8 +239,21 @@ function CardIcon({ src }) {
   return jsx("img", { className: "nmk-packageImage", src, alt: "", width: 48, height: 48, onError: () => setFailed(true) });
 }
 
+// 官方 plugin-market 同规则的三个推导：预发布判定、对外展示的版本、更新目标。
+function presentedVersion(entry) {
+  return entry.versions?.find((item) => item.version === entry.defaultVersion) || entry.versions?.[0];
+}
+function prerelease(version) {
+  return version.split("+")[0]?.includes("-") === true;
+}
+function updateTarget(entry) {
+  const updatable = (version) => version.update && installable(version.compatibility);
+  const presented = presentedVersion(entry);
+  return updatable(presented) ? presented : entry.versions?.find((version) => updatable(version) && !prerelease(version.version));
+}
+
 /** 一张市场卡片：与宿主「已安装」页签的卡片同构。 */
-function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onInstall, onOpen }) {
+function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onInstall, onOpen, update }) {
   const working = busy === entry.name;
   const title = resolve(entry.title) || entry.name || "";
   const version = entry.versions?.find((item) => item.version === entry.defaultVersion) || entry.versions?.[0];
@@ -283,7 +301,7 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
     titleRow,
     jsx("p", { className: "nmk-cardDesc", children: resolve(entry.description) }),
   ] });
-  const end = status === "not-installed"
+  const switchEl = status === "not-installed"
     ? (canInstall
       ? jsx(P.Button, { variant: "primary", size: "sm", disabled: working || !stateKnown, onClick: onInstall, children: t("install") })
       : jsx(P.Tooltip, {
@@ -310,6 +328,22 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
           ...(bundle?.readOnlyReason === undefined ? {} : { title: readOnlyText(bundle.readOnlyReason, t) }),
           onChange: onToggle,
         });
+  // 已安装且有更新：宿主 slot 契约给了 update 执行器（走页面自带的更新对话框）就上按钮；
+  // 没给（老版宿主）则维持现状——只有「可更新」徽章，不渲染点不动的假按钮。
+  const updateTargetVersion = canUpdate && installed ? updateTarget(entry) : undefined;
+  const updateButton = updateTargetVersion?.update && typeof update === "function"
+    ? jsx(P.Button, {
+        variant: "outline",
+        size: "sm",
+        disabled: working,
+        "aria-label": t("updateTitle", { name: title, version: updateTargetVersion.version }),
+        onClick: () => update({ packageName: entry.name, version: updateTargetVersion.version, spec: updateTargetVersion.update.spec }),
+        children: t("update"),
+      })
+    : null;
+  const end = updateButton
+    ? jsxs("div", { className: "nmk-cardEndStack", children: [updateButton, switchEl] })
+    : switchEl;
   const head = jsx("div", { className: "nmk-cardHead", children: [
     jsx("span", { className: "nmk-cardIcon", children: artwork }),
     main,
@@ -523,6 +557,7 @@ function NanoMarketTab(props) {
             onToggle: (next) => toggle(entry, next),
             onInstall: () => askInstall(entry),
             onOpen: () => props.openPackage(entry.name),
+            update: typeof props.update === "function" ? (target) => props.update(target) : undefined,
           })) }),
     ] }),
     bundleError ? jsxs("div", { className: "nmk-notice", children: [
