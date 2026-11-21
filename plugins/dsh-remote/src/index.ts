@@ -4,15 +4,17 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import http from "node:http";
 import crypto from "node:crypto";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 
 // ---------- constants ----------
 
 const RUN_DIR = join(homedir(), ".remote-control", "run-plugin");
+
 const UPSTREAM_HOST = "127.0.0.1:3080"; // DSH web 的 authority（Host 头必须是裸 host:port，不能带 scheme）
 const UPSTREAM = "http://" + UPSTREAM_HOST; // Caddy 的上游
 const TUNNEL_ENTRY = "http://127.0.0.1:4080"; // cloudflared 的 --url 指向 Caddy 门（绝不直连 DSH）
@@ -74,6 +76,68 @@ export const Config = z.object({
   sessionDays: z.number().int().min(1).max(30).default(7).describe("远程会话有效天数（1-30，不可永久）"),
 });
 
+// ---------- dsh-web 命令物化（issue #29：装插件即有命令；卸载后软链悬空自动失效） ----------
+
+// 运行时真实路径：lib/index.mjs → ../bin/dsh-web.mjs（开发期 src/ 下同样成立），不写死仓库路径
+function cliBinPath(): string {
+  return fileURLToPath(new URL("../bin/dsh-web.mjs", import.meta.url));
+}
+const DSH_BIN_DIR = join(homedir(), ".dsh", "bin");
+const CLI_LINK = join(DSH_BIN_DIR, "dsh-web"); // 第一级软链 → 插件已安装副本内的 bin
+const NPM_BIN = join(homedir(), ".npm-global", "bin", "dsh-web"); // 第二级软链（PATH 已含 ~/.npm-global/bin）
+
+function isSymlinkTo(p: string, target: string): boolean {
+  try {
+    const st = lstatSync(p);
+    return st.isSymbolicLink() && readlinkSync(p) === target;
+  } catch { return false; }
+}
+
+// 只创建、绝不覆盖：路径不存在才建软链；已存在且指向精确自有目标 → ok；
+// 悬空且目标含 ownStaleMarker（本插件旧安装残留：宿主被杀没跑 disposer 的合法悬空链）→ 接管重建；
+// 其余（外来软链/普通文件/目录）→ 告警并跳过，绝不动用户文件。
+function ensureLink(ctx: AnyCtx, linkPath: string, target: string, ownStaleMarker = ""): "created" | "ok" | "blocked" {
+  let st = null;
+  try { st = lstatSync(linkPath); } catch { /* absent */ }
+  if (!st) { symlinkSync(target, linkPath); return "created"; }
+  if (st.isSymbolicLink() && readlinkSync(linkPath) === target) return "ok";
+  if (ownStaleMarker && st.isSymbolicLink()) {
+    let stale = "";
+    try { stale = String(readlinkSync(linkPath)); } catch { stale = ""; }
+    if (stale.includes(ownStaleMarker) && !existsSync(stale)) {
+      unlinkSync(linkPath);
+      symlinkSync(target, linkPath);
+      say(ctx, "info", `[dsh-remote] 接管旧安装残留的悬空链 ${linkPath}（原指向 ${stale}）`);
+      return "created";
+    }
+  }
+  let curDesc = "";
+  try { curDesc = String(readlinkSync(linkPath)); } catch { curDesc = "（非软链）"; }
+  say(ctx, "warn", `[dsh-remote] ${linkPath} 已存在且不指向本插件（${curDesc}）——不动用户文件，跳过`);
+  return "blocked";
+}
+// 装载时物化：必须是软链，绝不拷贝。每次装载（含宿主重启、entry 重启）都确保链接存在。
+// 设计决策（2026-11-21 实测拍板）：disposer **不删除**软链——
+//   宿主每次正常关闭（stop/Ctrl-C）都会触发 disposer，无法与「插件卸载」区分；
+//   曾按 spec 原文在 disposer 删除，导致 stop 后 dsh-web 命令自我删除、无法再启动（两次实测事故）。
+//   生命周期改为：卸载 → 软链悬空 → 目标消失 → CLI 闸门报「插件未安装」并给安装指引
+//   （issue #29 验收明确接受悬空软链）；停用 → 链接仍在但被闸门拦住（报「插件未打开」）。
+export function materializeCli(ctx: AnyCtx): void {
+  try {
+    const bin = cliBinPath();
+    if (!existsSync(bin)) { say(ctx, "warn", `[dsh-remote] CLI 缺失，跳过物化：${bin}`); return; }
+    chmodSync(bin, 0o755);
+    mkdirSync(DSH_BIN_DIR, { recursive: true });
+    if (ensureLink(ctx, CLI_LINK, bin, "@oh-summy/dsh-remote") === "blocked") return; // 一级被外来占用 → 不再建二级，不报就绪
+    try { mkdirSync(dirname(NPM_BIN), { recursive: true }); } catch { /* exists */ }
+    const npmLink = ensureLink(ctx, NPM_BIN, CLI_LINK);
+    if (npmLink === "ok" || npmLink === "created") {
+      say(ctx, "info", "[dsh-remote] 命令已就绪：dsh-web（dsh-web help 看全部命令）");
+    }
+  } catch (e) {
+    say(ctx, "warn", "[dsh-remote] dsh-web 命令物化失败：" + (e as Error).message);
+  }
+}
 // ---------- small utils ----------
 
 type AnyCtx = any;
@@ -258,6 +322,11 @@ function fallbackSecrets(): Record<string, string> {
   catch { return {}; }
 }
 
+// 凭据缝 resolve 可能在宿主启动早期挂起（2026-11-21 launchd boot 实测）：
+// 管理面接口一律带超时兜底——宁可短暂显示「未配置」，也不能把接口挂死（CLI 轮询/页面都会卡）。
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([p, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))]);
+}
 async function getSecret(ref: string): Promise<string | null> {
   const ctx = (globalThis as any).__dshRemoteCtx;
   if (ctx?.credentials) {
@@ -429,7 +498,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
         if (!authed) { res.writeHead(401); res.end("unauthorized"); return; }
 
         if (req.method === "GET" && path === "/rc-api/state") {
-          const appSecret = await getSecret(APP_SECRET_REF);
+          const appSecret = await withTimeout(getSecret(APP_SECRET_REF), 2500, null);
           // 掩码只到前几位：页面能看出"已配置"，但完整身份串不出管理面
           const mask = (v: unknown, n: number) => (v ? String(v).slice(0, n) + "••••••" : "");
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -441,7 +510,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
             autoRestart: cfg.autoRestart !== false,
             sessionDays: Number(cfg.sessionDays) || 7,
             channel: cfg.notifyChannel || "off",
-            hasWebhook: !!(await getSecret(WEBHOOK_REF)),
+            hasWebhook: !!(await withTimeout(getSecret(WEBHOOK_REF), 2500, null)),
             hasAppSecret: !!appSecret,
             appIdMask: mask(cfg.notifyAppId, 6),
             openIdMask: mask(cfg.notifyOpenId, 6),
@@ -947,6 +1016,7 @@ export function apply(ctx: AnyCtx, config: Config = {}) {
   // 命令式启停）都必须检查，否则 fiber 销毁后仍会拉起进程（第 1 轮自审 P1-2 的根因）。
   // 管理 listener（登录页 + /rc-api）常驻：不随隧道启停——否则停止后连"启动按钮"都没有。
   ctx.effect(() => {
+    materializeCli(ctx); // dsh-web 命令物化（软链；幂等；disposer 不删——见上方设计决策）
     let dead = false;
     const isAlive = () => !dead;
     fiberAlive = isAlive;

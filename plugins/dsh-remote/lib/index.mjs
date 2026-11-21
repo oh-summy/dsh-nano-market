@@ -2,9 +2,10 @@ import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import http from "node:http";
 import crypto from "node:crypto";
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 // src/index.ts
@@ -56,6 +57,64 @@ const Config = z.object({
 	autoRestart: z.boolean().default(true).describe("隧道进程意外退出时自动重拉（默认开）"),
 	sessionDays: z.number().int().min(1).max(30).default(7).describe("远程会话有效天数（1-30，不可永久）")
 });
+function cliBinPath() {
+	return fileURLToPath(new URL("../bin/dsh-web.mjs", import.meta.url));
+}
+const DSH_BIN_DIR = join(homedir(), ".dsh", "bin");
+const CLI_LINK = join(DSH_BIN_DIR, "dsh-web");
+const NPM_BIN = join(homedir(), ".npm-global", "bin", "dsh-web");
+function ensureLink(ctx, linkPath, target, ownStaleMarker = "") {
+	let st = null;
+	try {
+		st = lstatSync(linkPath);
+	} catch {}
+	if (!st) {
+		symlinkSync(target, linkPath);
+		return "created";
+	}
+	if (st.isSymbolicLink() && readlinkSync(linkPath) === target) return "ok";
+	if (ownStaleMarker && st.isSymbolicLink()) {
+		let stale = "";
+		try {
+			stale = String(readlinkSync(linkPath));
+		} catch {
+			stale = "";
+		}
+		if (stale.includes(ownStaleMarker) && !existsSync(stale)) {
+			unlinkSync(linkPath);
+			symlinkSync(target, linkPath);
+			say(ctx, "info", `[dsh-remote] 接管旧安装残留的悬空链 ${linkPath}（原指向 ${stale}）`);
+			return "created";
+		}
+	}
+	let curDesc = "";
+	try {
+		curDesc = String(readlinkSync(linkPath));
+	} catch {
+		curDesc = "（非软链）";
+	}
+	say(ctx, "warn", `[dsh-remote] ${linkPath} 已存在且不指向本插件（${curDesc}）——不动用户文件，跳过`);
+	return "blocked";
+}
+function materializeCli(ctx) {
+	try {
+		const bin = cliBinPath();
+		if (!existsSync(bin)) {
+			say(ctx, "warn", `[dsh-remote] CLI 缺失，跳过物化：${bin}`);
+			return;
+		}
+		chmodSync(bin, 493);
+		mkdirSync(DSH_BIN_DIR, { recursive: true });
+		if (ensureLink(ctx, CLI_LINK, bin, "@oh-summy/dsh-remote") === "blocked") return;
+		try {
+			mkdirSync(dirname(NPM_BIN), { recursive: true });
+		} catch {}
+		const npmLink = ensureLink(ctx, NPM_BIN, CLI_LINK);
+		if (npmLink === "ok" || npmLink === "created") say(ctx, "info", "[dsh-remote] 命令已就绪：dsh-web（dsh-web help 看全部命令）");
+	} catch (e) {
+		say(ctx, "warn", "[dsh-remote] dsh-web 命令物化失败：" + e.message);
+	}
+}
 function say(ctx, method, msg) {
 	const logger = ctx.logger;
 	if (logger && typeof logger[method] === "function") logger[method](msg);
@@ -271,6 +330,9 @@ function fallbackSecrets() {
 		return {};
 	}
 }
+function withTimeout(p, ms, fallback) {
+	return Promise.race([p, new Promise((resolve) => setTimeout(() => resolve(fallback), ms))]);
+}
 async function getSecret(ref) {
 	const ctx = globalThis.__dshRemoteCtx;
 	if (ctx?.credentials) return (await ctx.credentials.resolve(ref))?.value ?? null;
@@ -461,7 +523,7 @@ function startLoginServer(ctx) {
 					return;
 				}
 				if (req.method === "GET" && path === "/rc-api/state") {
-					const appSecret = await getSecret(APP_SECRET_REF);
+					const appSecret = await withTimeout(getSecret(APP_SECRET_REF), 2500, null);
 					const mask = (v, n) => v ? String(v).slice(0, n) + "••••••" : "";
 					res.writeHead(200, { "Content-Type": "application/json" });
 					res.end(JSON.stringify({
@@ -472,7 +534,7 @@ function startLoginServer(ctx) {
 						autoRestart: cfg.autoRestart !== false,
 						sessionDays: Number(cfg.sessionDays) || 7,
 						channel: cfg.notifyChannel || "off",
-						hasWebhook: !!await getSecret(WEBHOOK_REF),
+						hasWebhook: !!await withTimeout(getSecret(WEBHOOK_REF), 2500, null),
 						hasAppSecret: !!appSecret,
 						appIdMask: mask(cfg.notifyAppId, 6),
 						openIdMask: mask(cfg.notifyOpenId, 6),
@@ -1070,6 +1132,7 @@ function apply(ctx, config = {}) {
 	};
 	mkdirSync(RUN_DIR, { recursive: true });
 	ctx.effect(() => {
+		materializeCli(ctx);
 		let dead = false;
 		const isAlive = () => !dead;
 		fiberAlive = isAlive;
@@ -1139,4 +1202,4 @@ function apply(ctx, config = {}) {
 		};
 	});
 }
-export { Config, apply, inject };
+export { Config, apply, inject, materializeCli };
