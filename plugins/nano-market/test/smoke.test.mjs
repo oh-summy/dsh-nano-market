@@ -22,8 +22,9 @@ test("client registers the Nano Market tab with the host-provided props", () => 
   assert.match(source, /ctx\.slots\.inject\("plugins\.tab"/);
   assert.match(source, /id: "nano-market"/);
   assert.match(source, /label: \(\) => t\("title"\)/);
-  // host props: install + openPackage
+  // host props: install + update + openPackage
   assert.match(source, /props\.install\(/);
+  assert.match(source, /props\.update\(/);
   assert.match(source, /props\.openPackage\(/);
   // lifecycle actions go through the host pluginManager
   assert.match(source, /pluginManager\.setBundleEnabled/);
@@ -71,6 +72,9 @@ test("the snapshot's install specs match the official market derivation", async 
       assert.equal(mine.install.registry, expected.registry);
       // 我们的换算与官方一致（两个方向都比，避免只有快照对、换算错）
       assert.equal(installTarget(plugin.name, version).spec, expected.spec);
+      // update 规格 = install 规格（git 源换 pin 即更新）：「更新」按钮靠它构造 PluginTabUpdate
+      assert.equal(mine.update.spec, expected.spec, "update spec 必须与 install spec 同源");
+      assert.equal(mine.update.registry, expected.registry);
     }
   }
 });
