@@ -416,6 +416,7 @@ function NanoMarketTab(props) {
   // 首屏用快照：零网络，卡片立刻出现。
   const [entries, setEntries] = useState(() => normalizeEntries(SNAPSHOT.entries));
   const [bundles, setBundles] = useState({});
+  const [bundlesLoaded, setBundlesLoaded] = useState(false); // 首次 listBundles 完成前不判定状态——宁可「状态未知」也不闪错误的「未安装」
   const [bundleError, setBundleError] = useState("");
   const [marketError, setMarketError] = useState("");
   const [busy, setBusy] = useState("");
@@ -440,9 +441,11 @@ function NanoMarketTab(props) {
       for (const bundle of answer.value || []) byName[bundle.name] = bundle;
       setBundles(byName);
       setBundleError("");
+      setBundlesLoaded(true);
     } catch (error) {
       // 读不到清单 = 不知道谁装了：卡片不给启停/安装操作，只说明原因。
       setBundleError(error?.message || String(error));
+      setBundlesLoaded(true);
     }
   }, [ctx]);
 
@@ -583,7 +586,7 @@ function NanoMarketTab(props) {
             t,
             resolve,
             busy,
-            stateKnown: !bundleError,
+            stateKnown: bundlesLoaded && !bundleError,
             key: entry.name,
             onToggle: (next) => toggle(entry, next),
             onInstall: () => askInstall(entry),
