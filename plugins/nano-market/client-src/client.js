@@ -166,33 +166,6 @@ function localized(text, lang) {
   return text[lang] || text.zh || text.en || "";
 }
 
-// 快照与宿主搜索结果归一成同一形状：名字、描述、图标、版本与安装规格。
-// versions[].compatibility 必须保留——宿主用它说明该版本与运行中的 DSH 是否兼容。
-function normalizeEntry(raw) {
-  const versions = (raw?.versions || []).map((version) => ({
-    version: version.version,
-    engines: version.engines,
-    install: version.install,
-    compatibility: version.compatibility,
-  }));
-  return {
-    name: raw?.name,
-    title: raw?.title,
-    description: raw?.description,
-    icon: raw?.icon,
-    versions,
-    // 宿主的 defaultVersion 缺席 = 没有任何兼容版本；回退 versions[0] 只为把
-    // 该版本（连同它的 compatibility=false）摆上台面，安装按钮会被门控禁用。
-    defaultVersion: raw?.defaultVersion || versions[0]?.version,
-    // 宿主算好的安装状态（权威）：有它就用它，没有（快照路径）才自己按本机清单推。
-    installation: raw?.installation,
-  };
-}
-
-function normalizeEntries(raws) {
-  return (raws || []).map(normalizeEntry);
-}
-
 // 宿主的 readOnlyReason 是机器码，转成人话。
 function readOnlyText(code, t) {
   if (code === "management-required") return t("readOnlyManagement");
@@ -226,30 +199,11 @@ function managementText(error, t) {
   return t(key);
 }
 
-// 官方 Discover 的 installable() 同规则：兼容，或该精确组合已被豁免。
-// 快照路径没有 compatibility 字段（构建期无法判定），交给宿主安装弹窗把关。
-function installable(compatibility) {
-  return compatibility === undefined || compatibility.compatible === true || compatibility.exempted === true;
-}
-
 // 图标加载失败时回退到宿主默认插件图形，不留碎图或空框（远端 icons 偶发不可达）。
 function CardIcon({ src }) {
   const [failed, setFailed] = useState(false);
   if (!src || failed) return jsx(P.PluginArtworkDefault, { size: 48 });
   return jsx("img", { className: "nmk-packageImage", src, alt: "", width: 48, height: 48, onError: () => setFailed(true) });
-}
-
-// 官方 plugin-market 同规则的三个推导：预发布判定、对外展示的版本、更新目标。
-function presentedVersion(entry) {
-  return entry.versions?.find((item) => item.version === entry.defaultVersion) || entry.versions?.[0];
-}
-function prerelease(version) {
-  return version.split("+")[0]?.includes("-") === true;
-}
-function updateTarget(entry) {
-  const updatable = (version) => version.update && installable(version.compatibility);
-  const presented = presentedVersion(entry);
-  return updatable(presented) ? presented : entry.versions?.find((version) => updatable(version) && !prerelease(version.version));
 }
 
 /** 一张市场卡片：与宿主「已安装」页签的卡片同构。 */
@@ -330,14 +284,16 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
         });
   // 已安装且有更新：宿主 slot 契约给了 update 执行器（走页面自带的更新对话框）就上按钮；
   // 没给（老版宿主）则维持现状——只有「可更新」徽章，不渲染点不动的假按钮。
-  const updateTargetVersion = canUpdate && installed ? updateTarget(entry) : undefined;
-  const updateButton = updateTargetVersion?.update && typeof update === "function"
+  // 载荷 = PluginTabUpdate（slot 契约）；spec 用目标版本的 install.spec（官方 DiscoverSection 同一取法）。
+  // update 执行器缺失（老版宿主）→ null，按钮不渲染，退化为「可更新」徽章。
+  const updateTargetPayload = canUpdate && installed ? updatePayloadOf(entry) : null;
+  const updateButton = updateTargetPayload && typeof update === "function"
     ? jsx(P.Button, {
         variant: "outline",
         size: "sm",
         disabled: working,
-        "aria-label": t("updateTitle", { name: title, version: updateTargetVersion.version }),
-        onClick: () => update({ packageName: entry.name, version: updateTargetVersion.version, spec: updateTargetVersion.update.spec }),
+        "aria-label": t("updateTitle", { name: title, version: updateTargetPayload.version }),
+        onClick: () => update(updateTargetPayload),
         children: t("update"),
       })
     : null;
@@ -603,7 +559,7 @@ function apply(ctx) {
     // 声明字典命名空间，宿主才会把绑定好的翻译函数注进 props。
     locale: NS,
   }, function NanoMarketTabEntry(props) {
-    // 页签的宿主 props 只有 install / openPackage；ctx 由我们显式带进去，
+    // 页签的宿主 props 有 install / update / openPackage（slot 契约 PluginTabProps）；ctx 由我们显式带进去，
     // 翻译函数优先用宿主注入的那份（它会随语言切换刷新）。
     return h(TabBoundary, { children: h(NanoMarketTab, { ...props, t: props.t ?? t, ctx }) });
   }));

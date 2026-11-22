@@ -19,9 +19,6 @@
           },
           "install": {
             "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#43f45eff17577fa4208d96c0a424c2042c85d781"
-          },
-          "update": {
-            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#43f45eff17577fa4208d96c0a424c2042c85d781"
           }
         }
       ],
@@ -45,9 +42,6 @@
             "dsh": ">=0.2.1-rc.4 || >=0.2.2-0"
           },
           "install": {
-            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#773f1536d386d8d00e6347744868c50669747605"
-          },
-          "update": {
             "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#773f1536d386d8d00e6347744868c50669747605"
           }
         }

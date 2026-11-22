@@ -38,9 +38,6 @@ const entries = (index.plugins || []).map((plugin) => ({
     version: version.version,
     engines: version.engines,
     install: installTarget(plugin.name, version),
-    // 更新到该版本所用的安装规格（git 源与 install 相同：换 pin 即更新）。
-    // 没有它，插件标签页的「更新」按钮无从构造 PluginTabUpdate（slot 契约）。
-    update: installTarget(plugin.name, version),
   })),
   defaultVersion: defaultVersionOf(plugin.versions || []),
 }));

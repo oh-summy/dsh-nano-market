@@ -72,9 +72,9 @@ test("the snapshot's install specs match the official market derivation", async 
       assert.equal(mine.install.registry, expected.registry);
       // 我们的换算与官方一致（两个方向都比，避免只有快照对、换算错）
       assert.equal(installTarget(plugin.name, version).spec, expected.spec);
-      // update 规格 = install 规格（git 源换 pin 即更新）：「更新」按钮靠它构造 PluginTabUpdate
-      assert.equal(mine.update.spec, expected.spec, "update spec 必须与 install spec 同源");
-      assert.equal(mine.update.registry, expected.registry);
+      // 官方数据模型：update 资格是宿主对「已安装」算出的布尔，由实时数据携带；
+      // 快照（首屏、无 installation）不携带 update——双事实源已按审查意见移除。
+      assert.equal(mine.update, undefined, "快照不该携带 update 字段（实时路径才有时序正确的资格）");
     }
   }
 });
