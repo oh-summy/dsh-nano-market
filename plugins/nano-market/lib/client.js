@@ -301,7 +301,7 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onO
     installed
       ? jsx("button", { type: "button", className: "nmk-cardOpen nmk-cardTitle", onClick: onOpen, children: title })
       : jsx("span", { className: "nmk-cardTitle", children: title }),
-    version ? jsx("span", { className: "nmk-versionTag", children: version.version }) : null,
+    (bundle?.version || version?.version) ? jsx("span", { className: "nmk-versionTag", children: bundle?.version || version?.version }) : null,
     status === "enabled" ? null : jsx(P.Tag, { tone: statusTone, className: "nmk-statusTag", children: statusLabel }),
     canUpdate ? jsx(P.Tag, { tone: "info", className: "nmk-statusTag", children: t("stateUpdate") }) : null,
   ] });
@@ -382,10 +382,12 @@ function NanoMarketTab(props) {
   const lang = ctx?.locale?.getSnapshot?.()?.active === "en" ? "en" : "zh";
   const resolve = useCallback((text) => ctx?.locale?.resolveText?.(text) || localized(text, lang), [ctx, lang]);
 
-  // 首屏用快照：零网络，卡片立刻出现。
-  const [entries, setEntries] = useState(() => normalizeEntries(SNAPSHOT.entries));
-  const [bundles, setBundles] = useState({});
-  const [bundlesLoaded, setBundlesLoaded] = useState(false); // 首次 listBundles 完成前不判定状态——宁可「状态未知」也不闪错误的「未安装」
+  // 首屏水合：优先用 localStorage 里上次会话的实时清单状态（零闪动），
+  // 没有缓存才回退构建期快照（首屏短暂「状态未知」，实时数据到达后纠正）。
+  const cachedState = readStateCache();
+  const [entries, setEntries] = useState(() => normalizeEntries(cachedState?.entries ?? SNAPSHOT.entries));
+  const [bundles, setBundles] = useState(() => cachedState?.bundles ?? {});
+  const [bundlesLoaded, setBundlesLoaded] = useState(() => Boolean(cachedState));
   const [bundleError, setBundleError] = useState("");
   const [marketError, setMarketError] = useState("");
   const [busy, setBusy] = useState("");
@@ -400,6 +402,15 @@ function NanoMarketTab(props) {
   }, [message]);
 
   // 本机已安装清单（本地 IPC，毫秒级）。
+  // 上次实时状态的持久化：跨宿主重启/页面刷新消除首帧闪动。读写失败静默（localStorage 不可用时退化）。
+  const writeStateCache = (patch) => {
+    try {
+      let prev = null;
+      try { prev = JSON.parse(localStorage.getItem("nmk-state-cache") || "null"); } catch { /* 损坏即弃 */ }
+      localStorage.setItem("nmk-state-cache", JSON.stringify({ ...(prev && typeof prev === "object" ? prev : {}), ...patch, savedAt: Date.now() }));
+    } catch { /* private mode 等 */ }
+  };
+
   const refreshBundles = useCallback(async () => {
     try {
       const answer = await ctx.remote.pluginManager.listBundles();
@@ -409,6 +420,7 @@ function NanoMarketTab(props) {
       setBundles(byName);
       setBundleError("");
       setBundlesLoaded(true);
+      writeStateCache({ bundles: byName });
     } catch (error) {
       // 读不到清单 = 不知道谁装了：卡片不给启停/安装操作，只说明原因。
       setBundleError(error?.message || String(error));
@@ -431,6 +443,7 @@ function NanoMarketTab(props) {
       if (fresh.length) {
         liveRef.current = true;
         setEntries(fresh);
+        writeStateCache({ entries: fresh });
       }
       setMarketError("");
       return fresh;
