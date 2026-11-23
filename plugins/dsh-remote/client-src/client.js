@@ -596,7 +596,7 @@ function RemoteManager({ t: hostT, locale }) {
     urlRow,
     passwordRow,
     Row({ label: t("alias"), tip: t("aliasTip"), children:
-      jsx("input", { className: "rc-input", disabled: busy, defaultValue: state?.alias || "", placeholder: t("aliasPlaceholder"),
+      jsx(P.Input, { className: "rc-input", disabled: busy, defaultValue: state?.alias || "", placeholder: t("aliasPlaceholder"),
         onBlur: (event) => { const v = event.currentTarget.value.trim(); if (v !== (state?.alias || "")) act("/rc-api/config", t("aliasSaved"), { alias: v }); },
         onKeyDown: (event) => { if (event.key === "Enter") event.currentTarget.blur(); } }) }),
     // 瞬时反馈走浮窗：不独占一行、不推移布局
