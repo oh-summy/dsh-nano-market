@@ -706,6 +706,7 @@ function startLoginServer(ctx) {
 					if (json.notifyChatName !== void 0) fields.notifyChatName = String(json.notifyChatName);
 					if (json.autoRestart !== void 0) fields.autoRestart = !!json.autoRestart;
 					if (json.autoStart !== void 0) fields.autoStart = !!json.autoStart;
+					if (json.alias !== void 0) fields.alias = String(json.alias).slice(0, 64).trim();
 					if (json.sessionDays !== void 0) fields.sessionDays = Math.min(Math.max(parseInt(String(json.sessionDays), 10) || 7, 1), 30);
 					cfg = {
 						...cfg,

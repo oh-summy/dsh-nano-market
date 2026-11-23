@@ -668,6 +668,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
           if (json.notifyChatName !== undefined) fields.notifyChatName = String(json.notifyChatName);
           if (json.autoRestart !== undefined) fields.autoRestart = !!json.autoRestart;
           if (json.autoStart !== undefined) fields.autoStart = !!json.autoStart;
+          if (json.alias !== undefined) fields.alias = String(json.alias).slice(0, 64).trim();
           if (json.sessionDays !== undefined) fields.sessionDays = Math.min(Math.max(parseInt(String(json.sessionDays), 10) || 7, 1), 30);
           cfg = { ...cfg, ...fields } as Config;
           saveSettings();
