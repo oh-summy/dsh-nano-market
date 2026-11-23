@@ -309,15 +309,17 @@ async function sendNotify(ctx: AnyCtx, event: string, url: string | null): Promi
     down: ["远程访问已断开", "red"], recovered: ["远程访问已恢复", "green"], test: ["测试通知", "grey"],
     enabled: ["通知已开启", "green"],
   };
-  const [title, color] = meta[event] ?? ["远程访问", "grey"];
+  const [baseTitle, color] = meta[event] ?? ["远程访问", "grey"];
+  // 机器身份进标题（负责人 2026-11-23 定版）：推送标题即带 别名 · 主机名 · IP 前两段。
+  const title = baseTitle + " · " + machineLine(cfg.alias);
   const tier = notifyText(); // 换址必带完整密码：能自救（用户拍板，不做档位）
   // 独立区块 + 分隔线：机器行打头（哪台机器一目了然），地址和密码各自前后留白。
   let lines: string[];
   if (event === "down" || event === "recovered") {
-    lines = [machineLine(cfg.alias), "---", ...(url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"])];
+    lines = url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"];
 
   } else {
-    lines = [machineLine(cfg.alias), "---", ...(url ? ["**访问地址**", url] : ["（隧道未运行，暂无访问地址）"]), "---", "**访问密码**", tier];
+    lines = url ? ["**访问地址**", url, "---", "**访问密码**", tier] : ["（隧道未运行，暂无访问地址）", "**访问密码**", tier];
   }
   const card = cardFor(title, color, lines, url, "dsh-remote · by @oh-summy · " + new Date().toLocaleString("zh-CN"));
   try {

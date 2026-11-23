@@ -296,7 +296,7 @@ async function sendNotify(ctx, event, url) {
 		ok: false,
 		error: "通知未开启"
 	};
-	const [title, color] = {
+	const [baseTitle, color] = {
 		started: ["远程访问已开启", "green"],
 		changed: ["访问地址已变化", "blue"],
 		down: ["远程访问已断开", "red"],
@@ -304,18 +304,18 @@ async function sendNotify(ctx, event, url) {
 		test: ["测试通知", "grey"],
 		enabled: ["通知已开启", "green"]
 	}[event] ?? ["远程访问", "grey"];
+	const title = baseTitle + " · " + machineLine(cfg.alias);
 	const tier = notifyText();
 	let lines;
-	if (event === "down" || event === "recovered") lines = [
-		machineLine(cfg.alias),
+	if (event === "down" || event === "recovered") lines = url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"];
+	else lines = url ? [
+		"**访问地址**",
+		url,
 		"---",
-		...url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"]
-	];
-	else lines = [
-		machineLine(cfg.alias),
-		"---",
-		...url ? ["**访问地址**", url] : ["（隧道未运行，暂无访问地址）"],
-		"---",
+		"**访问密码**",
+		tier
+	] : [
+		"（隧道未运行，暂无访问地址）",
 		"**访问密码**",
 		tier
 	];
