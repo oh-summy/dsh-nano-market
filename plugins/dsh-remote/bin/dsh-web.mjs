@@ -645,6 +645,7 @@ async function cmdStatus(deps, st) {
     lines.push(st.apiState.running
       ? "✅ 隧道运行中：" + st.apiState.url
       : "✗ 隧道未开启 → dsh-web start（或在插件页点启动）");
+    if (st.apiState.machineLine) lines.push("🖥 机器：" + st.apiState.machineLine);
     lines.push("📨 通知通道：" + (st.apiState.channel || "off"));
   } else {
     lines.push("ℹ 插件 API（127.0.0.1:9091）不可达——DSH 未运行或插件未装载");

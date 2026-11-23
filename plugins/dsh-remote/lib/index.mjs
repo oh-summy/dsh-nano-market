@@ -3,7 +3,7 @@ import net from "node:net";
 import http from "node:http";
 import crypto from "node:crypto";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname, networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -55,7 +55,8 @@ const Config = z.object({
 	notifyChatId: z.string().default("").describe("群通知 chat_id（页面「拉取群列表」自动填）"),
 	notifyChatName: z.string().default("").describe("群通知显示名（随 chat_id 保存）"),
 	autoRestart: z.boolean().default(true).describe("隧道进程意外退出时自动重拉（默认开）"),
-	sessionDays: z.number().int().min(1).max(30).default(7).describe("远程会话有效天数（1-30，不可永久）")
+	sessionDays: z.number().int().min(1).max(30).default(7).describe("远程会话有效天数（1-30，不可永久）"),
+	alias: z.string().max(64).default("").describe("机器别名：飞书推送卡片与登录页显示的简称（留空只显示主机名 · IP）")
 });
 function cliBinPath() {
 	return fileURLToPath(new URL("../bin/dsh-web.mjs", import.meta.url));
@@ -182,6 +183,19 @@ function notifyText() {
 	return password;
 }
 const MARKET_URL = "https://github.com/oh-summy/dsh-nano-market";
+function primaryLanIp() {
+	for (const list of Object.values(networkInterfaces())) for (const net of list ?? []) if (net.family === "IPv4" && !net.internal) return net.address;
+	return "";
+}
+const MACHINE_HOST = hostname();
+const MACHINE_IP = primaryLanIp();
+function machineLine(alias) {
+	return [
+		alias?.trim(),
+		MACHINE_HOST,
+		MACHINE_IP
+	].filter(Boolean).join(" · ");
+}
 function cardFor(title, color, lines, url, note) {
 	const elements = [];
 	for (const line of lines) if (line === "---") elements.push({ tag: "hr" });
@@ -288,15 +302,16 @@ async function sendNotify(ctx, event, url) {
 	}[event] ?? ["远程访问", "grey"];
 	const tier = notifyText();
 	let lines;
-	if (event === "down" || event === "recovered") lines = url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"];
-	else lines = url ? [
-		"**访问地址**",
-		url,
+	if (event === "down" || event === "recovered") lines = [
+		"**机器**： " + machineLine(cfg.alias),
 		"---",
-		"**访问密码**",
-		tier
-	] : [
-		"（隧道未运行，暂无访问地址）",
+		...url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"]
+	];
+	else lines = [
+		"**机器**： " + machineLine(cfg.alias),
+		"---",
+		...url ? ["**访问地址**", url] : ["（隧道未运行，暂无访问地址）"],
+		"---",
 		"**访问密码**",
 		tier
 	];
@@ -466,10 +481,12 @@ function startLoginServer(ctx) {
   .chip { border-radius: 10px; padding: 10px 12px; font-size: 13px; margin: 0 0 14px; line-height: 1.5; }
   .chip.err { background: rgba(220,38,38,.12); border: 1px solid rgba(220,38,38,.35); color: #fca5a5; }
   .foot { color: #5b7292; font-size: 12px; margin: 18px 0 0; line-height: 1.6; }
+  .machine{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;letter-spacing:.02em;color:#9fb6d9;margin:-6px 0 14px}
 </style></head>
 <body><div class="card">
   <div class="mark">deepseek harness · 远程访问</div>
   <h1>本机 DSH 的安全门</h1>
+  <p class="machine">${htmlEsc(machineLine(cfg.alias))}</p>
   <p class="sub">输入访问密码即可使用这台机器上的 DSH。会话 7 天内有效。</p>
   <span class="host">${htmlEsc(tunnelHost)}</span>
   <div class="tunnel"><span>你</span><span class="line"><i class="a"></i><i class="b"></i></span><span>Cloudflare</span><span class="line"><i class="a"></i><i class="b"></i></span><span>本机 DSH</span></div>
@@ -534,6 +551,10 @@ function startLoginServer(ctx) {
 						autoRestart: cfg.autoRestart !== false,
 						sessionDays: Number(cfg.sessionDays) || 7,
 						channel: cfg.notifyChannel || "off",
+						alias: cfg.alias || "",
+						machineHost: MACHINE_HOST,
+						machineIp: MACHINE_IP,
+						machineLine: machineLine(cfg.alias),
 						hasWebhook: !!await withTimeout(getSecret(WEBHOOK_REF), 2500, null),
 						hasAppSecret: !!appSecret,
 						appIdMask: mask(cfg.notifyAppId, 6),
@@ -883,7 +904,8 @@ function saveSettings() {
 		notifyOpenId: cfg.notifyOpenId || "",
 		notifyChatId: cfg.notifyChatId || "",
 		notifyChatName: cfg.notifyChatName || "",
-		sessionDays: Number(cfg.sessionDays) || 7
+		sessionDays: Number(cfg.sessionDays) || 7,
+		alias: cfg.alias || ""
 	};
 	try {
 		writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2));
