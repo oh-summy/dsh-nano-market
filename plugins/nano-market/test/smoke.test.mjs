@@ -96,12 +96,12 @@ test("the tab uses the host's own components and tokens, not a look of its own",
 
 test("the read-failure state keeps controls in place, says it once, and offers a retry", () => {
   const source = readFileSync(join(pkgDir, "client-src/client.js"), "utf8");
-  // 行内只放短标签，长解释只在横幅里出现一次
-  assert.match(source, /stateUnknownShort/);
+  // 长解释只在横幅里出现一次（读取失败时不再闪「未安装」，开关保持原位）
   assert.match(source, /t\("unknownState"\)/);
-  // 清单读不到时开关留在原位但禁用，悬停给原因
-  assert.match(source, /status === "unknown"\s*\n\s*\? jsx\(P\.Switch/);
-  assert.match(source, /title: t\("unknownState"\)/);
+  // 开关单一渲染，无「状态未知」占位分支（负责人 2026-11-23：进页即插件+开关，不留占位）
+  assert.doesNotMatch(source, /status === "unknown"\s*\n\s*\? jsx\(P\.Switch/);
+  // 读取失败时个别未装入的插件开关禁用（罕见边缘），不影响整体版式
+  assert.match(source, /status === "not-installed"$/);
   // 横幅带重试入口，且重试有进行中文案
   assert.match(source, /nmk-retry/);
   assert.match(source, /t\("retrying"\)/);
