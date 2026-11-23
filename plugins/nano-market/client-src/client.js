@@ -300,6 +300,21 @@ class TabBoundary extends React.Component {
   }
 }
 
+// 上次实时状态的 localStorage 读写（跨宿主重启/页面刷新消除首帧闪动；失败静默退化）。
+function readStateCache() {
+  try {
+    const v = JSON.parse(localStorage.getItem("nmk-state-cache") || "null");
+    return v && typeof v === "object" ? v : null;
+  } catch { return null; }
+}
+function writeStateCache(patch) {
+  try {
+    let prev = null;
+    try { prev = JSON.parse(localStorage.getItem("nmk-state-cache") || "null"); } catch { /* 损坏即弃 */ }
+    localStorage.setItem("nmk-state-cache", JSON.stringify({ ...(prev && typeof prev === "object" ? prev : {}), ...patch, savedAt: Date.now() }));
+  } catch { /* private mode 等 */ }
+}
+
 function NanoMarketTab(props) {
   const t = props.t;
   const ctx = props.ctx;
@@ -327,15 +342,6 @@ function NanoMarketTab(props) {
   }, [message]);
 
   // 本机已安装清单（本地 IPC，毫秒级）。
-  // 上次实时状态的持久化：跨宿主重启/页面刷新消除首帧闪动。读写失败静默（localStorage 不可用时退化）。
-  const writeStateCache = (patch) => {
-    try {
-      let prev = null;
-      try { prev = JSON.parse(localStorage.getItem("nmk-state-cache") || "null"); } catch { /* 损坏即弃 */ }
-      localStorage.setItem("nmk-state-cache", JSON.stringify({ ...(prev && typeof prev === "object" ? prev : {}), ...patch, savedAt: Date.now() }));
-    } catch { /* private mode 等 */ }
-  };
-
   const refreshBundles = useCallback(async () => {
     try {
       const answer = await ctx.remote.pluginManager.listBundles();
