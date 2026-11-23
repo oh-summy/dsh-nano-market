@@ -28,6 +28,15 @@ From DSH's Discover tab (this market), or directly:
 dsh plugin --profile web add @oh-summy/dsh-remote
 ```
 
+## 机器身份（v0.5.0 起）
+
+多台机器都开远程访问时，推送与登录页据此分辨是哪一台：
+
+- **卡片标题**：所有飞书推送标题形如 `远程访问已开启 · <别名> · <主机名> · <IP前两段>.***.***`（别名留空则只有主机名 · IP 掩码）。
+- **登录页**：密码门标题下显示同一行机器身份（远程用户输密码前先确认连的是哪台机器）。
+- **别名**：在插件详情页管理面的「机器别名」填写（≤64 字符），存 settings.json，跨重启与插件更新保留。
+- **公开范围**：登录页为未鉴权页面，可见别名/主机名/IP 掩码（前两段）；完整内网 IP 仅在管理面 state 接口（鉴权后）出现。
+
 ## Enable
 
 The bundle ships disabled (`cordis.patch.yml`: `enabled: false`). Flip it to `true` and restart the host — the plugin starts the chain and its management page appears on the plugin's own detail page (Plugins → Nano Market → dsh-remote → 配置), showing the entry URL, the password gate, and the notification configuration.
@@ -36,7 +45,9 @@ The bundle ships disabled (`cordis.patch.yml`: `enabled: false`). Flip it to `tr
 
 ## dsh-web 命令（v0.4.0 起，随插件走）
 
-装好本插件且 entry 打开后，机器上就有 `dsh-web` 命令——插件装载时把包内 `bin/dsh-web.mjs` 以**软链**物化到 `~/.dsh/bin/dsh-web`，再软链 `~/.npm-global/bin/dsh-web`（该目录已在 PATH 内）；插件停用/卸载时只撤自己创建的软链（校验目标，绝不误删用户自建文件）。**裸 `dsh-web` = start**，每条命令执行完都附全量命令速查表。
+装好本插件且 entry 打开后，机器上就有 `dsh-web` 命令——插件装载时把包内 `bin/dsh-web.mjs` 以**软链**物化到 `~/.dsh/bin/dsh-web`，再软链 `~/.npm-global/bin/dsh-web`（该目录已在 PATH 内）。
+
+> **软链生命周期（0.5.0 起，规范定版）**：软链只在**装载**时创建，**停用/卸载不回收**——物化发生在条目装配层，普通 stop/disposer 无法安全区分「本插件创建的软链」与用户自建文件，而悬空软链天然失效（命令不存在），无副作用。删除须用 `dsh plugin remove`（宿主级卸载，含确认）。软链物化只增不改：目标校验后已存在即跳过，绝不覆盖用户自建文件。
 
 | 命令 | 行为 |
 |---|---|

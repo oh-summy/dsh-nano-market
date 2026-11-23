@@ -4,7 +4,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import http from "node:http";
 import crypto from "node:crypto";
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, homedir, networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -235,16 +235,20 @@ function primaryLanIp(): string {
 const MACHINE_HOST = hostname();
 const MACHINE_IP = primaryLanIp();
 // 展示层 IP 掩码：只留前两段（足以区分机器，不暴露完整内网地址）。
-function maskIp(ip: string): string {
+export function maskIp(ip: string): string {
   const parts = ip.split(".");
   return parts.length === 4 ? parts.slice(0, 2).join(".") + ".***.***" : ip;
 }
+// 纯格式化（可测）：别名 · 主机名 · IP掩码——卡片标题/登录页/state/CLI 的唯一机器行实现。
+export function formatMachineLine(alias: string | undefined, host: string, ip: string): string {
+  return [alias?.trim(), host, ip ? maskIp(ip) : ""].filter(Boolean).join(" · ");
+}
 // 别名在配置表单（alias）填写；留空则机器行只显示主机名 · IP（掩码后）。
 function machineLine(alias?: string): string {
-  return [alias?.trim(), MACHINE_HOST, MACHINE_IP ? maskIp(MACHINE_IP) : ""].filter(Boolean).join(" · ");
+  return formatMachineLine(alias, MACHINE_HOST, MACHINE_IP);
 }
 
-function cardFor(title: string, color: string, lines: string[], url: string | null, note: string) {
+function cardFor(title: string, color: string, lines: string[], note: string) {
   const elements: any[] = [];
   for (const line of lines) {
     if (line === "---") elements.push({ tag: "hr" });
@@ -313,7 +317,7 @@ async function sendNotify(ctx: AnyCtx, event: string, url: string | null): Promi
   // 机器身份进标题（负责人 2026-11-23 定版）：推送标题即带 别名 · 主机名 · IP 前两段。
   const title = baseTitle + " · " + machineLine(cfg.alias);
   const tier = notifyText(); // 换址必带完整密码：能自救（用户拍板，不做档位）
-  // 独立区块 + 分隔线：机器行打头（哪台机器一目了然），地址和密码各自前后留白。
+  // 独立区块 + 分隔线：机器身份在标题（卡片头一行即可分辨机器），地址和密码各自前后留白。
   let lines: string[];
   if (event === "down" || event === "recovered") {
     lines = url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"];
@@ -321,7 +325,7 @@ async function sendNotify(ctx: AnyCtx, event: string, url: string | null): Promi
   } else {
     lines = url ? ["**访问地址**", url, "---", "**访问密码**", tier] : ["（隧道未运行，暂无访问地址）", "**访问密码**", tier];
   }
-  const card = cardFor(title, color, lines, url, "dsh-remote · by @oh-summy · " + new Date().toLocaleString("zh-CN"));
+  const card = cardFor(title, color, lines, "dsh-remote · by @oh-summy · " + new Date().toLocaleString("zh-CN"));
   try {
     if (channel === "group") {
       // 群聊两种发法：优先应用身份（拉过群列表），否则群机器人 webhook
@@ -810,7 +814,11 @@ function loadSettings(): Config {
   };
   const raw: Record<string, unknown> = (() => {
     try { return JSON.parse(readFileSync(SETTINGS_FILE, "utf8")); }
-    catch {
+    catch (error) {
+      // 损坏 ≠ 首次启动：先把坏文件留档再走迁移，避免静默清掉用户配置（审查 P1-5）。
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        try { renameSync(SETTINGS_FILE, SETTINGS_FILE + ".corrupt-" + Date.now()); } catch { /* 留档失败忽略 */ }
+      }
       // 首次启动：profile 用户层的运行时键一次性搬进 settings.json
       const cur = readUserBlock();
       const s: Record<string, unknown> = {};
@@ -834,7 +842,8 @@ function loadSettings(): Config {
   return s;
 }
 
-function saveSettings(): void {
+// 原子写（审查 P1-5）：临时文件 + rename，崩溃不留半文件；失败返回 false 由调用方上报。
+function saveSettings(): boolean {
   const s = {
     enabled: cfg.enabled === true,
     autoStart: cfg.autoStart === true,
@@ -847,7 +856,15 @@ function saveSettings(): void {
     sessionDays: Number(cfg.sessionDays) || 7,
     alias: cfg.alias || "",
   };
-  try { writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2)); } catch { /* best effort */ }
+  const tmp = SETTINGS_FILE + ".tmp";
+  try {
+    writeFileSync(tmp, JSON.stringify(s, null, 2));
+    renameSync(tmp, SETTINGS_FILE);
+    return true;
+  } catch {
+    try { rmSync(tmp, { force: true }); } catch { /* 清理失败忽略 */ }
+    return false;
+  }
 }
 
 async function reapOrphans(ctx: AnyCtx): Promise<void> {
@@ -881,7 +898,8 @@ function spawnCaddy(ctx: AnyCtx): void {
     if (stopping) return; // 命令式停止：不是崩溃，不重拉
     if (!alive()) return;
     pushEvent("down", "caddy 退出，5s 后自动重拉");
-    timers.add(setTimeout(() => { if (alive() && cfg.autoRestart !== false) spawnCaddy(ctx); }, RESPAWN_DELAY_MS));
+    const t = setTimeout(() => { timers.delete(t); if (alive() && cfg.autoRestart !== false) spawnCaddy(ctx); }, RESPAWN_DELAY_MS);
+    timers.add(t);
   });
 }
 
@@ -927,10 +945,15 @@ function spawnCloudflared(ctx: AnyCtx): void {
     closeSync(out);
     if (stopping) return; // 命令式停止：不是崩溃，不重拉不通知
     if (!alive()) return;
-    if (cfg.autoRestart === false) { pushEvent("down", "cloudflared 退出（自动重启已关闭）"); say(ctx, "warn", "[dsh-remote] cloudflared exited, auto-restart off"); return; }
+    if (cfg.autoRestart === false) {
+      if (urlTimer) { clearInterval(urlTimer); urlTimer = null; } // 不重拉就别再轮询已死进程的地址（审查 P2）
+      pushEvent("down", "cloudflared 退出（自动重启已关闭）"); say(ctx, "warn", "[dsh-remote] cloudflared exited, auto-restart off");
+      return;
+    }
     pushEvent("down", "cloudflared 退出，5s 后自动重拉（quick tunnel 会自己死，事实 13）");
     void sendNotify(ctx, "down", currentUrl || null);
-    timers.add(setTimeout(() => { if (alive() && cfg.autoRestart !== false) spawnCloudflared(ctx); }, RESPAWN_DELAY_MS));
+    const t = setTimeout(() => { timers.delete(t); if (alive() && cfg.autoRestart !== false) spawnCloudflared(ctx); }, RESPAWN_DELAY_MS);
+    timers.add(t);
   });
 }
 

@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import http from "node:http";
 import crypto from "node:crypto";
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -193,14 +193,17 @@ function maskIp(ip) {
 	const parts = ip.split(".");
 	return parts.length === 4 ? parts.slice(0, 2).join(".") + ".***.***" : ip;
 }
-function machineLine(alias) {
+function formatMachineLine(alias, host, ip) {
 	return [
 		alias?.trim(),
-		MACHINE_HOST,
-		MACHINE_IP ? maskIp(MACHINE_IP) : ""
+		host,
+		ip ? maskIp(ip) : ""
 	].filter(Boolean).join(" · ");
 }
-function cardFor(title, color, lines, url, note) {
+function machineLine(alias) {
+	return formatMachineLine(alias, MACHINE_HOST, MACHINE_IP);
+}
+function cardFor(title, color, lines, note) {
 	const elements = [];
 	for (const line of lines) if (line === "---") elements.push({ tag: "hr" });
 	else elements.push({
@@ -319,7 +322,7 @@ async function sendNotify(ctx, event, url) {
 		"**访问密码**",
 		tier
 	];
-	const card = cardFor(title, color, lines, url, "dsh-remote · by @oh-summy · " + (/* @__PURE__ */ new Date()).toLocaleString("zh-CN"));
+	const card = cardFor(title, color, lines, "dsh-remote · by @oh-summy · " + (/* @__PURE__ */ new Date()).toLocaleString("zh-CN"));
 	try {
 		if (channel === "group") {
 			const hook = await getSecret(WEBHOOK_REF);
@@ -877,7 +880,10 @@ function loadSettings() {
 	const s = (() => {
 		try {
 			return JSON.parse(readFileSync(SETTINGS_FILE, "utf8"));
-		} catch {
+		} catch (error) {
+			if (error.code !== "ENOENT") try {
+				renameSync(SETTINGS_FILE, SETTINGS_FILE + ".corrupt-" + Date.now());
+			} catch {}
 			const cur = readUserBlock();
 			const s = {};
 			if (cur) for (const k of [
@@ -912,9 +918,17 @@ function saveSettings() {
 		sessionDays: Number(cfg.sessionDays) || 7,
 		alias: cfg.alias || ""
 	};
+	const tmp = SETTINGS_FILE + ".tmp";
 	try {
-		writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2));
-	} catch {}
+		writeFileSync(tmp, JSON.stringify(s, null, 2));
+		renameSync(tmp, SETTINGS_FILE);
+		return true;
+	} catch {
+		try {
+			rmSync(tmp, { force: true });
+		} catch {}
+		return false;
+	}
 }
 async function reapOrphans(ctx) {
 	for (const name of ["caddy", "cloudflared"]) {
@@ -962,9 +976,11 @@ function spawnCaddy(ctx) {
 		if (stopping) return;
 		if (!alive()) return;
 		pushEvent("down", "caddy 退出，5s 后自动重拉");
-		timers.add(setTimeout(() => {
+		const t = setTimeout(() => {
+			timers.delete(t);
 			if (alive() && cfg.autoRestart !== false) spawnCaddy(ctx);
-		}, RESPAWN_DELAY_MS));
+		}, RESPAWN_DELAY_MS);
+		timers.add(t);
 	});
 }
 function restartCaddy(ctx) {
@@ -1023,15 +1039,21 @@ function spawnCloudflared(ctx) {
 		if (stopping) return;
 		if (!alive()) return;
 		if (cfg.autoRestart === false) {
+			if (urlTimer) {
+				clearInterval(urlTimer);
+				urlTimer = null;
+			}
 			pushEvent("down", "cloudflared 退出（自动重启已关闭）");
 			say(ctx, "warn", "[dsh-remote] cloudflared exited, auto-restart off");
 			return;
 		}
 		pushEvent("down", "cloudflared 退出，5s 后自动重拉（quick tunnel 会自己死，事实 13）");
 		sendNotify(ctx, "down", currentUrl || null);
-		timers.add(setTimeout(() => {
+		const t = setTimeout(() => {
+			timers.delete(t);
 			if (alive() && cfg.autoRestart !== false) spawnCloudflared(ctx);
-		}, RESPAWN_DELAY_MS));
+		}, RESPAWN_DELAY_MS);
+		timers.add(t);
 	});
 }
 async function startTunnel(ctx) {
@@ -1229,4 +1251,4 @@ function apply(ctx, config = {}) {
 		};
 	});
 }
-export { Config, apply, inject, materializeCli };
+export { Config, apply, formatMachineLine, inject, maskIp, materializeCli };

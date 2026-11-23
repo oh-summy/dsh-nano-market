@@ -320,6 +320,7 @@ function RemoteManager({ t: hostT, locale }) {
   const [secretDraft, setSecretDraft] = React.useState(undefined);
   const [hookDraft, setHookDraft] = React.useState(undefined);
   const [oidDraft, setOidDraft] = React.useState(undefined);
+  const [aliasDraft, setAliasDraft] = React.useState(undefined); // undefined = 显示 state.alias；编辑中持有草稿（审查 P1-1）
   const liveRef = React.useRef(true);
   const lastChannelRef = React.useRef("group");
 
@@ -596,8 +597,13 @@ function RemoteManager({ t: hostT, locale }) {
     urlRow,
     passwordRow,
     Row({ label: t("alias"), tip: t("aliasTip"), children:
-      jsx(P.Input, { className: "rc-input", disabled: busy, defaultValue: state?.alias || "", placeholder: t("aliasPlaceholder"),
-        onBlur: (event) => { const v = event.currentTarget.value.trim(); if (v !== (state?.alias || "")) act("/rc-api/config", t("aliasSaved"), { alias: v }); },
+      jsx(P.Input, { className: "rc-input", disabled: busy, value: aliasDraft !== undefined ? aliasDraft : (state?.alias || ""), placeholder: t("aliasPlaceholder"),
+        onChange: (event) => setAliasDraft(event.target.value),
+        onBlur: () => {
+          const v = (aliasDraft !== undefined ? aliasDraft : (state?.alias || "")).trim();
+          if (v !== (state?.alias || "")) act("/rc-api/config", t("aliasSaved"), { alias: v });
+          setAliasDraft(undefined); // 交还受控显示：state 刷新后即所见即所存（审查 P1-1）
+        },
         onKeyDown: (event) => { if (event.key === "Enter") event.currentTarget.blur(); } }) }),
     // 瞬时反馈走浮窗：不独占一行、不推移布局
     message ? jsx("p", { className: "rc-toast" + (message.err ? " err" : ""), role: "status", children: message.text }) : null,
