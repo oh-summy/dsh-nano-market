@@ -65,18 +65,24 @@ export function updatePayloadOf(entry) {
   return { packageName: entry.name, version: target.version, spec: target.install.spec };
 }
 
-// ---------- 首屏状态缓存（localStorage）校验 ----------
-// 缓存只负责「看得对」（视觉水合）；启停/更新的操作资格由本轮实时数据决定。
-// 结构不完整、超过 TTL、savedAt 来自未来（跨设备时钟漂移）一律视为无缓存。
+// ---------- 首屏状态缓存（localStorage）分字段校验 ----------
+// 缓存只负责「看得对」（视觉水合）；操作资格由本轮实时数据决定（bundlesFresh/marketFresh 门控）。
+// 每个字段独立 savedAt：一类过期/损坏只丢自己，绝不被另一字段的写入「续期复活」（审查二轮 P1-4）。
 export const STATE_CACHE_TTL = 30 * 60 * 1000;
-export function parseStateCache(raw, now = Date.now(), ttlMs = STATE_CACHE_TTL) {
+function validSavedAt(raw, now, ttlMs) {
+  return Number.isFinite(raw.savedAt) && now - raw.savedAt <= ttlMs && raw.savedAt <= now + 60_000;
+}
+export function parseEntriesCache(raw, now = Date.now(), ttlMs = STATE_CACHE_TTL) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const entries = raw.entries;
-  const bundles = raw.bundles;
-  if (!Array.isArray(entries) || entries.length === 0) return null;
-  if (!bundles || typeof bundles !== "object" || Array.isArray(bundles)) return null;
-  if (!Number.isFinite(raw.savedAt) || now - raw.savedAt > ttlMs || raw.savedAt > now + 60_000) return null;
-  return { entries, bundles, savedAt: raw.savedAt };
+  if (!Array.isArray(raw.entries) || raw.entries.length === 0) return null;
+  if (!validSavedAt(raw, now, ttlMs)) return null;
+  return { entries: raw.entries };
+}
+export function parseBundlesCache(raw, now = Date.now(), ttlMs = STATE_CACHE_TTL) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if (!raw.bundles || typeof raw.bundles !== "object" || Array.isArray(raw.bundles)) return null;
+  if (!validSavedAt(raw, now, ttlMs)) return null;
+  return { bundles: raw.bundles };
 }
 // 开关锁定条件单一实现：忙、只读、清单读取失败、宿主内置、未装入、本轮实时清单未确认——都不得操作
 // （审查 P1-2 + P1-3：缓存只负责视觉水合，操作资格等本轮 listBundles 返回）。

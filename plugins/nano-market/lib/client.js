@@ -73,18 +73,24 @@ function updatePayloadOf(entry) {
   return { packageName: entry.name, version: target.version, spec: target.install.spec };
 }
 
-// ---------- 首屏状态缓存（localStorage）校验 ----------
-// 缓存只负责「看得对」（视觉水合）；启停/更新的操作资格由本轮实时数据决定。
-// 结构不完整、超过 TTL、savedAt 来自未来（跨设备时钟漂移）一律视为无缓存。
+// ---------- 首屏状态缓存（localStorage）分字段校验 ----------
+// 缓存只负责「看得对」（视觉水合）；操作资格由本轮实时数据决定（bundlesFresh/marketFresh 门控）。
+// 每个字段独立 savedAt：一类过期/损坏只丢自己，绝不被另一字段的写入「续期复活」（审查二轮 P1-4）。
 const STATE_CACHE_TTL = 30 * 60 * 1000;
-function parseStateCache(raw, now = Date.now(), ttlMs = STATE_CACHE_TTL) {
+function validSavedAt(raw, now, ttlMs) {
+  return Number.isFinite(raw.savedAt) && now - raw.savedAt <= ttlMs && raw.savedAt <= now + 60_000;
+}
+function parseEntriesCache(raw, now = Date.now(), ttlMs = STATE_CACHE_TTL) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const entries = raw.entries;
-  const bundles = raw.bundles;
-  if (!Array.isArray(entries) || entries.length === 0) return null;
-  if (!bundles || typeof bundles !== "object" || Array.isArray(bundles)) return null;
-  if (!Number.isFinite(raw.savedAt) || now - raw.savedAt > ttlMs || raw.savedAt > now + 60_000) return null;
-  return { entries, bundles, savedAt: raw.savedAt };
+  if (!Array.isArray(raw.entries) || raw.entries.length === 0) return null;
+  if (!validSavedAt(raw, now, ttlMs)) return null;
+  return { entries: raw.entries };
+}
+function parseBundlesCache(raw, now = Date.now(), ttlMs = STATE_CACHE_TTL) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if (!raw.bundles || typeof raw.bundles !== "object" || Array.isArray(raw.bundles)) return null;
+  if (!validSavedAt(raw, now, ttlMs)) return null;
+  return { bundles: raw.bundles };
 }
 // 开关锁定条件单一实现：忙、只读、清单读取失败、宿主内置、未装入、本轮实时清单未确认——都不得操作
 // （审查 P1-2 + P1-3：缓存只负责视觉水合，操作资格等本轮 listBundles 返回）。
@@ -366,20 +372,26 @@ class TabBoundary extends React.Component {
 }
 
 // 上次实时状态的 localStorage 读写（跨宿主重启/页面刷新消除首帧闪动；失败静默退化）。
-function readStateCache() {
+// 缓存按字段拆键（审查二轮 P1-4/P1-5）：entries 与 bundles 互不污染，
+// 任一字段过期/损坏只丢自己；跨标签并发最坏情形 = 单字段被旧值覆盖（有 TTL 兜底）。
+const ENTRIES_CACHE_KEY = "nmk-entries-cache";
+const BUNDLES_CACHE_KEY = "nmk-bundles-cache";
+function readCacheField(key) {
   try {
-    const v = JSON.parse(localStorage.getItem("nmk-state-cache") || "null");
+    const v = JSON.parse(localStorage.getItem(key) || "null");
     return v && typeof v === "object" && !Array.isArray(v) ? v : null;
   } catch { return null; }
 }
-function writeStateCache(patch) {
-  try {
-    let prev = null;
-    try { prev = JSON.parse(localStorage.getItem("nmk-state-cache") || "null"); } catch { /* 损坏即弃 */ }
-    localStorage.setItem("nmk-state-cache", JSON.stringify({ ...(prev && typeof prev === "object" ? prev : {}), ...patch, savedAt: Date.now() }));
-  } catch { /* private mode 等 */ }
+function writeCacheField(key, value) {
+  try { localStorage.setItem(key, JSON.stringify({ ...value, savedAt: Date.now() })); } catch { /* private mode 等 */ }
 }
-// parseStateCache/switchLockedOut 在 market-logic.js（构建时并入），测试直接覆盖纯函数。
+function clearCacheField(key) {
+  try { localStorage.removeItem(key); } catch { /* 无缓存时忽略 */ }
+}
+function writeEntriesCache(entries) { writeCacheField(ENTRIES_CACHE_KEY, { entries }); }
+function writeBundlesCache(bundles) { writeCacheField(BUNDLES_CACHE_KEY, { bundles }); }
+function clearEntriesCache() { clearCacheField(ENTRIES_CACHE_KEY); }
+// parseEntriesCache/parseBundlesCache/switchLockedOut 在 market-logic.js（构建时并入），测试直接覆盖纯函数。
 
 function NanoMarketTab(props) {
   const t = props.t;
@@ -388,18 +400,21 @@ function NanoMarketTab(props) {
   const lang = ctx?.locale?.getSnapshot?.()?.active === "en" ? "en" : "zh";
   const resolve = useCallback((text) => ctx?.locale?.resolveText?.(text) || localized(text, lang), [ctx, lang]);
 
-  // 首屏水合：仅当缓存通过校验（结构 + TTL）才用其「视觉呈现」，操作资格等本轮实时数据（freshConfirmed）。
-  // 没有有效缓存就回退构建期快照；开关在数据到达前禁用（读取失败也禁用——不按陈旧/未知状态操作）。
-  const cachedState = parseStateCache(readStateCache());
-  const [entries, setEntries] = useState(() => normalizeEntries(cachedState?.entries ?? SNAPSHOT.entries));
-  const [bundles, setBundles] = useState(() => cachedState?.bundles ?? {});
-  const [bundlesLoaded, setBundlesLoaded] = useState(() => Boolean(cachedState));
-  const [freshConfirmed, setFreshConfirmed] = useState(false); // 本轮 listBundles+search 都返回后才允许操作
+  // 首屏水合：分字段校验（结构 + 各自 TTL），只取「看得对」的视觉呈现；
+  // 操作资格由 bundlesFresh/marketFresh 门控——本轮实时数据确认前一律禁用（审查 P1-3 定版）。
+  const cachedEntries = parseEntriesCache(readCacheField(ENTRIES_CACHE_KEY));
+  const cachedBundles = parseBundlesCache(readCacheField(BUNDLES_CACHE_KEY));
+  const [entries, setEntries] = useState(() => normalizeEntries(cachedEntries?.entries ?? SNAPSHOT.entries));
+  const [bundles, setBundles] = useState(() => cachedBundles?.bundles ?? {});
+  const [bundlesLoaded, setBundlesLoaded] = useState(() => Boolean(cachedEntries || cachedBundles));
+  const [bundlesFresh, setBundlesFresh] = useState(false); // 本轮 listBundles 确认后开关才可操作（审查 P1-3）
+  const [marketFresh, setMarketFresh] = useState(false); // 本轮 search 确认后更新按钮才可操作（审查 P1-3）
   const [bundleError, setBundleError] = useState("");
   const [marketError, setMarketError] = useState("");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState(null);
-  const fetchGen = useRef(0); // 请求代次：只采纳最新一次请求的结果（审查 P1-4）
+  const bundlesGen = useRef(0); // 请求代次：只采纳最新一次请求的结果（审查 P1-4；二轮 P0-1 定版：两刷新独立计数）
+  const marketGen = useRef(0); // 市场搜索独立代次（二轮 P0-2：绝不共用计数器）
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
 
@@ -412,30 +427,30 @@ function NanoMarketTab(props) {
 
   // 本机已安装清单（本地 IPC，毫秒级）。
   const refreshBundles = useCallback(async () => {
-    const gen = ++fetchGen.current;
+    const gen = ++bundlesGen.current;
     try {
       const answer = await ctx.remote.pluginManager.listBundles();
-      if (gen !== fetchGen.current || !mountedRef.current) return; // 过期响应/已卸载：不覆盖新状态
+      if (gen !== bundlesGen.current || !mountedRef.current) return; // 过期响应/已卸载：不覆盖新状态
       if (!answer || answer.ok === false) throw new Error(answer?.error?.message || "listBundles failed");
       const byName = {};
       for (const bundle of answer.value || []) byName[bundle.name] = bundle;
       setBundles(byName);
       setBundleError("");
       setBundlesLoaded(true);
-      setFreshConfirmed(true);
-      writeStateCache({ bundles: byName });
+      setBundlesFresh(true);
+      writeBundlesCache(byName);
     } catch (error) {
-      if (gen !== fetchGen.current || !mountedRef.current) return;
+      if (gen !== bundlesGen.current || !mountedRef.current) return;
       // 读不到清单 = 不知道谁装了：开关禁用（不按陈旧/未知状态操作），只说明原因。
       setBundleError(error?.message || String(error));
       setBundlesLoaded(true);
-      setFreshConfirmed(false);
+      setBundlesFresh(false);
     }
   }, [ctx]);
 
   // 市场索引（网络）：只有宿主那边配了本市场的索引源才搜；没配就用快照，不报错。
   const refreshMarket = useCallback(async () => {
-    const gen = ++fetchGen.current;
+    const gen = ++marketGen.current;
     try {
       const indexes = await ctx.remote.pluginMarket.listIndexes();
       const sources = indexes?.value ?? [];
@@ -450,11 +465,13 @@ function NanoMarketTab(props) {
       if (gen !== marketGen.current || !mountedRef.current) return null;
       if (fresh.length) {
         setEntries(fresh);
-        writeStateCache({ entries: fresh });
+        setMarketFresh(true);
+        writeEntriesCache(fresh);
       } else {
-        // 空结果：清缓存并回退构建期快照，不让陈旧缓存冒充当前市场（审查 P1-3）。
+        // 空结果：只清 entries 缓存并回退构建期快照；绝不动 bundles 缓存（审查二轮 P1-5）。
         setEntries(normalizeEntries(SNAPSHOT.entries));
-        try { localStorage.removeItem("nmk-state-cache"); } catch { /* 无缓存时忽略 */ }
+        setMarketFresh(false);
+        clearEntriesCache();
       }
       if (gen !== marketGen.current || !mountedRef.current) return null;
       setMarketError("");

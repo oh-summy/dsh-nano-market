@@ -3,7 +3,7 @@
 // 构建（build-client.mjs）把同一份实现拼进客户端包体，两条消费路径、一份实现。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeEntry, normalizeEntries, updateTarget, updatePayloadOf, presentedVersion, parseStateCache, STATE_CACHE_TTL, switchLockedOut } from "../client-src/market-logic.js";;
+import { normalizeEntry, normalizeEntries, updateTarget, updatePayloadOf, presentedVersion, parseEntriesCache, parseBundlesCache, STATE_CACHE_TTL, switchLockedOut } from "../client-src/market-logic.js";
 
 // 宿主实时数据形态：版本对象由宿主 listing 计算 update 资格（布尔），
 // install.spec 是「pin 到完整 commit 的 git spec」（git 源）。
@@ -89,18 +89,28 @@ const validCache = () => ({
   savedAt: Date.now() - 1000,
 });
 
-test("parseStateCache：结构完整且在 TTL 内才有效", () => {
+test("parseEntriesCache：结构完整且在 TTL 内才有效", () => {
   const now = Date.now();
-  assert.deepEqual(parseStateCache(validCache(), now), validCache());
-  assert.equal(parseStateCache(null, now), null);
-  assert.equal(parseStateCache([], now), null);
-  assert.equal(parseStateCache({}, now), null);
-  assert.equal(parseStateCache({ entries: [], bundles: {} }, now), null);            // 空条目
-  assert.equal(parseStateCache({ entries: validCache().entries }, now), null);        // 缺 bundles
-  assert.equal(parseStateCache({ ...validCache(), bundles: [] }, now), null);         // bundles 是数组
-  assert.equal(parseStateCache({ ...validCache(), savedAt: now - STATE_CACHE_TTL - 1 }, now), null); // 过期
-  assert.equal(parseStateCache({ ...validCache(), savedAt: now + 120_000 }, now), null);             // 未来时钟
-  assert.equal(parseStateCache({ ...validCache(), savedAt: "x" }, now), null);        // 非数值
+  const valid = { entries: [{ name: "@oh-summy/dsh-remote", versions: [{ version: "0.4.0" }] }], savedAt: now - 1000 };
+  assert.deepEqual(parseEntriesCache(valid, now), { entries: valid.entries });
+  assert.equal(parseEntriesCache(null, now), null);
+  assert.equal(parseEntriesCache([], now), null);
+  assert.equal(parseEntriesCache({ entries: [] }, now), null);                                       // 空条目
+  assert.equal(parseEntriesCache({ ...valid, savedAt: now - STATE_CACHE_TTL - 1 }, now), null);      // 过期
+  assert.equal(parseEntriesCache({ ...valid, savedAt: now + 120_000 }, now), null);                  // 未来时钟
+  assert.equal(parseEntriesCache({ ...valid, savedAt: "x" }, now), null);                            // 非数值
+});
+
+test("parseBundlesCache：结构与 TTL 同规则（与 entries 互不续期，审查二轮 P1-4）", () => {
+  const now = Date.now();
+  const valid = { bundles: { "@oh-summy/dsh-remote": { installed: true, enabled: true } }, savedAt: now - 1000 };
+  assert.deepEqual(parseBundlesCache(valid, now), { bundles: valid.bundles });
+  assert.equal(parseBundlesCache({ bundles: [] }, now), null);
+  assert.equal(parseBundlesCache({ ...valid, savedAt: now - STATE_CACHE_TTL - 1 }, now), null);
+  // 关键不变量：bundles 写入不能给过期 entries 续期（分字段 savedAt 的存在意义）
+  const staleEntries = { entries: valid.entries, savedAt: now - STATE_CACHE_TTL - 1 };
+  assert.equal(parseEntriesCache(staleEntries, now), null);
+  assert.deepEqual(parseBundlesCache({ bundles: valid.bundles, savedAt: now - 1000 }, now), { bundles: valid.bundles });
 });
 
 // ---------- 开关锁定条件（审查 P1-2 回归） ----------
