@@ -4,7 +4,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import http from "node:http";
 import crypto from "node:crypto";
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, homedir, networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -636,7 +636,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
             if (target) await startTunnel(ctx);
             else stopTunnel(ctx);
             cfg = { ...cfg, enabled: target } as Config;
-            saveSettings();
+            if (!saveSettings()) throw new Error("settings persist failed"); // 进程已实际切换：cfg 与之对齐，仅上报持久化失败
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: true, enabled: target }));
           } catch (e) {
@@ -679,10 +679,19 @@ function startLoginServer(ctx: AnyCtx): http.Server {
           if (json.notifyChatName !== undefined) fields.notifyChatName = String(json.notifyChatName);
           if (json.autoRestart !== undefined) fields.autoRestart = !!json.autoRestart;
           if (json.autoStart !== undefined) fields.autoStart = !!json.autoStart;
-          if (json.alias !== undefined) fields.alias = String(json.alias).slice(0, 64).trim();
+          if (json.alias !== undefined) {
+            const rawAlias = typeof json.alias === "string" ? json.alias : "";
+            fields.alias = Array.from(rawAlias.replace(/[\u0000-\u001f\u007f]/g, "").trim()).slice(0, 64).join("");
+          }
           if (json.sessionDays !== undefined) fields.sessionDays = Math.min(Math.max(parseInt(String(json.sessionDays), 10) || 7, 1), 30);
+          const prevCfg = cfg;
           cfg = { ...cfg, ...fields } as Config;
-          saveSettings();
+          if (!saveSettings()) {
+            cfg = prevCfg; // 持久化失败：回滚内存态，不谎报成功、不发通知（审查二轮 P1）
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "settings persist failed" }));
+            return;
+          }
           pushEvent("config", "设置已保存（立即生效）");
           // 通知配置一旦齐备：立即推一条带链接+密码的消息（闭环确认 + 把当前入口送达）
           const becameReady =
@@ -817,7 +826,13 @@ function loadSettings(): Config {
     catch (error) {
       // 损坏 ≠ 首次启动：先把坏文件留档再走迁移，避免静默清掉用户配置（审查 P1-5）。
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        try { renameSync(SETTINGS_FILE, SETTINGS_FILE + ".corrupt-" + Date.now()); } catch { /* 留档失败忽略 */ }
+        try {
+          renameSync(SETTINGS_FILE, SETTINGS_FILE + ".corrupt-" + Date.now());
+          // 留档上限：只保留最近 5 份，防长期累积（审查二轮 P2）
+          const dir = dirname(SETTINGS_FILE);
+          const olds = readdirSync(dir).filter((f: string) => f.startsWith("settings.json.corrupt-")).sort();
+          for (const f of olds.slice(0, Math.max(0, olds.length - 5))) rmSync(join(dir, f), { force: true });
+        } catch { /* 留档失败忽略 */ }
       }
       // 首次启动：profile 用户层的运行时键一次性搬进 settings.json
       const cur = readUserBlock();

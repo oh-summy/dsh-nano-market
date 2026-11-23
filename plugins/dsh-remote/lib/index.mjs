@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import net from "node:net";
 import http from "node:http";
 import crypto from "node:crypto";
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, hostname, networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -659,7 +659,7 @@ function startLoginServer(ctx) {
 							...cfg,
 							enabled: target
 						};
-						saveSettings();
+						if (!saveSettings()) throw new Error("settings persist failed");
 						res.writeHead(200, { "Content-Type": "application/json" });
 						res.end(JSON.stringify({
 							ok: true,
@@ -713,13 +713,22 @@ function startLoginServer(ctx) {
 					if (json.notifyChatName !== void 0) fields.notifyChatName = String(json.notifyChatName);
 					if (json.autoRestart !== void 0) fields.autoRestart = !!json.autoRestart;
 					if (json.autoStart !== void 0) fields.autoStart = !!json.autoStart;
-					if (json.alias !== void 0) fields.alias = String(json.alias).slice(0, 64).trim();
+					if (json.alias !== void 0) {
+						const rawAlias = typeof json.alias === "string" ? json.alias : "";
+						fields.alias = Array.from(rawAlias.replace(/[\u0000-\u001f\u007f]/g, "").trim()).slice(0, 64).join("");
+					}
 					if (json.sessionDays !== void 0) fields.sessionDays = Math.min(Math.max(parseInt(String(json.sessionDays), 10) || 7, 1), 30);
+					const prevCfg = cfg;
 					cfg = {
 						...cfg,
 						...fields
 					};
-					saveSettings();
+					if (!saveSettings()) {
+						cfg = prevCfg;
+						res.writeHead(500, { "Content-Type": "application/json" });
+						res.end(JSON.stringify({ error: "settings persist failed" }));
+						return;
+					}
 					pushEvent("config", "设置已保存（立即生效）");
 					if ((fields.notifyChannel && fields.notifyChannel !== "off" || fields.notifyChatId || fields.notifyOpenId) && (cfg.notifyChannel || "off") !== "off" && currentUrl) sendNotify(ctx, "enabled", currentUrl);
 					res.writeHead(200, { "Content-Type": "application/json" });
@@ -883,6 +892,9 @@ function loadSettings() {
 		} catch (error) {
 			if (error.code !== "ENOENT") try {
 				renameSync(SETTINGS_FILE, SETTINGS_FILE + ".corrupt-" + Date.now());
+				const dir = dirname(SETTINGS_FILE);
+				const olds = readdirSync(dir).filter((f) => f.startsWith("settings.json.corrupt-")).sort();
+				for (const f of olds.slice(0, Math.max(0, olds.length - 5))) rmSync(join(dir, f), { force: true });
 			} catch {}
 			const cur = readUserBlock();
 			const s = {};

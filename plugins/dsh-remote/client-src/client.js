@@ -51,6 +51,7 @@ const zh = {
   alias: "机器别名",
   aliasTip: "飞书卡片与登录页显示的简称（留空只显示主机名 · 内网 IP）。",
   aliasPlaceholder: "给这台机器起个简称（如 办公室-Mac）",
+  aliasSaving: "保存中…",
   aliasSaved: "别名已保存",
   notify: "飞书通知",
   notifyTip: "开启后选择群聊或私聊；链接变化时自动推送新地址和完整密码。",
@@ -155,6 +156,7 @@ const en = {
   alias: "Machine alias",
   aliasTip: "Shown on the Feishu card and the login page (empty = hostname · LAN IP only).",
   aliasPlaceholder: "A short name for this machine (e.g. office-mac)",
+  aliasSaving: "Saving…",
   aliasSaved: "Alias saved",
   notify: "Feishu notification",
   notifyTip: "Turn on to pick a group chat or a direct message; new addresses and the full password are pushed automatically.",
@@ -321,6 +323,10 @@ function RemoteManager({ t: hostT, locale }) {
   const [hookDraft, setHookDraft] = React.useState(undefined);
   const [oidDraft, setOidDraft] = React.useState(undefined);
   const [aliasDraft, setAliasDraft] = React.useState(undefined); // undefined = 显示 state.alias；编辑中持有草稿（审查 P1-1）
+  // state 追上草稿（保存成功）→ 清草稿；保存失败 state 不变 → 草稿保留，输入不丢。
+  React.useEffect(() => {
+    if (aliasDraft !== undefined && state?.alias === aliasDraft) setAliasDraft(undefined);
+  }, [state?.alias, aliasDraft]);
   const liveRef = React.useRef(true);
   const lastChannelRef = React.useRef("group");
 
@@ -376,11 +382,14 @@ function RemoteManager({ t: hostT, locale }) {
     try {
       const r = await rcApi(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
       setMessage(r && r.error ? { text: t("failed") + r.error, err: true } : { text: doneText ?? (r && r.detail ? String(r.detail) : t("done")) });
+      return !(r && r.error);
     } catch (reason) {
       setMessage({ text: t("failed") + (reason?.message || String(reason)), err: true });
+      return false;
+    } finally {
+      setBusy(false);
+      setTimeout(() => { if (liveRef.current) void refresh(); }, 400);
     }
-    setBusy(false);
-    setTimeout(() => { if (liveRef.current) void refresh(); }, 400);
   }
 
   const ch = (state?.channel || "off");
@@ -599,10 +608,12 @@ function RemoteManager({ t: hostT, locale }) {
     Row({ label: t("alias"), tip: t("aliasTip"), children:
       jsx(P.Input, { className: "rc-input", disabled: busy, value: aliasDraft !== undefined ? aliasDraft : (state?.alias || ""), placeholder: t("aliasPlaceholder"),
         onChange: (event) => setAliasDraft(event.target.value),
-        onBlur: () => {
+        onBlur: async () => {
           const v = (aliasDraft !== undefined ? aliasDraft : (state?.alias || "")).trim();
-          if (v !== (state?.alias || "")) act("/rc-api/config", t("aliasSaved"), { alias: v });
-          setAliasDraft(undefined); // 交还受控显示：state 刷新后即所见即所存（审查 P1-1）
+          if (v === (state?.alias || "")) { setAliasDraft(undefined); return; }
+          const ok = await act("/rc-api/config", t("aliasSaving"), { alias: v });
+          // 成功：草稿暂时保持 = v，state 刷新追上后由下方 effect 清除；失败：草稿保留，输入不丢（审查二轮 P1-2）。
+          if (!ok) setAliasDraft(v);
         },
         onKeyDown: (event) => { if (event.key === "Enter") event.currentTarget.blur(); } }) }),
     // 瞬时反馈走浮窗：不独占一行、不推移布局
