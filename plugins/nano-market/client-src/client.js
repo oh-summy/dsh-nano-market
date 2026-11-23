@@ -146,7 +146,7 @@ const CSS = `
 .nmk-cardOpen:focus-visible:after{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
 .nmk-cardDesc{color:var(--dsw-alias-label-tertiary);-webkit-line-clamp:1;-webkit-box-orient:vertical;font-size:13px;line-height:18px;display:-webkit-box;overflow:hidden;margin:0}
 .nmk-cardEnd{z-index:1;flex:none;display:inline-flex;align-items:center;gap:8px;position:relative}
-.nmk-cardEndStack{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+
 .nmk-versionTag{font-variant-numeric:tabular-nums;flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .nmk-statusTag{height:18px;padding:0 7px;font-size:10px;line-height:1;flex:none}
 .nmk-msg{color:var(--dsw-alias-label-secondary);font-size:13px;line-height:20px;margin:0}
@@ -225,15 +225,13 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
   // 其次用市场条目里的图标，都没有（或加载失败）就用宿主的默认插件图形。
   const iconSource = bundle?.meta?.icon || entry.icon;
   const artwork = jsx(CardIcon, { src: iconSource });
-  const statusLabel = status === "enabled"
-    ? t("stateEnabled")
-    : status === "installed-off"
-      ? t("stateInstalledOff")
-      : status === "provided"
-        ? t("stateProvided")
-        : status === "unknown"
-            ? t("stateUnknownShort")
-            : t("stateNotInstalled");
+  const statusLabel = status === "installed-off"
+    ? t("stateInstalledOff")
+    : status === "provided"
+      ? t("stateProvided")
+      : status === "unknown"
+          ? t("stateUnknownShort")
+          : t("stateNotInstalled");
   // 与官方 Discover 同规则：不兼容（且未豁免）的版本不给安装，说明原因。
   const canInstall = installable(version?.compatibility);
   const statusTone = status === "enabled"
@@ -248,7 +246,7 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
       ? jsx("button", { type: "button", className: "nmk-cardOpen nmk-cardTitle", onClick: onOpen, children: title })
       : jsx("span", { className: "nmk-cardTitle", children: title }),
     version ? jsx("span", { className: "nmk-versionTag", children: version.version }) : null,
-    jsx(P.Tag, { tone: statusTone, className: "nmk-statusTag", children: statusLabel }),
+    status === "enabled" ? null : jsx(P.Tag, { tone: statusTone, className: "nmk-statusTag", children: statusLabel }),
     canUpdate ? jsx(P.Tag, { tone: "info", className: "nmk-statusTag", children: t("stateUpdate") }) : null,
   ] });
   const main = jsx("div", { className: "nmk-cardMain", children: [
@@ -297,9 +295,8 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
         children: t("update"),
       })
     : null;
-  const end = updateButton
-    ? jsxs("div", { className: "nmk-cardEndStack", children: [updateButton, switchEl] })
-    : switchEl;
+  // 更新按钮在开关左侧同一行（负责人指定的版式）。
+  const end = updateButton ? [updateButton, switchEl] : switchEl;
   const head = jsx("div", { className: "nmk-cardHead", children: [
     jsx("span", { className: "nmk-cardIcon", children: artwork }),
     main,
