@@ -29,16 +29,12 @@ const zh = {
   groupTitle: "本市场",
   install: "安装",
   switchAria: "{name} 的启用状态",
-  stateNotInstalled: "未安装",
-  stateInstalledOff: "已安装 · 未启用",
-  stateEnabled: "已启用",
-  stateProvided: "宿主内置",
+  stateInstalledOff: "未启用",
   stateUpdate: "可更新",
   update: "更新",
   updateTitle: "更新 {name} {version}",
   empty: "这个市场还没有注册任何插件。",
   unknownState: "读取已安装清单失败，暂不显示启用状态。",
-  stateUnknownShort: "状态未知",
   retry: "重试",
   retrying: "重试中…",
   marketRefreshFailed: "市场索引暂时读不到：",
@@ -70,16 +66,12 @@ const en = {
   groupTitle: "This market",
   install: "Install",
   switchAria: "{name} enable state",
-  stateNotInstalled: "Not installed",
-  stateInstalledOff: "Installed · not enabled",
-  stateEnabled: "Enabled",
-  stateProvided: "Bundled with DSH",
+  stateInstalledOff: "Not enabled",
   stateUpdate: "Update available",
   update: "Update",
   updateTitle: "Update {name} {version}",
   empty: "This market has no plugins yet.",
   unknownState: "The installed list could not be read, so the enable state is hidden.",
-  stateUnknownShort: "Unknown",
   retry: "Retry",
   retrying: "Retrying…",
   marketRefreshFailed: "The market index could not be read: ",
@@ -208,49 +200,27 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onO
   // 其次用市场条目里的图标，都没有（或加载失败）就用宿主的默认插件图形。
   const iconSource = bundle?.meta?.icon || entry.icon;
   const artwork = jsx(CardIcon, { src: iconSource });
-  const statusLabel = status === "installed-off"
-    ? t("stateInstalledOff")
-    : status === "provided"
-      ? t("stateProvided")
-      : status === "unknown"
-          ? t("stateUnknownShort")
-          : t("stateNotInstalled");
-  const statusTone = status === "enabled"
-    ? "success"
-    : status === "installed-off"
-      ? "warning"
-      : status === "provided"
-        ? "neutral"
-        : "outline";
   const titleRow = jsxs("div", { className: "nmk-titleRow", children: [
     installed
       ? jsx("button", { type: "button", className: "nmk-cardOpen nmk-cardTitle", onClick: onOpen, children: title })
       : jsx("span", { className: "nmk-cardTitle", children: title }),
     (bundle?.version || version?.version) ? jsx("span", { className: "nmk-versionTag", children: bundle?.version || version?.version }) : null,
-    status === "enabled" ? null : jsx(P.Tag, { tone: statusTone, className: "nmk-statusTag", children: statusLabel }),
+    // 唯一的状态徽章：「未启用」——解释开关为什么不起作用。打开态与加载态不显示任何徽章。
+    status === "installed-off" ? jsx(P.Tag, { tone: "warning", className: "nmk-statusTag", children: t("stateInstalledOff") }) : null,
     canUpdate ? jsx(P.Tag, { tone: "info", className: "nmk-statusTag", children: t("stateUpdate") }) : null,
   ] });
   const main = jsx("div", { className: "nmk-cardMain", children: [
     titleRow,
     jsx("p", { className: "nmk-cardDesc", children: resolve(entry.description) }),
   ] });
-  const switchEl = status === "unknown"
-    ? jsx(P.Switch, {
-        checked: false,
-        label: t("switchAria", { name: title }),
-        disabled: true,
-        title: t("unknownState"),
-      })
-    : status === "provided"
-      ? null
-      : jsx(P.Switch, {
-        checked: status === "enabled",
-        label: t("switchAria", { name: title }),
-        // 未装入的个别插件（罕见形态：跟随 nano-market 更新时装入）开关禁用；
-        // 其余按宿主清单提供启停。
-        disabled: working || locked || status === "not-installed",
-        ...(bundle?.readOnlyReason === undefined ? {} : { title: readOnlyText(bundle.readOnlyReason, t) }),
-        onChange: onToggle,
+  const switchEl = jsx(P.Switch, {
+    checked: status === "enabled",
+    label: t("switchAria", { name: title }),
+    // 未装入的个别插件（罕见形态：跟随 nano-market 更新时装入）开关禁用；
+    // 其余按宿主清单提供启停。加载完成前开关即正常渲染（checked=false，无占位、无置灰）。
+    disabled: working || locked || status === "provided" || status === "not-installed",
+    ...(bundle?.readOnlyReason === undefined ? {} : { title: readOnlyText(bundle.readOnlyReason, t) }),
+    onChange: onToggle,
         });
   // 已安装且有更新：宿主 slot 契约给了 update 执行器（走页面自带的更新对话框）就上按钮；
   // 没给（老版宿主）则维持现状——只有「可更新」徽章，不渲染点不动的假按钮。
