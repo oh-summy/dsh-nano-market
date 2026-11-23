@@ -54,6 +54,20 @@ export interface Config {
   sessionDays?: number;
 }
 
+/** Turn Feishu send errors into an actionable message without hiding the raw response. */
+export function explainFeishuError(code: unknown, message = "", logId = ""): string {
+  const hints: Record<string, string> = {
+    "99992361": "open_id 不属于当前通知应用，请用 notifyAppId 对应的应用重新获取",
+    "230002": "通知机器人不在目标群，请先把机器人加入该群",
+    "230018": "群设置禁止机器人发言，请允许机器人发言后重试",
+    "230013": "目标用户不在当前机器人可用范围，请检查应用可用范围",
+  };
+  const raw = message || "unknown";
+  const hint = hints[String(code)];
+  const suffix = `（code ${String(code)}${logId ? `，log_id ${logId}` : ""}）`;
+  return `发送失败：${hint ? `${hint}；` : ""}${raw}${suffix}`;
+}
+
 // cordis 服务注入声明：凭据缝必须显式声明，否则 ctx.credentials 访问被拒
 // ("cannot get property 'credentials' without inject"，M2 实测，事实 18)。
 export const inject = ["credentials"];
@@ -273,7 +287,7 @@ async function sendApp(card: any): Promise<void> {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
   const sendJson = await sendRes.json() as any;
-  if (sendJson.code !== 0) throw new Error("发送失败 code " + sendJson.code + "：" + (sendJson.msg || "unknown") + "（常见原因：应用缺 im:message 发消息权限）");
+  if (sendJson.code !== 0) throw new Error(explainFeishuError(sendJson.code, sendJson.msg, sendJson.log_id));
 }
 
 async function sendNotify(ctx: AnyCtx, event: string, url: string | null): Promise<{ ok: boolean; error?: string }> {
