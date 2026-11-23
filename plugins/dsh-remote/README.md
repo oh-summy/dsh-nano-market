@@ -90,8 +90,14 @@ Browser ──HTTPS──▶ Cloudflare edge (Quick Tunnel: https://<random>.try
 
 Credentials never land in configuration files — they go through DSH's credential seam (`~/.dsh/.credentials.yaml`), and the page shows masked values only.
 
-- **Primary channel (bot DM):** your Feishu open id (`ou_...`). Requires [`lark-cli`](https://github.com/larksuite/cli) installed and configured; the app bot needs IM permission and must be able to DM you.
-- **Fallback channel:** group custom-bot webhook — works without lark-cli. If both are set, DM is used and webhook only on failure.
+- **Primary channel (bot DM):** your Feishu open id (`ou_...`) from the same app configured as `notifyAppId`. An `open_id` is app-scoped: a value copied from another app (including a test app) is rejected. Requires [`lark-cli`](https://github.com/larksuite/cli) installed and configured; the app bot needs IM permission and must be able to DM you.
+- **Recommended group channel:** use the app identity to select a `chat_id` from the groups returned by “Fetch group chats”. The bot must already be in the group and allowed to send messages; a `chat_id` is not a cross-app replacement for an `open_id`.
+- **Fallback channel:** group custom-bot webhook — works without lark-cli. If both are set, the selected group app identity is used first, then the webhook.
+
+When Feishu returns an error, the notification event keeps the original code,
+message, and `log_id`. Known delivery errors include the next action (for
+example, `99992361` means the `open_id` belongs to another app, while `230002`
+means the bot is not in the target group); unknown codes remain un-translated.
 
 ## Requirements
 

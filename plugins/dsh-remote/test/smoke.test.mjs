@@ -23,6 +23,13 @@ test("dsh-remote injects credentials", async () => {
   assert.ok(inject.includes("credentials"));
 });
 
+test("Feishu delivery errors retain identifiers and give actionable hints", async () => {
+  const { explainFeishuError } = await import("../lib/index.mjs");
+  assert.match(explainFeishuError(99992361, "cross app", "cli_a"), /notifyAppId|99992361|log_id cli_a/);
+  assert.match(explainFeishuError(230002, "not in chat"), /机器人不在目标群|230002/);
+  assert.match(explainFeishuError(777, "future error", "x"), /future error|code 777|log_id x/);
+});
+
 test("dsh-remote package.json is valid", () => {
   const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
   assert.equal(pkg.name, "@oh-summy/dsh-remote");

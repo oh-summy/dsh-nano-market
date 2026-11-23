@@ -39,6 +39,19 @@ const PASSWORD_REF = credentialRef("DSH_REMOTE_PASSWORD");
 const SESSION_REF = credentialRef("DSH_REMOTE_SESSION_SECRET");
 const WEBHOOK_REF = credentialRef("DSH_REMOTE_WEBHOOK_URL");
 const APP_SECRET_REF = credentialRef("DSH_REMOTE_APP_SECRET");
+/** Turn Feishu send errors into an actionable message without hiding the raw response. */
+function explainFeishuError(code, message = "", logId = "") {
+	const hints = {
+		"99992361": "open_id 不属于当前通知应用，请用 notifyAppId 对应的应用重新获取",
+		"230002": "通知机器人不在目标群，请先把机器人加入该群",
+		"230018": "群设置禁止机器人发言，请允许机器人发言后重试",
+		"230013": "目标用户不在当前机器人可用范围，请检查应用可用范围"
+	};
+	const raw = message || "unknown";
+	const hint = hints[String(code)];
+	const suffix = `（code ${String(code)}${logId ? `，log_id ${logId}` : ""}）`;
+	return `发送失败：${hint ? `${hint}；` : ""}${raw}${suffix}`;
+}
 const inject = ["credentials"];
 const Config = z.object({
 	enabled: z.boolean().default(false).describe("启用远程访问（关闭即回收隧道；开启产生新的临时链接）"),
@@ -270,7 +283,7 @@ async function sendApp(card) {
 		}),
 		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
 	})).json();
-	if (sendJson.code !== 0) throw new Error("发送失败 code " + sendJson.code + "：" + (sendJson.msg || "unknown") + "（常见原因：应用缺 im:message 发消息权限）");
+	if (sendJson.code !== 0) throw new Error(explainFeishuError(sendJson.code, sendJson.msg, sendJson.log_id));
 }
 async function sendNotify(ctx, event, url) {
 	const channel = cfg.notifyChannel || "off";
@@ -1202,4 +1215,4 @@ function apply(ctx, config = {}) {
 		};
 	});
 }
-export { Config, apply, inject, materializeCli };
+export { Config, apply, explainFeishuError, inject, materializeCli };
