@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "icon": "./icon.svg",
   "private": true,
-  "description": "Nano Market — the DSH plugin market page: browse, install, enable, disable, and uninstall every plugin registered in this market.",
+  "description": "Nano Market — the DSH plugin market page: browse every plugin registered in this market, toggle them on or off, and update them when a new version ships.",
   "license": "MIT",
   "type": "module",
   "main": "./lib/index.mjs",

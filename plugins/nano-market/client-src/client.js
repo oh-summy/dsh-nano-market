@@ -27,7 +27,6 @@ const SNAPSHOT = typeof MARKET_SNAPSHOT !== "undefined" ? MARKET_SNAPSHOT : { en
 const zh = {
   title: "Nano Market",
   groupTitle: "本市场",
-  install: "安装",
   switchAria: "{name} 的启用状态",
   stateInstalledOff: "未启用",
   stateUpdate: "可更新",
@@ -64,7 +63,6 @@ const zh = {
 const en = {
   title: "Nano Market",
   groupTitle: "This market",
-  install: "Install",
   switchAria: "{name} enable state",
   stateInstalledOff: "Not enabled",
   stateUpdate: "Update available",
@@ -182,7 +180,7 @@ function CardIcon({ src }) {
 }
 
 /** 一张市场卡片：与宿主「已安装」页签的卡片同构。 */
-function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onOpen, update }) {
+function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, readFailed, freshConfirmed, onToggle, onOpen, update }) {
   const working = busy === entry.name;
   const title = resolve(entry.title) || entry.name || "";
   const version = entry.versions?.find((item) => item.version === entry.defaultVersion) || entry.versions?.[0];
@@ -192,10 +190,13 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onO
       ? (bundle.enabled ? "enabled" : "installed-off")
       : (bundle?.availability === "installation" ? "provided" : "not-installed")
     : "unknown";
-  // 宿主说本机装的是旧版时，额外提示可更新（它只在已装时出现）。
+  // 更新资格单一事实源：updatePayload 非空 ⇔ 徽章出现 ⇔ 按钮可渲染（审查 P2：不再两处各判一遍）。
   const canUpdate = entry.installation?.status === "update-available";
   const installed = status === "enabled" || status === "installed-off";
   const locked = bundle?.readOnlyReason !== undefined || (bundle?.error !== undefined && status !== "enabled");
+  // 更新资格单一事实源：updatePayload 非空 ⇔ 徽章出现 ⇔ 按钮可渲染（审查 P2：不再两处各判一遍）。
+  const updateTargetPayload = canUpdate && installed ? updatePayloadOf(entry) : null;
+  const updateBadge = updateTargetPayload ? jsx(P.Tag, { tone: "info", className: "nmk-statusTag", children: t("stateUpdate") }) : null;
   // 图标优先用本机已安装插件的 manifest 图标（宿主读出来的 data:URL），
   // 其次用市场条目里的图标，都没有（或加载失败）就用宿主的默认插件图形。
   const iconSource = bundle?.meta?.icon || entry.icon;
@@ -207,7 +208,7 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onO
     (bundle?.version || version?.version) ? jsx("span", { className: "nmk-versionTag", children: bundle?.version || version?.version }) : null,
     // 唯一的状态徽章：「未启用」——解释开关为什么不起作用。打开态与加载态不显示任何徽章。
     status === "installed-off" ? jsx(P.Tag, { tone: "warning", className: "nmk-statusTag", children: t("stateInstalledOff") }) : null,
-    canUpdate ? jsx(P.Tag, { tone: "info", className: "nmk-statusTag", children: t("stateUpdate") }) : null,
+    updateBadge,
   ] });
   const main = jsx("div", { className: "nmk-cardMain", children: [
     titleRow,
@@ -217,8 +218,9 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onO
     checked: status === "enabled",
     label: t("switchAria", { name: title }),
     // 未装入的个别插件（罕见形态：跟随 nano-market 更新时装入）开关禁用；
-    // 其余按宿主清单提供启停。加载完成前开关即正常渲染（checked=false，无占位、无置灰）。
-    disabled: working || locked || status === "provided" || status === "not-installed",
+    // 清单读取失败也禁用（不按陈旧/未知状态操作，审查 P1-2）；
+    // 首屏水合窗口（无错误、实时数据未到）不禁用——负责人要求加载期无占位。
+    disabled: switchLockedOut({ working, locked, status, readFailed, fresh: freshConfirmed }),
     ...(bundle?.readOnlyReason === undefined ? {} : { title: readOnlyText(bundle.readOnlyReason, t) }),
     onChange: onToggle,
         });
@@ -226,12 +228,11 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onO
   // 没给（老版宿主）则维持现状——只有「可更新」徽章，不渲染点不动的假按钮。
   // 载荷 = PluginTabUpdate（slot 契约）；spec 用目标版本的 install.spec（官方 DiscoverSection 同一取法）。
   // update 执行器缺失（老版宿主）→ null，按钮不渲染，退化为「可更新」徽章。
-  const updateTargetPayload = canUpdate && installed ? updatePayloadOf(entry) : null;
   const updateButton = updateTargetPayload && typeof update === "function"
     ? jsx(P.Button, {
         variant: "outline",
         size: "sm",
-        disabled: working,
+        disabled: working || !freshConfirmed, // 更新同样等本轮实时清单（审查 P1-3：缓存只管视觉）
         "aria-label": t("updateTitle", { name: title, version: updateTargetPayload.version }),
         onClick: () => update(updateTargetPayload),
         children: t("update"),
@@ -274,7 +275,7 @@ class TabBoundary extends React.Component {
 function readStateCache() {
   try {
     const v = JSON.parse(localStorage.getItem("nmk-state-cache") || "null");
-    return v && typeof v === "object" ? v : null;
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
   } catch { return null; }
 }
 function writeStateCache(patch) {
@@ -284,6 +285,7 @@ function writeStateCache(patch) {
     localStorage.setItem("nmk-state-cache", JSON.stringify({ ...(prev && typeof prev === "object" ? prev : {}), ...patch, savedAt: Date.now() }));
   } catch { /* private mode 等 */ }
 }
+// parseStateCache/switchLockedOut 在 market-logic.js（构建时并入），测试直接覆盖纯函数。
 
 function NanoMarketTab(props) {
   const t = props.t;
@@ -292,17 +294,20 @@ function NanoMarketTab(props) {
   const lang = ctx?.locale?.getSnapshot?.()?.active === "en" ? "en" : "zh";
   const resolve = useCallback((text) => ctx?.locale?.resolveText?.(text) || localized(text, lang), [ctx, lang]);
 
-  // 首屏水合：优先用 localStorage 里上次会话的实时清单状态（零闪动），
-  // 没有缓存才回退构建期快照（首屏短暂「状态未知」，实时数据到达后纠正）。
-  const cachedState = readStateCache();
+  // 首屏水合：仅当缓存通过校验（结构 + TTL）才用其「视觉呈现」，操作资格等本轮实时数据（freshConfirmed）。
+  // 没有有效缓存就回退构建期快照；开关在数据到达前禁用（读取失败也禁用——不按陈旧/未知状态操作）。
+  const cachedState = parseStateCache(readStateCache());
   const [entries, setEntries] = useState(() => normalizeEntries(cachedState?.entries ?? SNAPSHOT.entries));
   const [bundles, setBundles] = useState(() => cachedState?.bundles ?? {});
   const [bundlesLoaded, setBundlesLoaded] = useState(() => Boolean(cachedState));
+  const [freshConfirmed, setFreshConfirmed] = useState(false); // 本轮 listBundles+search 都返回后才允许操作
   const [bundleError, setBundleError] = useState("");
   const [marketError, setMarketError] = useState("");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState(null);
-  const liveRef = useRef(false);
+  const fetchGen = useRef(0); // 请求代次：只采纳最新一次请求的结果（审查 P1-4）
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   // 状态提示是瞬时的：过几秒自己消失，不长期占着版面。
   useEffect(() => {
@@ -313,24 +318,30 @@ function NanoMarketTab(props) {
 
   // 本机已安装清单（本地 IPC，毫秒级）。
   const refreshBundles = useCallback(async () => {
+    const gen = ++fetchGen.current;
     try {
       const answer = await ctx.remote.pluginManager.listBundles();
+      if (gen !== fetchGen.current || !mountedRef.current) return; // 过期响应/已卸载：不覆盖新状态
       if (!answer || answer.ok === false) throw new Error(answer?.error?.message || "listBundles failed");
       const byName = {};
       for (const bundle of answer.value || []) byName[bundle.name] = bundle;
       setBundles(byName);
       setBundleError("");
       setBundlesLoaded(true);
+      setFreshConfirmed(true);
       writeStateCache({ bundles: byName });
     } catch (error) {
-      // 读不到清单 = 不知道谁装了：卡片不给启停/安装操作，只说明原因。
+      if (gen !== fetchGen.current || !mountedRef.current) return;
+      // 读不到清单 = 不知道谁装了：开关禁用（不按陈旧/未知状态操作），只说明原因。
       setBundleError(error?.message || String(error));
       setBundlesLoaded(true);
+      setFreshConfirmed(false);
     }
   }, [ctx]);
 
   // 市场索引（网络）：只有宿主那边配了本市场的索引源才搜；没配就用快照，不报错。
   const refreshMarket = useCallback(async () => {
+    const gen = ++fetchGen.current;
     try {
       const indexes = await ctx.remote.pluginMarket.listIndexes();
       const sources = indexes?.value ?? [];
@@ -339,16 +350,23 @@ function NanoMarketTab(props) {
         : false;
       if (!configured) return null;
       const answer = await ctx.remote.pluginMarket.search(MARKET_INDEX, { sort: { kind: "index" }, offset: 0, limit: 100 });
+      if (gen !== marketGen.current || !mountedRef.current) return null;
       if (!answer || answer.ok === false) throw new Error(answer?.error?.message || "market search failed");
       const fresh = normalizeEntries(answer.value?.entries || []);
+      if (gen !== marketGen.current || !mountedRef.current) return null;
       if (fresh.length) {
-        liveRef.current = true;
         setEntries(fresh);
         writeStateCache({ entries: fresh });
+      } else {
+        // 空结果：清缓存并回退构建期快照，不让陈旧缓存冒充当前市场（审查 P1-3）。
+        setEntries(normalizeEntries(SNAPSHOT.entries));
+        try { localStorage.removeItem("nmk-state-cache"); } catch { /* 无缓存时忽略 */ }
       }
+      if (gen !== marketGen.current || !mountedRef.current) return null;
       setMarketError("");
       return fresh;
     } catch (error) {
+      if (gen !== marketGen.current || !mountedRef.current) return null;
       // 没有网络也不影响浏览：快照已经画在屏幕上了。
       setMarketError(t("marketRefreshFailed") + (error?.message || String(error)));
       return null;
@@ -443,6 +461,8 @@ function NanoMarketTab(props) {
             resolve,
             busy,
             stateKnown: bundlesLoaded && !bundleError,
+            readFailed: Boolean(bundleError),
+            freshConfirmed,
             key: entry.name,
             onToggle: (next) => toggle(entry, next),
             onOpen: () => props.openPackage(entry.name),
