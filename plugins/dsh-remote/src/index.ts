@@ -234,9 +234,14 @@ function primaryLanIp(): string {
 }
 const MACHINE_HOST = hostname();
 const MACHINE_IP = primaryLanIp();
-// 别名在配置表单（alias）填写；留空则机器行只显示主机名 · IP。
+// 展示层 IP 掩码：只留前两段（足以区分机器，不暴露完整内网地址）。
+function maskIp(ip: string): string {
+  const parts = ip.split(".");
+  return parts.length === 4 ? parts.slice(0, 2).join(".") + ".***.***" : ip;
+}
+// 别名在配置表单（alias）填写；留空则机器行只显示主机名 · IP（掩码后）。
 function machineLine(alias?: string): string {
-  return [alias?.trim(), MACHINE_HOST, MACHINE_IP].filter(Boolean).join(" · ");
+  return [alias?.trim(), MACHINE_HOST, MACHINE_IP ? maskIp(MACHINE_IP) : ""].filter(Boolean).join(" · ");
 }
 
 function cardFor(title: string, color: string, lines: string[], url: string | null, note: string) {
@@ -309,10 +314,10 @@ async function sendNotify(ctx: AnyCtx, event: string, url: string | null): Promi
   // 独立区块 + 分隔线：机器行打头（哪台机器一目了然），地址和密码各自前后留白。
   let lines: string[];
   if (event === "down" || event === "recovered") {
-    lines = ["**机器**： " + machineLine(cfg.alias), "---", ...(url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"])];
+    lines = [machineLine(cfg.alias), "---", ...(url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"])];
 
   } else {
-    lines = ["**机器**： " + machineLine(cfg.alias), "---", ...(url ? ["**访问地址**", url] : ["（隧道未运行，暂无访问地址）"]), "---", "**访问密码**", tier];
+    lines = [machineLine(cfg.alias), "---", ...(url ? ["**访问地址**", url] : ["（隧道未运行，暂无访问地址）"]), "---", "**访问密码**", tier];
   }
   const card = cardFor(title, color, lines, url, "dsh-remote · by @oh-summy · " + new Date().toLocaleString("zh-CN"));
   try {

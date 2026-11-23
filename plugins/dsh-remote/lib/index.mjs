@@ -189,11 +189,15 @@ function primaryLanIp() {
 }
 const MACHINE_HOST = hostname();
 const MACHINE_IP = primaryLanIp();
+function maskIp(ip) {
+	const parts = ip.split(".");
+	return parts.length === 4 ? parts.slice(0, 2).join(".") + ".***.***" : ip;
+}
 function machineLine(alias) {
 	return [
 		alias?.trim(),
 		MACHINE_HOST,
-		MACHINE_IP
+		MACHINE_IP ? maskIp(MACHINE_IP) : ""
 	].filter(Boolean).join(" · ");
 }
 function cardFor(title, color, lines, url, note) {
@@ -303,12 +307,12 @@ async function sendNotify(ctx, event, url) {
 	const tier = notifyText();
 	let lines;
 	if (event === "down" || event === "recovered") lines = [
-		"**机器**： " + machineLine(cfg.alias),
+		machineLine(cfg.alias),
 		"---",
 		...url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"]
 	];
 	else lines = [
-		"**机器**： " + machineLine(cfg.alias),
+		machineLine(cfg.alias),
 		"---",
 		...url ? ["**访问地址**", url] : ["（隧道未运行，暂无访问地址）"],
 		"---",
