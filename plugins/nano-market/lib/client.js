@@ -290,7 +290,6 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, readFailed, f
       ? (bundle.enabled ? "enabled" : "installed-off")
       : (bundle?.availability === "installation" ? "provided" : "not-installed")
     : "unknown";
-  // 更新资格单一事实源：updatePayload 非空 ⇔ 徽章出现 ⇔ 按钮可渲染（审查 P2：不再两处各判一遍）。
   const canUpdate = entry.installation?.status === "update-available";
   const installed = status === "enabled" || status === "installed-off";
   const locked = bundle?.readOnlyReason !== undefined || (bundle?.error !== undefined && status !== "enabled");
@@ -318,8 +317,8 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, readFailed, f
     checked: status === "enabled",
     label: t("switchAria", { name: title }),
     // 未装入的个别插件（罕见形态：跟随 nano-market 更新时装入）开关禁用；
-    // 清单读取失败也禁用（不按陈旧/未知状态操作，审查 P1-2）；
-    // 首屏水合窗口（无错误、实时数据未到）不禁用——负责人要求加载期无占位。
+    // 清单读取失败禁用（不按陈旧/未知状态操作，审查 P1-2）；
+    // 水合窗口（本轮实时清单未确认）同样禁用——fail-closed（审查二轮 P1-3）；禁用无占位文字，版式不变。
     disabled: switchLockedOut({ working, locked, status, readFailed, fresh: freshConfirmed }),
     ...(bundle?.readOnlyReason === undefined ? {} : { title: readOnlyText(bundle.readOnlyReason, t) }),
     onChange: onToggle,
