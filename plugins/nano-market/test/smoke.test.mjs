@@ -22,10 +22,10 @@ test("client registers the Nano Market tab with the host-provided props", () => 
   assert.match(source, /ctx\.slots\.inject\("plugins\.tab"/);
   assert.match(source, /id: "nano-market"/);
   assert.match(source, /label: \(\) => t\("title"\)/);
-  // host props: install + update + openPackage
-  assert.match(source, /props\.install\(/);
+  // host props: update + openPackage（安装入口已按负责人模型移除：装 Nano Market = 全部插件就位）
   assert.match(source, /props\.update\(/);
   assert.match(source, /props\.openPackage\(/);
+  assert.doesNotMatch(source, /props\.install\(/, "不得再有安装入口");
   // lifecycle actions go through the host pluginManager
   assert.match(source, /pluginManager\.setBundleEnabled/);
   assert.match(source, /pluginManager\.setBundleEnabled/);

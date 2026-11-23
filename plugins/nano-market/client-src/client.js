@@ -1,14 +1,11 @@
 // Nano Market — Plugins 页的专属页签（plugins.tab，与官方 Discover 同机制）。
 //
-// 一级页面：列出本市场注册的插件，按「未安装 → 已安装未启用 → 已启用」三态给出对应操作：
-//   未安装        → 安装
-//   已安装未启用  → 启用
-//   已启用        → 停用（点整张卡片进入插件页面）
-// 二级页面：整卡点击交给宿主（openPackage）打开官方插件详情页——
-//   那里由宿主渲染 plugins.bundle.config 配置表单与各插件自己的 detail 区段。
-// 卸载不在这里做：官方插件页用同样的方式管理启停与卸载，重复一份只会让人多点一次。
+// 生命周期模型（负责人 2026-11-23 拍板）：安装 Nano Market = 本市场全部插件随即就位；
+// 每个插件只有两种操作——打开（启用开关）与更新（有新版本时行内按钮，走宿主更新对话框）。
+// 不提供单独的安装/卸载入口：卸载 Nano Market 后软链悬空、命令自然失效，无需在这里重复管理。
+// 整卡点击交给宿主（openPackage）打开官方插件详情页——那里由宿主渲染配置表单与 detail 区段。
 //
-// 视觉：这一页用宿主的原语（Switch / Tag / Button / RiskConfirmation /
+// 视觉：这一页用宿主的原语（Switch / Tag / Button /
 // PluginArtworkDefault）和宿主的设计令牌（--dsw-*），版式照着宿主「已安装」页签的
 // 卡片抄，所以两页看起来是同一套东西。
 //
@@ -45,12 +42,6 @@ const zh = {
   retry: "重试",
   retrying: "重试中…",
   marketRefreshFailed: "市场索引暂时读不到：",
-  installTitle: "安装 {name} {version}？",
-  installWarning: "插件代码会在本机以你的权限运行。请确认你信任它的来源。",
-  installAcknowledge: "我确认信任这个插件的来源",
-  installConfirm: "安装",
-  installCancel: "取消",
-  installUnavailable: "这个插件暂时没有可安装的版本，请稍后再试。",
   cancelled: "操作已取消。",
   restartRequired: "已保存，重启 DSH 后生效。",
   errorUnknown: "操作没有完成，请到「已安装」页查看详情。",
@@ -59,7 +50,6 @@ const zh = {
   disableFailed: "停用失败",
   readOnlyManagement: "这个插件由宿主管理，不能从这里启停。",
   readOnlyUnaddressable: "这个插件读取不到，不能从这里启停。",
-  noCompatibleVersion: "没有与运行中的 DSH（{runtime}）兼容的版本。",
   overridden: "变更已保存；运行中的实例由其他机制接管，重启 DSH 后按配置生效。",
   reasonManagementRequired: "这个插件由宿主管理，不能这样启停。",
   reasonUnaddressable: "读不到这个插件，无法启停。",
@@ -93,12 +83,6 @@ const en = {
   retry: "Retry",
   retrying: "Retrying…",
   marketRefreshFailed: "The market index could not be read: ",
-  installTitle: "Install {name} {version}?",
-  installWarning: "The plugin code runs on this machine with your permissions. Make sure you trust its source.",
-  installAcknowledge: "I trust the source of this plugin",
-  installConfirm: "Install",
-  installCancel: "Cancel",
-  installUnavailable: "No installable version of this plugin right now. Try again later.",
   cancelled: "Cancelled.",
   restartRequired: "Saved. It takes effect after DSH restarts.",
   errorUnknown: "The operation did not finish. See the Installed page for details.",
@@ -107,7 +91,6 @@ const en = {
   disableFailed: "Could not disable",
   readOnlyManagement: "The Host manages this plugin; it cannot be toggled here.",
   readOnlyUnaddressable: "This plugin cannot be read, so it cannot be toggled here.",
-  noCompatibleVersion: "No version is compatible with the running DSH ({runtime}).",
   overridden: "Saved. The running instance is managed elsewhere; it takes effect after DSH restarts.",
   reasonManagementRequired: "The Host manages this plugin; it cannot be toggled here.",
   reasonUnaddressable: "This plugin cannot be read, so it cannot be toggled.",
@@ -207,7 +190,7 @@ function CardIcon({ src }) {
 }
 
 /** 一张市场卡片：与宿主「已安装」页签的卡片同构。 */
-function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onInstall, onOpen, update }) {
+function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onOpen, update }) {
   const working = busy === entry.name;
   const title = resolve(entry.title) || entry.name || "";
   const version = entry.versions?.find((item) => item.version === entry.defaultVersion) || entry.versions?.[0];
@@ -232,8 +215,6 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
       : status === "unknown"
           ? t("stateUnknownShort")
           : t("stateNotInstalled");
-  // 与官方 Discover 同规则：不兼容（且未豁免）的版本不给安装，说明原因。
-  const canInstall = installable(version?.compatibility);
   const statusTone = status === "enabled"
     ? "success"
     : status === "installed-off"
@@ -253,32 +234,23 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, onToggle, onI
     titleRow,
     jsx("p", { className: "nmk-cardDesc", children: resolve(entry.description) }),
   ] });
-  const switchEl = status === "not-installed"
-    ? (canInstall
-      ? jsx(P.Button, { variant: "primary", size: "sm", disabled: working || !stateKnown, onClick: onInstall, children: t("install") })
-      : jsx(P.Tooltip, {
-          label: t("noCompatibleVersion", { runtime: version?.compatibility?.runtimeVersion ?? "" }),
-          side: "bottom",
-          portal: true,
-          delayMs: 300,
-          children: jsx(P.Button, { variant: "primary", size: "sm", "aria-disabled": "true", "aria-label": t("install"), children: t("install") }),
-        }))
-    : // 清单读不到时开关留在原位但禁用（悬停说明原因），避免整块控件消失造成布局跳动。
-      status === "unknown"
-      ? jsx(P.Switch, {
-          checked: false,
-          label: t("switchAria", { name: title }),
-          disabled: true,
-          title: t("unknownState"),
-        })
-      : status === "provided"
-        ? null
-        : jsx(P.Switch, {
-          checked: status === "enabled",
-          label: t("switchAria", { name: title }),
-          disabled: working || locked,
-          ...(bundle?.readOnlyReason === undefined ? {} : { title: readOnlyText(bundle.readOnlyReason, t) }),
-          onChange: onToggle,
+  const switchEl = status === "unknown"
+    ? jsx(P.Switch, {
+        checked: false,
+        label: t("switchAria", { name: title }),
+        disabled: true,
+        title: t("unknownState"),
+      })
+    : status === "provided"
+      ? null
+      : jsx(P.Switch, {
+        checked: status === "enabled",
+        label: t("switchAria", { name: title }),
+        // 未装入的个别插件（罕见形态：跟随 nano-market 更新时装入）开关禁用；
+        // 其余按宿主清单提供启停。
+        disabled: working || locked || status === "not-installed",
+        ...(bundle?.readOnlyReason === undefined ? {} : { title: readOnlyText(bundle.readOnlyReason, t) }),
+        onChange: onToggle,
         });
   // 已安装且有更新：宿主 slot 契约给了 update 执行器（走页面自带的更新对话框）就上按钮；
   // 没给（老版宿主）则维持现状——只有「可更新」徽章，不渲染点不动的假按钮。
@@ -343,8 +315,6 @@ function NanoMarketTab(props) {
   const [marketError, setMarketError] = useState("");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState(null);
-  const [confirming, setConfirming] = useState(null);
-  const [acknowledged, setAcknowledged] = useState(false);
   const liveRef = useRef(false);
 
   // 状态提示是瞬时的：过几秒自己消失，不长期占着版面。
@@ -469,31 +439,6 @@ function NanoMarketTab(props) {
     void run(entry.name, () => ctx.remote.pluginManager.setBundleEnabled(entry.name, next), next ? "enableFailed" : "disableFailed");
   };
 
-  const askInstall = (entry) => {
-    const version = entry.versions?.find((item) => item.version === entry.defaultVersion) || entry.versions?.[0];
-    if (!version?.install) {
-      setMessage({ text: t("installUnavailable"), tone: "error" });
-      return;
-    }
-    setAcknowledged(false);
-    setConfirming({ entry, version });
-  };
-
-  const doInstall = async () => {
-    if (!confirming) return;
-    const { entry, version } = confirming;
-    setConfirming(null);
-    // 安装前刷新一次：规格与兼容性都取宿主算好的那份（没配索引源时用快照里的）。
-    const fresh = liveRef.current ? null : await refreshMarket();
-    const target = fresh?.find((item) => item.name === entry.name) || entry;
-    const live = target.versions?.find((item) => item.version === target.defaultVersion) || target.versions?.[0];
-    if (!live?.install) {
-      setMessage({ text: t("installUnavailable"), tone: "error" });
-      return;
-    }
-    props.install({ ...live.install, title: resolve(target.title) || target.name, version: live.version });
-  };
-
   return jsxs("div", { className: "nmk-panel", children: [
     jsx("style", { children: CSS }),
     jsxs("section", { className: "nmk-group", children: [
@@ -511,7 +456,6 @@ function NanoMarketTab(props) {
             stateKnown: bundlesLoaded && !bundleError,
             key: entry.name,
             onToggle: (next) => toggle(entry, next),
-            onInstall: () => askInstall(entry),
             onOpen: () => props.openPackage(entry.name),
             update: typeof props.update === "function" ? (target) => props.update(target) : undefined,
           })) }),
@@ -525,23 +469,6 @@ function NanoMarketTab(props) {
       jsx("button", { type: "button", className: "nmk-retry", disabled: refreshing, onClick: () => void retryReads(), children: refreshing ? t("retrying") : t("retry") }),
     ] }) : null,
     message ? jsx("div", { className: "nmk-msg" + (message.tone === "error" ? " err" : ""), children: message.text }) : null,
-    jsx(P.RiskConfirmation, {
-      open: Boolean(confirming),
-      title: confirming ? t("installTitle", { name: resolve(confirming.entry.title) || confirming.entry.name, version: confirming.version.version }) : "",
-      description: t("installWarning"),
-      acknowledgeLabel: t("installAcknowledge"),
-      cancelLabel: t("installCancel"),
-      closeLabel: t("installCancel"),
-      confirmLabel: t("installConfirm"),
-      acknowledged,
-      onAcknowledgedChange: setAcknowledged,
-      onCancel: () => {
-        setConfirming(null);
-        setAcknowledged(false);
-        setMessage({ text: t("cancelled"), tone: "info" });
-      },
-      onConfirm: () => void doInstall(),
-    }),
   ] });
 }
 
