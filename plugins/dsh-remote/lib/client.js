@@ -55,6 +55,10 @@ const zh = {
   resetConfirm: "重置",
   resetting: "正在重置…",
   resetDone: "密码已重置",
+  alias: "机器别名",
+  aliasTip: "飞书卡片与登录页显示的简称（留空只显示主机名 · 内网 IP）。",
+  aliasPlaceholder: "给这台机器起个简称（如 办公室-Mac）",
+  aliasSaved: "别名已保存",
   notify: "飞书通知",
   notifyTip: "开启后选择群聊或私聊；链接变化时自动推送新地址和完整密码。",
   notifyOn: "通知已开启",
@@ -155,6 +159,10 @@ const en = {
   resetConfirm: "Reset",
   resetting: "Resetting…",
   resetDone: "Password reset",
+  alias: "Machine alias",
+  aliasTip: "Shown on the Feishu card and the login page (empty = hostname · LAN IP only).",
+  aliasPlaceholder: "A short name for this machine (e.g. office-mac)",
+  aliasSaved: "Alias saved",
   notify: "Feishu notification",
   notifyTip: "Turn on to pick a group chat or a direct message; new addresses and the full password are pushed automatically.",
   notifyOn: "Notifications on",
@@ -594,6 +602,10 @@ function RemoteManager({ t: hostT, locale }) {
     autoStartRow,
     urlRow,
     passwordRow,
+    Row({ label: t("alias"), tip: t("aliasTip"), children:
+      jsx("input", { className: "rc-input", disabled: busy, defaultValue: state?.alias || "", placeholder: t("aliasPlaceholder"),
+        onBlur: (event) => { const v = event.currentTarget.value.trim(); if (v !== (state?.alias || "")) act("/rc-api/config", t("aliasSaved"), { alias: v }); },
+        onKeyDown: (event) => { if (event.key === "Enter") event.currentTarget.blur(); } }) }),
     // 瞬时反馈走浮窗：不独占一行、不推移布局
     message ? jsx("p", { className: "rc-toast" + (message.err ? " err" : ""), role: "status", children: message.text }) : null,
     Row({ label: t("notify"), tip: t("notifyTip"), children: jsxs(Fragment, { children: [
