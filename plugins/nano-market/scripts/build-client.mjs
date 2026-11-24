@@ -7,7 +7,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 // 市场快照先行：条目在构建期就确定（catalog → dist/index.json → 快照），
 // 页签首屏因此不需要等网络。
 const snapshot = JSON.parse(readFileSync(new URL("../src/market-snapshot.json", import.meta.url), "utf8"));
-const body = readFileSync(new URL("../client-src/client.js", import.meta.url), "utf8");
+// 纯逻辑（normalizeEntry / updateTarget / updatePayloadOf…）先拼进包体：客户端直接可见，
+// 测试则直接 import 源文件（ESM 导出）做行为级验证——同一份实现，两条消费路径。
+const logic = readFileSync(new URL("../client-src/market-logic.js", import.meta.url), "utf8").replace(/^export /gm, "");
+const body = logic + "\n" + readFileSync(new URL("../client-src/client.js", import.meta.url), "utf8");
 const { name } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const out = `window.__ModuleLoader__.load({
 \tid: ${JSON.stringify(name)},
