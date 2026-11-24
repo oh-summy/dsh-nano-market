@@ -180,7 +180,7 @@ function CardIcon({ src }) {
 }
 
 /** 一张市场卡片：与宿主「已安装」页签的卡片同构。 */
-function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, readFailed, freshConfirmed, onToggle, onOpen, update }) {
+function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, readFailed, bundlesFresh, marketFresh, onToggle, onOpen, update }) {
   const working = busy === entry.name;
   const title = resolve(entry.title) || entry.name || "";
   const version = entry.versions?.find((item) => item.version === entry.defaultVersion) || entry.versions?.[0];
@@ -219,7 +219,7 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, readFailed, f
     // 未装入的个别插件（罕见形态：跟随 nano-market 更新时装入）开关禁用；
     // 清单读取失败禁用（不按陈旧/未知状态操作，审查 P1-2）；
     // 水合窗口（本轮实时清单未确认）同样禁用——fail-closed（审查二轮 P1-3）；禁用无占位文字，版式不变。
-    disabled: switchLockedOut({ working, locked, status, readFailed, fresh: freshConfirmed }),
+    disabled: switchLockedOut({ working, locked, status, readFailed, fresh: bundlesFresh }),
     ...(bundle?.readOnlyReason === undefined ? {} : { title: readOnlyText(bundle.readOnlyReason, t) }),
     onChange: onToggle,
         });
@@ -231,7 +231,7 @@ function MarketCard({ entry, bundle, t, resolve, busy, stateKnown, readFailed, f
     ? jsx(P.Button, {
         variant: "outline",
         size: "sm",
-        disabled: working || !freshConfirmed, // 更新同样等本轮实时清单（审查 P1-3：缓存只管视觉）
+        disabled: working || !marketFresh, // 更新等本轮 search 确认（审查 P1-3：缓存只管视觉）
         "aria-label": t("updateTitle", { name: title, version: updateTargetPayload.version }),
         onClick: () => update(updateTargetPayload),
         children: t("update"),
@@ -327,6 +327,7 @@ function NanoMarketTab(props) {
   // 本机已安装清单（本地 IPC，毫秒级）。
   const refreshBundles = useCallback(async () => {
     const gen = ++bundlesGen.current;
+    setBundlesFresh(false); // 每轮开始先清：等待/失败期间不按旧状态操作（审查三轮 P1-1）
     try {
       const answer = await ctx.remote.pluginManager.listBundles();
       if (gen !== bundlesGen.current || !mountedRef.current) return; // 过期响应/已卸载：不覆盖新状态
@@ -350,13 +351,14 @@ function NanoMarketTab(props) {
   // 市场索引（网络）：只有宿主那边配了本市场的索引源才搜；没配就用快照，不报错。
   const refreshMarket = useCallback(async () => {
     const gen = ++marketGen.current;
+    setMarketFresh(false); // 每轮开始先清：等待/失败期间更新按钮不按缓存操作（审查三轮 P1-1）
     try {
       const indexes = await ctx.remote.pluginMarket.listIndexes();
       const sources = indexes?.value ?? [];
       const configured = Array.isArray(sources)
         ? sources.some((item) => item?.url === MARKET_INDEX)
         : false;
-      if (!configured) return null;
+      if (!configured) { setMarketFresh(false); return null; } // 未配置索引：回退快照且更新不可用（审查三轮 P1-1）
       const answer = await ctx.remote.pluginMarket.search(MARKET_INDEX, { sort: { kind: "index" }, offset: 0, limit: 100 });
       if (gen !== marketGen.current || !mountedRef.current) return null;
       if (!answer || answer.ok === false) throw new Error(answer?.error?.message || "market search failed");
@@ -377,6 +379,7 @@ function NanoMarketTab(props) {
       return fresh;
     } catch (error) {
       if (gen !== marketGen.current || !mountedRef.current) return null;
+      setMarketFresh(false); // 失败：更新按钮不可用（审查三轮 P1-1）
       // 没有网络也不影响浏览：快照已经画在屏幕上了。
       setMarketError(t("marketRefreshFailed") + (error?.message || String(error)));
       return null;
@@ -472,7 +475,8 @@ function NanoMarketTab(props) {
             busy,
             stateKnown: bundlesLoaded && !bundleError,
             readFailed: Boolean(bundleError),
-            freshConfirmed,
+            bundlesFresh,
+            marketFresh,
             key: entry.name,
             onToggle: (next) => toggle(entry, next),
             onOpen: () => props.openPackage(entry.name),

@@ -101,7 +101,8 @@ test("the read-failure state keeps controls in place, says it once, and offers a
   // 开关单一渲染，无「状态未知」占位分支（负责人 2026-11-23：进页即插件+开关，不留占位）
   assert.doesNotMatch(source, /status === "unknown"\s*\n\s*\? jsx\(P\.Switch/);
   // 锁定条件单一实现（market-logic 的 switchLockedOut）：读取失败/未装入/宿主内置/只读/忙碌都不得操作
-  assert.match(source, /switchLockedOut\(\{ working, locked, status, readFailed, fresh: freshConfirmed \}\)/);
+  assert.match(source, /switchLockedOut\(\{ working, locked, status, readFailed, fresh: bundlesFresh \}\)/);
+  assert.match(source, /disabled: working \|\| !marketFresh/);
   // 横幅带重试入口，且重试有进行中文案
   assert.match(source, /nmk-retry/);
   assert.match(source, /t\("retrying"\)/);
