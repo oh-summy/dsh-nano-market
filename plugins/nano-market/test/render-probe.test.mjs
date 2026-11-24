@@ -62,6 +62,9 @@ const entries = [
   { name: "@oh-summy/connect-lark", title: { zh: "connect-lark 飞书桥接" }, description: { zh: "..." },
     versions: [{ version: "0.3.0", update: false, install: { spec: "git+https://github.com/oh-summy/dsh-nano-market.git#8abfd8bc60a8a18c21f6335cdc0e973123576830" } }],
     installation: { status: "installed" } },
+  { name: "@oh-summy/nano-market", title: { zh: "Nano Market" }, description: { zh: "..." },
+    versions: [{ version: "0.2.0", update: false, install: { spec: "git+https://github.com/oh-summy/dsh-nano-market.git#2cb06f1cb440544585e9bee82ddb65b19f8c7eac" } }],
+    installation: { status: "not-installed" } },
 ];
 let listBundlesMode = "ok";
 let effectCount = 0;
@@ -137,8 +140,10 @@ function render() {
 test("渲染探针：非空快照首渲染不抛错、无安装按钮、水合窗口开关禁用（fail-closed）", async () => {
   const tree = render(); // 旧代码在此处抛 freshConfirmed ReferenceError（一轮 P0）
   const acc = collect(tree);
-  assert.equal(Object.keys(acc.rows).length, 2);
+  // 首注册后快照含 nano-market 自己 → 3 行
+  assert.equal(Object.keys(acc.rows).length, 3);
   assert.ok(acc.rows["@oh-summy/dsh-remote"]);
+  assert.ok(acc.rows["@oh-summy/nano-market"]);
   for (const row of Object.values(acc.rows)) {
     assert.equal(row.buttons.filter((b) => b.label === "install").length, 0, "不得再有安装按钮");
     for (const sw of row.switches) assert.equal(sw.disabled, true, "水合窗口（fresh=false）开关必须禁用");
@@ -155,13 +160,17 @@ test("渲染探针：实时数据到达后开关解锁、可更新行出现可�
   const acc = collect(tree2);
   const remote = acc.rows["@oh-summy/dsh-remote"];
   const lark = acc.rows["@oh-summy/connect-lark"];
-  assert.ok(remote && lark, "实时数据后两行都渲染");
+  const self = acc.rows["@oh-summy/nano-market"];
+  assert.ok(remote && lark && self, "实时数据后三行都渲染（含 nano-market 自己）");
   for (const sw of remote.switches) assert.equal(sw.disabled, false, "bundlesFresh 后开关解锁");
   for (const sw of lark.switches) assert.equal(sw.disabled, false);
+  // nano-market 自己未装入（探针世界无其 bundle）：开关禁用
+  for (const sw of self.switches) assert.equal(sw.disabled, true, "未装入行开关禁用");
   const updates = remote.buttons.filter((b) => b.label === "update");
   assert.equal(updates.length, 1, "可更新行应有更新按钮");
   for (const b of updates) assert.equal(b.disabled, false, "marketFresh 后更新按钮解锁");
   assert.equal(lark.buttons.filter((b) => b.label === "update").length, 0, "已最新行不得有更新按钮");
+  assert.equal(self.buttons.filter((b) => b.label === "update").length, 0, "未装入行不得有更新按钮");
 });
 
 test("渲染探针：清单读取失败 → 开关重新禁用（不按陈旧状态操作）", async () => {
