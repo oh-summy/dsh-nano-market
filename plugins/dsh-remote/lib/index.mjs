@@ -887,17 +887,41 @@ function loadSettings() {
 		return "off";
 	};
 	const s = (() => {
+		let text;
 		try {
-			return JSON.parse(readFileSync(SETTINGS_FILE, "utf8"));
+			text = readFileSync(SETTINGS_FILE, "utf8");
 		} catch (error) {
-			if (error.code !== "ENOENT") try {
-				renameSync(SETTINGS_FILE, SETTINGS_FILE + ".corrupt-" + Date.now());
-				const dir = dirname(SETTINGS_FILE);
-				const olds = readdirSync(dir).filter((f) => f.startsWith("settings.json.corrupt-")).sort();
-				for (const f of olds.slice(0, Math.max(0, olds.length - 5))) rmSync(join(dir, f), { force: true });
-			} catch {}
+			if (error.code === "ENOENT") {
+				const cur = readUserBlock();
+				const migrated = {};
+				if (cur) for (const k of [
+					"enabled",
+					"autoRestart",
+					"notifyChannel",
+					"notifyAppId",
+					"notifyOpenId",
+					"sessionDays"
+				]) {
+					const v = blockValue(cur.text, k);
+					if (v !== null) migrated[k] = v === "true" ? true : v === "false" ? false : k === "sessionDays" ? Number(v) : v;
+				}
+				return migrated;
+			}
+			throw error;
+		}
+		let parsed;
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			parsed = void 0;
+		}
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			renameSync(SETTINGS_FILE, SETTINGS_FILE + ".corrupt-" + Date.now());
+			const dir = dirname(SETTINGS_FILE);
+			const olds = readdirSync(dir).filter((f) => f.startsWith("settings.json.corrupt-")).sort();
+			for (const f of olds.slice(0, Math.max(0, olds.length - 5))) rmSync(join(dir, f), { force: true });
 			const cur = readUserBlock();
-			const s = {};
+			const migrated = {};
 			if (cur) for (const k of [
 				"enabled",
 				"autoRestart",
@@ -907,10 +931,11 @@ function loadSettings() {
 				"sessionDays"
 			]) {
 				const v = blockValue(cur.text, k);
-				if (v !== null) s[k] = v === "true" ? true : v === "false" ? false : k === "sessionDays" ? Number(v) : v;
+				if (v !== null) migrated[k] = v === "true" ? true : v === "false" ? false : k === "sessionDays" ? Number(v) : v;
 			}
-			return s;
+			return migrated;
 		}
+		return parsed;
 	})();
 	s.notifyChannel = migrateChannel(s.notifyChannel);
 	if (s.autoStart === void 0) s.autoStart = s.enabled === true;
@@ -1187,10 +1212,15 @@ function renderCaddyfile() {
 }
 function apply(ctx, config = {}) {
 	globalThis.__dshRemoteCtx = ctx;
-	cfg = {
-		...config,
-		...loadSettings()
-	};
+	try {
+		cfg = {
+			...config,
+			...loadSettings()
+		};
+	} catch (error) {
+		cfg = { ...config };
+		say(ctx, "error", "[dsh-remote] settings.json 读取失败，已用默认配置启动：" + error.message);
+	}
 	mkdirSync(RUN_DIR, { recursive: true });
 	ctx.effect(() => {
 		materializeCli(ctx);

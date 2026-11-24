@@ -822,29 +822,46 @@ function loadSettings(): Config {
     return "off";
   };
   const raw: Record<string, unknown> = (() => {
-    try { return JSON.parse(readFileSync(SETTINGS_FILE, "utf8")); }
+    // 三段分离（审查三轮 P1-2）：read（ENOENT=首次启动迁移；其他 I/O 向上抛）
+    // → parse（JSON 损坏=留档）→ schema（非对象=留档）；留档失败即停，不继续迁移/写盘。
+    let text: string;
+    try { text = readFileSync(SETTINGS_FILE, "utf8"); }
     catch (error) {
-      // 损坏 ≠ 首次启动：先把坏文件留档再走迁移，避免静默清掉用户配置（审查 P1-5）。
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        try {
-          renameSync(SETTINGS_FILE, SETTINGS_FILE + ".corrupt-" + Date.now());
-          // 留档上限：只保留最近 5 份，防长期累积（审查二轮 P2）
-          const dir = dirname(SETTINGS_FILE);
-          const olds = readdirSync(dir).filter((f: string) => f.startsWith("settings.json.corrupt-")).sort();
-          for (const f of olds.slice(0, Math.max(0, olds.length - 5))) rmSync(join(dir, f), { force: true });
-        } catch { /* 留档失败忽略 */ }
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        // 首次启动：profile 用户层的运行时键一次性搬进 settings.json
+        const cur = readUserBlock();
+        const migrated: Record<string, unknown> = {};
+        if (cur) {
+          for (const k of ["enabled", "autoRestart", "notifyChannel", "notifyAppId", "notifyOpenId", "sessionDays"] as const) {
+            const v = blockValue(cur.text, k);
+            if (v !== null) migrated[k] = v === "true" ? true : v === "false" ? false : (k === "sessionDays" ? Number(v) : v);
+          }
+        }
+        return migrated;
       }
-      // 首次启动：profile 用户层的运行时键一次性搬进 settings.json
+      throw error; // EACCES/EIO 等：明确上抛，由插件装载层上报，绝不按首次启动清盘
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); }
+    catch { parsed = undefined; } // JSON 损坏 → 走留档
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      // 非对象/null 也是损坏：留档（含 JSON.parse 失败的原文——重命名保留的是原文件本身）
+      renameSync(SETTINGS_FILE, SETTINGS_FILE + ".corrupt-" + Date.now());
+      const dir = dirname(SETTINGS_FILE);
+      const olds = readdirSync(dir).filter((f: string) => f.startsWith("settings.json.corrupt-")).sort();
+      for (const f of olds.slice(0, Math.max(0, olds.length - 5))) rmSync(join(dir, f), { force: true });
+      // 首次启动迁移同上（用户层的运行时键仍在）
       const cur = readUserBlock();
-      const s: Record<string, unknown> = {};
+      const migrated: Record<string, unknown> = {};
       if (cur) {
         for (const k of ["enabled", "autoRestart", "notifyChannel", "notifyAppId", "notifyOpenId", "sessionDays"] as const) {
           const v = blockValue(cur.text, k);
-          if (v !== null) s[k] = v === "true" ? true : v === "false" ? false : (k === "sessionDays" ? Number(v) : v);
+          if (v !== null) migrated[k] = v === "true" ? true : v === "false" ? false : (k === "sessionDays" ? Number(v) : v);
         }
       }
-      return s;
+      return migrated;
     }
+    return parsed as Record<string, unknown>;
   })();
   const s = raw as Config;
   s.notifyChannel = migrateChannel(s.notifyChannel) as Config["notifyChannel"];
@@ -1082,7 +1099,13 @@ function renderCaddyfile(): string {
 
 export function apply(ctx: AnyCtx, config: Config = {}) {
   (globalThis as any).__dshRemoteCtx = ctx; // secrets helpers need ctx without threading it everywhere
-  cfg = { ...config, ...loadSettings() } as Config; // settings.json 是运行时事实源（profile 只留静态项）
+  // loadSettings 的 I/O 错误（EACCES/EIO）向上抛到这里：插件降级为默认配置并明确上报，不静默清盘（审查三轮 P1-2）
+  try {
+    cfg = { ...config, ...loadSettings() } as Config;
+  } catch (error) {
+    cfg = { ...config } as Config;
+    say(ctx, "error", "[dsh-remote] settings.json 读取失败，已用默认配置启动：" + (error as Error).message);
+  }
   mkdirSync(RUN_DIR, { recursive: true });
 
   // 生命周期整体挂 ctx.effect（事实 14）：setup 现在跑，disposer 在 fiber 销毁时跑。
