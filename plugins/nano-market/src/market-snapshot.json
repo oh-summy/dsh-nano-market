@@ -13,16 +13,40 @@
       "icon": "https://oh-summy.github.io/dsh-nano-market/icons/dsh-remote.svg",
       "versions": [
         {
-          "version": "0.4.0",
+          "version": "0.5.0",
           "engines": {
             "dsh": ">=0.2.1-rc.4 || >=0.2.2-0"
           },
           "install": {
-            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#43f45eff17577fa4208d96c0a424c2042c85d781"
+            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#5bc79822655b155c888d5c5b75434e6bd5b32ffb"
           }
         }
       ],
-      "defaultVersion": "0.4.0"
+      "defaultVersion": "0.5.0"
+    },
+    {
+      "name": "@oh-summy/nano-market",
+      "title": {
+        "en": "Nano Market",
+        "zh": "Nano Market"
+      },
+      "description": {
+        "en": "The management page for this plugin market: lists every registered plugin in the Plugins page with an enable toggle per row and an in-place update button when a new version ships. Installing it installs all of its plugins.",
+        "zh": "本插件市场的管理页：在插件页列出全部已注册插件，每行一个启用开关，市场发新版本时行内直接更新。安装它即安装本市场全部插件。"
+      },
+      "icon": "https://oh-summy.github.io/dsh-nano-market/icons/nano-market.svg",
+      "versions": [
+        {
+          "version": "0.2.0",
+          "engines": {
+            "dsh": ">=0.2.1-rc.4 || >=0.2.2-0"
+          },
+          "install": {
+            "spec": "git+https://github.com/oh-summy/dsh-nano-market.git#2cb06f1cb440544585e9bee82ddb65b19f8c7eac"
+          }
+        }
+      ],
+      "defaultVersion": "0.2.0"
     },
     {
       "name": "@oh-summy/connect-lark",
