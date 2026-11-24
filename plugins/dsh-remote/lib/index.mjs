@@ -167,9 +167,9 @@ function pushEvent(type, detail) {
 }
 let cfg = {};
 let currentUrl = "";
+let lastAnnouncedUrl = "";
 let sessionSecret = "";
 let toggleBusy = false;
-let forceCaddyRespawnOnce = false;
 function signSession(exp, secret) {
 	const payload = Buffer.from(String(exp)).toString("base64url");
 	return `v1.${payload}.${crypto.createHmac("sha256", secret).update(payload).digest("base64url")}`;
@@ -429,9 +429,8 @@ function classify(req) {
 	const cfIp = String(req.headers["cf-connecting-ip"] || "");
 	const xff = String(req.headers["x-forwarded-for"] || "");
 	const socketAddr = String(req.socket.remoteAddress || "");
-	const loopback = socketAddr.includes("127.0.0.1") || socketAddr.includes("::1");
 	return {
-		isLocal: !cfIp && loopback && (!xff || xff.includes("127.0.0.1") || xff.includes("::1")),
+		isLocal: !cfIp && !xff && (socketAddr === "127.0.0.1" || socketAddr === "::1"),
 		ip: cfIp || xff || socketAddr
 	};
 }
@@ -531,7 +530,7 @@ function startLoginServer(ctx) {
 					failCounts.delete(ip);
 					const dsh = dshCookieParts(UPSTREAM_HOST);
 					const days = Math.min(Math.max(Number(cfg.sessionDays) || 7, 1), 30);
-					const cookies = [`rc_session=${signSession(Date.now() + days * 864e5, sessionSecret)}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Lax`];
+					const cookies = [`rc_session=${signSession(Date.now() + days * 864e5, sessionSecret)}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Strict; Secure`];
 					if (dsh) cookies.push(`${dsh.name}=${dsh.value}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Lax`);
 					res.writeHead(302, {
 						Location: "/",
@@ -551,6 +550,13 @@ function startLoginServer(ctx) {
 				pushEvent("auth", "登录失败（" + (count >= LOGIN_MAX_FAILS ? "已锁 5 分钟" : count + "/5") + "）");
 				res.writeHead(401, { "Content-Type": "text/html; charset=utf-8" });
 				res.end("<meta charset='utf-8'>密码错误，<a href='/rc-login'>重试</a>");
+				return;
+			}
+			if (req.method === "GET" && path === "/rc-auth") {
+				const cv = /rc_session=([^;]+)/.exec(String(req.headers.cookie || ""))?.[1] ?? "";
+				const ok = Boolean(cv) && verifySession(cv, sessionSecret);
+				res.writeHead(ok ? 200 : 401, { "Content-Type": "text/plain; charset=utf-8" });
+				res.end(ok ? "ok" : "unauthorized");
 				return;
 			}
 			if (path.startsWith("/rc-api/")) {
@@ -643,11 +649,9 @@ function startLoginServer(ctx) {
 				if (req.method === "POST" && path === "/rc-api/reset") {
 					password = hex(16);
 					await setSecret(ctx, PASSWORD_REF, password);
-					forceCaddyRespawnOnce = true;
 					sessionSecret = hex(32);
 					await setSecret(ctx, SESSION_REF, sessionSecret);
-					restartCaddy(ctx);
-					pushEvent("password", "密码已重置（门会话已全部失效；已登录设备的 DSH 会话按其 7 天 TTL 仍有效）");
+					pushEvent("password", "密码已重置（所有远程会话已失效；请用新密码重新通过门禁）");
 					res.writeHead(200, { "Content-Type": "application/json" });
 					res.end(JSON.stringify({ ok: true }));
 					return;
@@ -1035,9 +1039,7 @@ function spawnCaddy(ctx) {
 	caddyChild.on("exit", () => {
 		if (stopping) return;
 		if (!alive()) return;
-		const forced = forceCaddyRespawnOnce;
-		forceCaddyRespawnOnce = false;
-		if (!forced && cfg.autoRestart === false) {
+		if (cfg.autoRestart === false) {
 			if (urlTimer) {
 				clearInterval(urlTimer);
 				urlTimer = null;
@@ -1045,19 +1047,13 @@ function spawnCaddy(ctx) {
 			pushEvent("down", "caddy 退出（自动重启已关闭）");
 			return;
 		}
-		pushEvent("down", forced ? "密码门重启以应用新密钥" : "caddy 退出，5s 后自动重拉");
+		pushEvent("down", "caddy 退出，5s 后自动重拉");
 		const t = setTimeout(() => {
 			timers.delete(t);
-			if (alive() && (cfg.autoRestart !== false || forceCaddyRespawnOnce)) spawnCaddy(ctx);
-			forceCaddyRespawnOnce = false;
+			if (alive() && cfg.autoRestart !== false) spawnCaddy(ctx);
 		}, RESPAWN_DELAY_MS);
 		timers.add(t);
 	});
-}
-function restartCaddy(ctx) {
-	try {
-		if (caddyChild?.pid) process.kill(caddyChild.pid);
-	} catch {}
 }
 function spawnCloudflared(ctx) {
 	const alive = () => fiberAlive?.() ?? false;
@@ -1083,13 +1079,15 @@ function spawnCloudflared(ctx) {
 	writeFileSync(join(RUN_DIR, "cloudflared.pid"), String(cloudflaredChild.pid));
 	say(ctx, "info", `[dsh-remote] cloudflared spawning (pid ${cloudflaredChild.pid})`);
 	const startedAt = Date.now();
-	let announced = currentUrl;
+	let announced = "";
+	currentUrl = "";
 	urlTimer = setInterval(() => {
 		const m = (existsSync(logFile) ? readFileSync(logFile, "utf8") : "").match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-		if (m && m[0] !== announced) {
-			const changed = announced !== "";
+		if (m && m[0] !== lastAnnouncedUrl) {
+			const changed = lastAnnouncedUrl !== "";
 			announced = m[0];
 			currentUrl = m[0];
+			lastAnnouncedUrl = m[0];
 			writeFileSync(join(RUN_DIR, "url"), m[0] + "\n");
 			say(ctx, "info", `[dsh-remote] tunnel ${changed ? "changed" : "up"}: ${m[0]}`);
 			pushEvent(changed ? "changed" : "started", m[0]);
@@ -1186,8 +1184,9 @@ function renderCaddyfile() {
 		level INFO
 	}
 	# rc_session = 签名会话令牌（v1.<exp>.<sig>）：门只做格式匹配，签名与过期在插件侧 /rc-api 校验（审查 #47）
+	# rc_session 存在才走门（无 cookie → 登录页）；门内先 forward_auth 到插件做真实校验
+	# （签名 + 过期），伪造/过期/重置前令牌一律 401（审查三轮 P1-1：格式匹配 ≠ 授权）。
 	@authed header_regexp Cookie rc_session=v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+
-	@authed-dsh header_regexp Cookie dsh-auth-.*
 	@login path /rc-login
 	@api path /rc-api/*
 	@localapi remote_ip 127.0.0.1
@@ -1209,19 +1208,13 @@ function renderCaddyfile() {
 	}
 
 	handle @authed {
+		# 真实会话校验（审查三轮 P1-1）：Caddy 先把原始头（含 Cookie）转发给插件 /rc-auth，
+		# verifySession 通过才放行到 DSH；删除 dsh-auth 单独放行路径（重置密码语义，审查三轮 P1-2）。
+		forward_auth 127.0.0.1:${LOGIN_PORT} {
+			uri /rc-auth
+		}
 		reverse_proxy ${UPSTREAM} {
 			# 过期/无效的 dsh-auth cookie：DSH 回 401/403 → 送回登录页（杜绝死路 403）
-			@fence status 401 403
-			handle_response @fence {
-				error 401 "fence"
-			}
-			header_up Host ${UPSTREAM_HOST}
-			header_up Origin http://${UPSTREAM_HOST}
-		}
-	}
-
-	handle @authed-dsh {
-		reverse_proxy ${UPSTREAM} {
 			@fence status 401 403
 			handle_response @fence {
 				error 401 "fence"
