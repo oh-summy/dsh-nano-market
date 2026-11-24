@@ -946,7 +946,7 @@ function spawnCaddy(ctx: AnyCtx): void {
   writeFileSync(caddyfile, renderCaddyfile());
   caddyChild = spawn(findBinary(cfg, "caddy"), ["run", "--config", caddyfile], {
     cwd: RUN_DIR,
-    env: { ...process.env, RC_TOKEN: sessionSecret, RC_UPSTREAM: UPSTREAM, RC_LOG_DIR: RUN_DIR },
+    env: { ...process.env, RC_UPSTREAM: UPSTREAM, RC_LOG_DIR: RUN_DIR },
     stdio: ["ignore", "ignore", "ignore"],
   });
   writeFileSync(join(RUN_DIR, "caddy.pid"), String(caddyChild.pid));
@@ -1066,7 +1066,8 @@ function renderCaddyfile(): string {
 		}
 		level INFO
 	}
-	@authed header_regexp Cookie .*{$RC_TOKEN}.*
+	# rc_session = 签名会话令牌（v1.<exp>.<sig>）：门只做格式匹配，签名与过期在插件侧 /rc-api 校验（审查 #47）
+	@authed header_regexp Cookie rc_session=v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+
 	@authed-dsh header_regexp Cookie dsh-auth-.*
 	@login path /rc-login
 	@api path /rc-api/*
