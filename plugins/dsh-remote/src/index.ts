@@ -252,6 +252,13 @@ function primaryLanIp(): string {
 }
 const MACHINE_HOST = hostname();
 const MACHINE_IP = primaryLanIp();
+// URL 捕获规则纯函数（审查三轮 P1-1 用例）：每次捕获都恢复 currentUrl；通知去重单独判。
+export function applyCapturedUrl(url: string, lastAnnouncedUrl: string): { currentUrl: string; changed: boolean; announce: boolean } {
+  const announce = url !== lastAnnouncedUrl;
+  const changed = lastAnnouncedUrl !== "" && announce; // 有已推送旧值且 URL 变化 = changed；首捕获 = started
+  return { currentUrl: url, changed, announce };
+}
+
 // 展示层 IP 掩码：只留前两段（足以区分机器，不暴露完整内网地址）。
 export function maskIp(ip: string): string {
   const parts = ip.split(".");
@@ -529,7 +536,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
           const days = Math.min(Math.max(Number(cfg.sessionDays) || 7, 1), 30);
           // Secure：入口恒为 https 隧道；本机管理走 127.0.0.1:9091 直连 API，不依赖该 Cookie（审查二轮 P2-1）
           const cookies = [`rc_session=${signSession(Date.now() + days * 86400000, sessionSecret)}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Strict; Secure`];
-          if (dsh) cookies.push(`${dsh.name}=${dsh.value}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Lax`);
+          if (dsh) cookies.push(`${dsh.name}=${dsh.value}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Strict; Secure`);
           res.writeHead(302, { Location: "/", "Set-Cookie": cookies });
           res.end();
           return;
@@ -988,18 +995,24 @@ function spawnCloudflared(ctx: AnyCtx): void {
 
   const startedAt = Date.now();
   let announced = ""; // 每次 spawn 独立捕获（审查二轮 P2-3：无新 URL 时 45s 超时语义正确）
-  currentUrl = ""; // spawn 时清空：死链接不留在 state（审查二轮 P2-3）
+  currentUrl = ""; // spawn 时清空；捕获到合法 URL（无论新旧）立即恢复（审查三轮 P1-1 回归修复）
   urlTimer = setInterval(() => {
     const text = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
     const m = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-    if (m && m[0] !== lastAnnouncedUrl) {
-      const changed = lastAnnouncedUrl !== "";
-      announced = m[0]; currentUrl = m[0]; lastAnnouncedUrl = m[0];
+    if (m) {
+      const captured = applyCapturedUrl(m[0], lastAnnouncedUrl);
+      announced = captured.currentUrl;
+      currentUrl = captured.currentUrl;
+      writeFileSync(join(RUN_DIR, "url"), captured.currentUrl + "\n");
+      if (captured.announce) {
+        const changed = captured.changed;
+        lastAnnouncedUrl = captured.currentUrl;
       writeFileSync(join(RUN_DIR, "url"), m[0] + "\n");
       say(ctx, "info", `[dsh-remote] tunnel ${changed ? "changed" : "up"}: ${m[0]}`);
-      pushEvent(changed ? "changed" : "started", m[0]);
-      void sendNotify(ctx, changed ? "changed" : "started", m[0]);
-      // 不 clear：changed 检测需要持续监听（watchdog 语义）；disposer 统一清理
+        pushEvent(changed ? "changed" : "started", m[0]);
+        void sendNotify(ctx, changed ? "changed" : "started", m[0]);
+        // 不 clear：changed 检测需要持续监听（watchdog 语义）；disposer 统一清理
+      }
     } else if (!announced && Date.now() - startedAt > URL_TIMEOUT_MS) {
       clearInterval(urlTimer!); urlTimer = null;
       say(ctx, "warn", `[dsh-remote] no URL within 45s — see ${logFile}`);

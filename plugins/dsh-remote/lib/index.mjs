@@ -203,6 +203,14 @@ function primaryLanIp() {
 }
 const MACHINE_HOST = hostname();
 const MACHINE_IP = primaryLanIp();
+function applyCapturedUrl(url, lastAnnouncedUrl) {
+	const announce = url !== lastAnnouncedUrl;
+	return {
+		currentUrl: url,
+		changed: lastAnnouncedUrl !== "" && announce,
+		announce
+	};
+}
 function maskIp(ip) {
 	const parts = ip.split(".");
 	return parts.length === 4 ? parts.slice(0, 2).join(".") + ".***.***" : ip;
@@ -531,7 +539,7 @@ function startLoginServer(ctx) {
 					const dsh = dshCookieParts(UPSTREAM_HOST);
 					const days = Math.min(Math.max(Number(cfg.sessionDays) || 7, 1), 30);
 					const cookies = [`rc_session=${signSession(Date.now() + days * 864e5, sessionSecret)}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Strict; Secure`];
-					if (dsh) cookies.push(`${dsh.name}=${dsh.value}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Lax`);
+					if (dsh) cookies.push(`${dsh.name}=${dsh.value}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Strict; Secure`);
 					res.writeHead(302, {
 						Location: "/",
 						"Set-Cookie": cookies
@@ -1083,15 +1091,19 @@ function spawnCloudflared(ctx) {
 	currentUrl = "";
 	urlTimer = setInterval(() => {
 		const m = (existsSync(logFile) ? readFileSync(logFile, "utf8") : "").match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-		if (m && m[0] !== lastAnnouncedUrl) {
-			const changed = lastAnnouncedUrl !== "";
-			announced = m[0];
-			currentUrl = m[0];
-			lastAnnouncedUrl = m[0];
-			writeFileSync(join(RUN_DIR, "url"), m[0] + "\n");
-			say(ctx, "info", `[dsh-remote] tunnel ${changed ? "changed" : "up"}: ${m[0]}`);
-			pushEvent(changed ? "changed" : "started", m[0]);
-			sendNotify(ctx, changed ? "changed" : "started", m[0]);
+		if (m) {
+			const captured = applyCapturedUrl(m[0], lastAnnouncedUrl);
+			announced = captured.currentUrl;
+			currentUrl = captured.currentUrl;
+			writeFileSync(join(RUN_DIR, "url"), captured.currentUrl + "\n");
+			if (captured.announce) {
+				const changed = captured.changed;
+				lastAnnouncedUrl = captured.currentUrl;
+				writeFileSync(join(RUN_DIR, "url"), m[0] + "\n");
+				say(ctx, "info", `[dsh-remote] tunnel ${changed ? "changed" : "up"}: ${m[0]}`);
+				pushEvent(changed ? "changed" : "started", m[0]);
+				sendNotify(ctx, changed ? "changed" : "started", m[0]);
+			}
 		} else if (!announced && Date.now() - startedAt > URL_TIMEOUT_MS) {
 			clearInterval(urlTimer);
 			urlTimer = null;
@@ -1326,4 +1338,4 @@ function apply(ctx, config = {}) {
 		};
 	});
 }
-export { Config, apply, formatMachineLine, inject, maskIp, materializeCli, signSession, verifySession };
+export { Config, apply, applyCapturedUrl, formatMachineLine, inject, maskIp, materializeCli, signSession, verifySession };
