@@ -22,9 +22,10 @@ test("client registers the Nano Market tab with the host-provided props", () => 
   assert.match(source, /ctx\.slots\.inject\("plugins\.tab"/);
   assert.match(source, /id: "nano-market"/);
   assert.match(source, /label: \(\) => t\("title"\)/);
-  // host props: install + openPackage
-  assert.match(source, /props\.install\(/);
+  // host props: update + openPackage（安装入口已按负责人模型移除：装 Nano Market = 全部插件就位）
+  assert.match(source, /props\.update\(/);
   assert.match(source, /props\.openPackage\(/);
+  assert.doesNotMatch(source, /props\.install\(/, "不得再有安装入口");
   // lifecycle actions go through the host pluginManager
   assert.match(source, /pluginManager\.setBundleEnabled/);
   assert.match(source, /pluginManager\.setBundleEnabled/);
@@ -71,6 +72,9 @@ test("the snapshot's install specs match the official market derivation", async 
       assert.equal(mine.install.registry, expected.registry);
       // 我们的换算与官方一致（两个方向都比，避免只有快照对、换算错）
       assert.equal(installTarget(plugin.name, version).spec, expected.spec);
+      // 官方数据模型：update 资格是宿主对「已安装」算出的布尔，由实时数据携带；
+      // 快照（首屏、无 installation）不携带 update——双事实源已按审查意见移除。
+      assert.equal(mine.update, undefined, "快照不该携带 update 字段（实时路径才有时序正确的资格）");
     }
   }
 });
@@ -92,12 +96,13 @@ test("the tab uses the host's own components and tokens, not a look of its own",
 
 test("the read-failure state keeps controls in place, says it once, and offers a retry", () => {
   const source = readFileSync(join(pkgDir, "client-src/client.js"), "utf8");
-  // 行内只放短标签，长解释只在横幅里出现一次
-  assert.match(source, /stateUnknownShort/);
+  // 长解释只在横幅里出现一次（读取失败时不再闪「未安装」，开关保持原位）
   assert.match(source, /t\("unknownState"\)/);
-  // 清单读不到时开关留在原位但禁用，悬停给原因
-  assert.match(source, /status === "unknown"\s*\n\s*\? jsx\(P\.Switch/);
-  assert.match(source, /title: t\("unknownState"\)/);
+  // 开关单一渲染，无「状态未知」占位分支（负责人 2026-11-23：进页即插件+开关，不留占位）
+  assert.doesNotMatch(source, /status === "unknown"\s*\n\s*\? jsx\(P\.Switch/);
+  // 锁定条件单一实现（market-logic 的 switchLockedOut）：读取失败/未装入/宿主内置/只读/忙碌都不得操作
+  assert.match(source, /switchLockedOut\(\{ working, locked, status, readFailed, fresh: bundlesFresh \}\)/);
+  assert.match(source, /disabled: working \|\| !marketFresh/);
   // 横幅带重试入口，且重试有进行中文案
   assert.match(source, /nmk-retry/);
   assert.match(source, /t\("retrying"\)/);
