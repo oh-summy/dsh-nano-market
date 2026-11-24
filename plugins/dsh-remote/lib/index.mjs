@@ -168,6 +168,20 @@ function pushEvent(type, detail) {
 let cfg = {};
 let currentUrl = "";
 let sessionSecret = "";
+let toggleBusy = false;
+let forceCaddyRespawnOnce = false;
+function signSession(exp, secret) {
+	const payload = Buffer.from(String(exp)).toString("base64url");
+	return `v1.${payload}.${crypto.createHmac("sha256", secret).update(payload).digest("base64url")}`;
+}
+function verifySession(token, secret, now = Date.now()) {
+	const m = /^v1\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(token);
+	if (!m) return false;
+	const sig = crypto.createHmac("sha256", secret).update(m[1]).digest("base64url");
+	if (!timingSafeEq(m[2], sig)) return false;
+	const exp = Number(Buffer.from(m[1], "base64url").toString("utf8"));
+	return Number.isFinite(exp) && exp > now;
+}
 let dshSessionSecret = "";
 let password = "";
 let caddyChild = null;
@@ -517,7 +531,7 @@ function startLoginServer(ctx) {
 					failCounts.delete(ip);
 					const dsh = dshCookieParts(UPSTREAM_HOST);
 					const days = Math.min(Math.max(Number(cfg.sessionDays) || 7, 1), 30);
-					const cookies = [`rc_session=${sessionSecret}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Lax`];
+					const cookies = [`rc_session=${signSession(Date.now() + days * 864e5, sessionSecret)}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Lax`];
 					if (dsh) cookies.push(`${dsh.name}=${dsh.value}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Lax`);
 					res.writeHead(302, {
 						Location: "/",
@@ -541,7 +555,7 @@ function startLoginServer(ctx) {
 			}
 			if (path.startsWith("/rc-api/")) {
 				const cookieValue = /rc_session=([^;]+)/.exec(String(req.headers.cookie || ""))?.[1] ?? "";
-				if (!(isLocal || cookieValue && timingSafeEq(cookieValue, sessionSecret))) {
+				if (!(isLocal || cookieValue && verifySession(cookieValue, sessionSecret))) {
 					res.writeHead(401);
 					res.end("unauthorized");
 					return;
@@ -629,6 +643,7 @@ function startLoginServer(ctx) {
 				if (req.method === "POST" && path === "/rc-api/reset") {
 					password = hex(16);
 					await setSecret(ctx, PASSWORD_REF, password);
+					forceCaddyRespawnOnce = true;
 					sessionSecret = hex(32);
 					await setSecret(ctx, SESSION_REF, sessionSecret);
 					restartCaddy(ctx);
@@ -651,10 +666,17 @@ function startLoginServer(ctx) {
 					return;
 				}
 				if (req.method === "POST" && path === "/rc-api/toggle") {
-					const target = !cfg.enabled;
+					if (toggleBusy) {
+						res.writeHead(409, { "Content-Type": "application/json" });
+						res.end(JSON.stringify({ error: "启停操作进行中，请稍候" }));
+						return;
+					}
+					toggleBusy = true;
 					try {
+						const target = !cfg.enabled;
 						if (target) await startTunnel(ctx);
 						else stopTunnel(ctx);
+						if (target && (!cloudflaredChild?.pid || !pidAlive(cloudflaredChild.pid))) throw new Error("隧道启动后进程退出——请查看 cloudflared 日志");
 						cfg = {
 							...cfg,
 							enabled: target
@@ -668,6 +690,8 @@ function startLoginServer(ctx) {
 					} catch (e) {
 						res.writeHead(500, { "Content-Type": "application/json" });
 						res.end(JSON.stringify({ error: e.message }));
+					} finally {
+						toggleBusy = false;
 					}
 					return;
 				}
@@ -1012,10 +1036,21 @@ function spawnCaddy(ctx) {
 	caddyChild.on("exit", () => {
 		if (stopping) return;
 		if (!alive()) return;
-		pushEvent("down", "caddy 退出，5s 后自动重拉");
+		const forced = forceCaddyRespawnOnce;
+		forceCaddyRespawnOnce = false;
+		if (!forced && cfg.autoRestart === false) {
+			if (urlTimer) {
+				clearInterval(urlTimer);
+				urlTimer = null;
+			}
+			pushEvent("down", "caddy 退出（自动重启已关闭）");
+			return;
+		}
+		pushEvent("down", forced ? "密码门重启以应用新密钥" : "caddy 退出，5s 后自动重拉");
 		const t = setTimeout(() => {
 			timers.delete(t);
-			if (alive() && cfg.autoRestart !== false) spawnCaddy(ctx);
+			if (alive() && (cfg.autoRestart !== false || forceCaddyRespawnOnce)) spawnCaddy(ctx);
+			forceCaddyRespawnOnce = false;
 		}, RESPAWN_DELAY_MS);
 		timers.add(t);
 	});
@@ -1255,6 +1290,11 @@ function apply(ctx, config = {}) {
 			if (!isAlive()) return;
 			spawnCaddy(ctx);
 			spawnCloudflared(ctx);
+			cfg = {
+				...cfg,
+				enabled: true
+			};
+			saveSettings();
 		};
 		boot().catch((e) => {
 			say(ctx, "error", "[dsh-remote] 启动失败：" + e.message);
@@ -1293,4 +1333,4 @@ function apply(ctx, config = {}) {
 		};
 	});
 }
-export { Config, apply, formatMachineLine, inject, maskIp, materializeCli };
+export { Config, apply, formatMachineLine, inject, maskIp, materializeCli, signSession, verifySession };

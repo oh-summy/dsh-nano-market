@@ -198,7 +198,25 @@ function pushEvent(type: string, detail: string) {
 
 let cfg: Config = {};
 let currentUrl = "";
-let sessionSecret = ""; // 本插件的 Cookie 门令牌：Caddy 正则门 + rc_session 值（登录后发给浏览器）
+let sessionSecret = ""; // 本插件会话 HMAC 密钥：签发/校验 rc_session 的带过期令牌（审查 #47）
+let toggleBusy = false; // 启停串行化（审查 #48）：并发 toggle 立即 409，不叠 spawn
+let forceCaddyRespawnOnce = false; // 重置密码：一次性强制重拉密码门，不受 autoRestart 影响（审查 #49）
+// ---------- 会话令牌：HMAC(exp) 签名 + 服务端过期校验（审查 #47） ----------
+// 旧设计：rc_session = 静态 32-hex（服务端永久有效）。新设计：v1.<expB64url>.<hmac>，
+// 服务端校验签名与 exp > now；泄露的令牌在 exp 后自动失效。重置密码轮换 sessionSecret → 旧令牌全部失效。
+export function signSession(exp: number, secret: string): string {
+  const payload = Buffer.from(String(exp)).toString("base64url");
+  const sig = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+  return `v1.${payload}.${sig}`;
+}
+export function verifySession(token: string, secret: string, now = Date.now()): boolean {
+  const m = /^v1\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(token);
+  if (!m) return false;
+  const sig = crypto.createHmac("sha256", secret).update(m[1]).digest("base64url");
+  if (!timingSafeEq(m[2], sig)) return false;
+  const exp = Number(Buffer.from(m[1], "base64url").toString("utf8"));
+  return Number.isFinite(exp) && exp > now;
+}
 let dshSessionSecret = ""; // DSH 的 browser-session secret（签 dsh-auth-* cookie，读自凭据缝文件）
 let password = "";
 let caddyChild: ChildProcess | null = null;
@@ -507,10 +525,10 @@ function startLoginServer(ctx: AnyCtx): http.Server {
         const supplied = String(new URLSearchParams(await readBody(req)).get("password") || "");
         if (timingSafeEq(supplied, password)) {
           failCounts.delete(ip);
-          // rc_session 的值就是门令牌（v0.3.x 语义）：Caddy 正则门与会话校验共用它
+          // rc_session = 带过期时间的签名令牌：服务端校验签名与 exp（审查 #47）
           const dsh = dshCookieParts(UPSTREAM_HOST);
           const days = Math.min(Math.max(Number(cfg.sessionDays) || 7, 1), 30);
-          const cookies = [`rc_session=${sessionSecret}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Lax`];
+          const cookies = [`rc_session=${signSession(Date.now() + days * 86400000, sessionSecret)}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Lax`];
           if (dsh) cookies.push(`${dsh.name}=${dsh.value}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Lax`);
           res.writeHead(302, { Location: "/", "Set-Cookie": cookies });
           res.end();
@@ -528,7 +546,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
       // /rc-api/* — 本机直连（loopback 且无代理头）或持有门令牌的会话
       if (path.startsWith("/rc-api/")) {
         const cookieValue = /rc_session=([^;]+)/.exec(String(req.headers.cookie || ""))?.[1] ?? "";
-        const authed = isLocal || (cookieValue && timingSafeEq(cookieValue, sessionSecret));
+        const authed = isLocal || (cookieValue && verifySession(cookieValue, sessionSecret));
         if (!authed) { res.writeHead(401); res.end("unauthorized"); return; }
 
         if (req.method === "GET" && path === "/rc-api/state") {
@@ -603,6 +621,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
         if (req.method === "POST" && path === "/rc-api/reset") {
           password = hex(16);
           await setSecret(ctx, PASSWORD_REF, password);
+          forceCaddyRespawnOnce = true; // 重置后密码门必须带着新密钥回来（审查 #49：不受 autoRestart 影响）
           sessionSecret = hex(32);
           await setSecret(ctx, SESSION_REF, sessionSecret);
           restartCaddy(ctx); // 新 sessionSecret = 新门令牌：旧 rc_session 与 Caddy 门会话全部失效
@@ -631,10 +650,14 @@ function startLoginServer(ctx: AnyCtx): http.Server {
         if (req.method === "POST" && path === "/rc-api/toggle") {
           // 命令式启停：不写 profile（写 = HMR 条目重启 = 9091 窗口 + 无谓换链接）。
           // 管理面全程在线；stopped 时子进程 exit 回调按 stopping 旗标跳过重拉。
-          const target = !cfg.enabled;
+          // 串行化（审查 #48）：并发 toggle 立即 409，不叠 spawn。
+          if (toggleBusy) { res.writeHead(409, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "启停操作进行中，请稍候" })); return; }
+          toggleBusy = true;
           try {
+            const target = !cfg.enabled;
             if (target) await startTunnel(ctx);
             else stopTunnel(ctx);
+            if (target && (!cloudflaredChild?.pid || !pidAlive(cloudflaredChild.pid))) throw new Error("隧道启动后进程退出——请查看 cloudflared 日志"); // await 后重查（审查 #48）
             cfg = { ...cfg, enabled: target } as Config;
             if (!saveSettings()) throw new Error("settings persist failed"); // 进程已实际切换：cfg 与之对齐，仅上报持久化失败
             res.writeHead(200, { "Content-Type": "application/json" });
@@ -642,6 +665,8 @@ function startLoginServer(ctx: AnyCtx): http.Server {
           } catch (e) {
             res.writeHead(500, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: (e as Error).message }));
+          } finally {
+            toggleBusy = false;
           }
           return;
         }
@@ -929,8 +954,14 @@ function spawnCaddy(ctx: AnyCtx): void {
   caddyChild.on("exit", () => {
     if (stopping) return; // 命令式停止：不是崩溃，不重拉
     if (!alive()) return;
-    pushEvent("down", "caddy 退出，5s 后自动重拉");
-    const t = setTimeout(() => { timers.delete(t); if (alive() && cfg.autoRestart !== false) spawnCaddy(ctx); }, RESPAWN_DELAY_MS);
+    const forced = forceCaddyRespawnOnce; forceCaddyRespawnOnce = false;
+    if (!forced && cfg.autoRestart === false) {
+      if (urlTimer) { clearInterval(urlTimer); urlTimer = null; } // 不重拉就别再轮询已死进程的地址
+      pushEvent("down", "caddy 退出（自动重启已关闭）");
+      return;
+    }
+    pushEvent("down", forced ? "密码门重启以应用新密钥" : "caddy 退出，5s 后自动重拉");
+    const t = setTimeout(() => { timers.delete(t); if (alive() && (cfg.autoRestart !== false || forceCaddyRespawnOnce)) spawnCaddy(ctx); forceCaddyRespawnOnce = false; }, RESPAWN_DELAY_MS);
     timers.add(t);
   });
 }
@@ -1145,6 +1176,8 @@ export function apply(ctx: AnyCtx, config: Config = {}) {
       if (!isAlive()) return;
       spawnCaddy(ctx);
       spawnCloudflared(ctx);
+      cfg = { ...cfg, enabled: true } as Config; // autoStart 拉起后同步状态（审查 #48：cfg 与实际一致）
+      saveSettings();
     };
     boot().catch((e) => {
       say(ctx, "error", "[dsh-remote] 启动失败：" + (e as Error).message);
