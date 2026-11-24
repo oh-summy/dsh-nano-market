@@ -4,8 +4,8 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import http from "node:http";
 import crypto from "node:crypto";
-import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { hostname, homedir, networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -52,6 +52,7 @@ export interface Config {
   notifyChatId?: string;
   notifyChatName?: string;
   sessionDays?: number;
+  alias?: string;
 }
 
 // cordis 服务注入声明：凭据缝必须显式声明，否则 ctx.credentials 访问被拒
@@ -74,6 +75,7 @@ export const Config = z.object({
   notifyChatName: z.string().default("").describe("群通知显示名（随 chat_id 保存）"),
   autoRestart: z.boolean().default(true).describe("隧道进程意外退出时自动重拉（默认开）"),
   sessionDays: z.number().int().min(1).max(30).default(7).describe("远程会话有效天数（1-30，不可永久）"),
+  alias: z.string().max(64).default("").describe("机器别名：飞书推送卡片与登录页显示的简称（留空只显示主机名 · IP）"),
 });
 
 // ---------- dsh-web 命令物化（issue #29：装插件即有命令；卸载后软链悬空自动失效） ----------
@@ -219,7 +221,34 @@ function notifyText(): string {
 // "---" 渲染为分隔线。链接在正文里本身可点可复制，不再放「打开 DSH」按钮（主人拍板：冗余）。
 const MARKET_URL = "https://github.com/oh-summy/dsh-nano-market";
 
-function cardFor(title: string, color: string, lines: string[], url: string | null, note: string) {
+// ---------- 机器身份（别名 + 主机名 + 内网 IP） ----------
+// 多台机器都开远程访问时，推送/登录页据此区分是哪一台。
+// IP 取第一个非内部 IPv4（内网地址；公网出口 IP 会随网络变，不取）。
+function primaryLanIp(): string {
+  for (const list of Object.values(networkInterfaces())) {
+    for (const net of list ?? []) {
+      if (net.family === "IPv4" && !net.internal) return net.address;
+    }
+  }
+  return "";
+}
+const MACHINE_HOST = hostname();
+const MACHINE_IP = primaryLanIp();
+// 展示层 IP 掩码：只留前两段（足以区分机器，不暴露完整内网地址）。
+export function maskIp(ip: string): string {
+  const parts = ip.split(".");
+  return parts.length === 4 ? parts.slice(0, 2).join(".") + ".***.***" : ip;
+}
+// 纯格式化（可测）：别名 · 主机名 · IP掩码——卡片标题/登录页/state/CLI 的唯一机器行实现。
+export function formatMachineLine(alias: string | undefined, host: string, ip: string): string {
+  return [alias?.trim(), host, ip ? maskIp(ip) : ""].filter(Boolean).join(" · ");
+}
+// 别名在配置表单（alias）填写；留空则机器行只显示主机名 · IP（掩码后）。
+function machineLine(alias?: string): string {
+  return formatMachineLine(alias, MACHINE_HOST, MACHINE_IP);
+}
+
+function cardFor(title: string, color: string, lines: string[], note: string) {
   const elements: any[] = [];
   for (const line of lines) {
     if (line === "---") elements.push({ tag: "hr" });
@@ -284,16 +313,19 @@ async function sendNotify(ctx: AnyCtx, event: string, url: string | null): Promi
     down: ["远程访问已断开", "red"], recovered: ["远程访问已恢复", "green"], test: ["测试通知", "grey"],
     enabled: ["通知已开启", "green"],
   };
-  const [title, color] = meta[event] ?? ["远程访问", "grey"];
+  const [baseTitle, color] = meta[event] ?? ["远程访问", "grey"];
+  // 机器身份进标题（负责人 2026-11-23 定版）：推送标题即带 别名 · 主机名 · IP 前两段。
+  const title = baseTitle + " · " + machineLine(cfg.alias);
   const tier = notifyText(); // 换址必带完整密码：能自救（用户拍板，不做档位）
-  // 独立区块 + 分隔线：地址和密码各自前后留白，点按选中整行不带标签（测试通知同样带密码，按主人要求）
+  // 独立区块 + 分隔线：机器身份在标题（卡片头一行即可分辨机器），地址和密码各自前后留白。
   let lines: string[];
   if (event === "down" || event === "recovered") {
     lines = url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"];
+
   } else {
     lines = url ? ["**访问地址**", url, "---", "**访问密码**", tier] : ["（隧道未运行，暂无访问地址）", "**访问密码**", tier];
   }
-  const card = cardFor(title, color, lines, url, "dsh-remote · by @oh-summy · " + new Date().toLocaleString("zh-CN"));
+  const card = cardFor(title, color, lines, "dsh-remote · by @oh-summy · " + new Date().toLocaleString("zh-CN"));
   try {
     if (channel === "group") {
       // 群聊两种发法：优先应用身份（拉过群列表），否则群机器人 webhook
@@ -450,10 +482,12 @@ function startLoginServer(ctx: AnyCtx): http.Server {
   .chip { border-radius: 10px; padding: 10px 12px; font-size: 13px; margin: 0 0 14px; line-height: 1.5; }
   .chip.err { background: rgba(220,38,38,.12); border: 1px solid rgba(220,38,38,.35); color: #fca5a5; }
   .foot { color: #5b7292; font-size: 12px; margin: 18px 0 0; line-height: 1.6; }
+  .machine{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;letter-spacing:.02em;color:#9fb6d9;margin:-6px 0 14px}
 </style></head>
 <body><div class="card">
   <div class="mark">deepseek harness · 远程访问</div>
   <h1>本机 DSH 的安全门</h1>
+  <p class="machine">${htmlEsc(machineLine(cfg.alias))}</p>
   <p class="sub">输入访问密码即可使用这台机器上的 DSH。会话 7 天内有效。</p>
   <span class="host">${htmlEsc(tunnelHost)}</span>
   <div class="tunnel"><span>你</span><span class="line"><i class="a"></i><i class="b"></i></span><span>Cloudflare</span><span class="line"><i class="a"></i><i class="b"></i></span><span>本机 DSH</span></div>
@@ -510,6 +544,10 @@ function startLoginServer(ctx: AnyCtx): http.Server {
             autoRestart: cfg.autoRestart !== false,
             sessionDays: Number(cfg.sessionDays) || 7,
             channel: cfg.notifyChannel || "off",
+            alias: cfg.alias || "",
+            machineHost: MACHINE_HOST,
+            machineIp: MACHINE_IP,
+            machineLine: machineLine(cfg.alias),
             hasWebhook: !!(await withTimeout(getSecret(WEBHOOK_REF), 2500, null)),
             hasAppSecret: !!appSecret,
             appIdMask: mask(cfg.notifyAppId, 6),
@@ -598,7 +636,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
             if (target) await startTunnel(ctx);
             else stopTunnel(ctx);
             cfg = { ...cfg, enabled: target } as Config;
-            saveSettings();
+            if (!saveSettings()) throw new Error("settings persist failed"); // 进程已实际切换：cfg 与之对齐，仅上报持久化失败
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: true, enabled: target }));
           } catch (e) {
@@ -641,9 +679,19 @@ function startLoginServer(ctx: AnyCtx): http.Server {
           if (json.notifyChatName !== undefined) fields.notifyChatName = String(json.notifyChatName);
           if (json.autoRestart !== undefined) fields.autoRestart = !!json.autoRestart;
           if (json.autoStart !== undefined) fields.autoStart = !!json.autoStart;
+          if (json.alias !== undefined) {
+            const rawAlias = typeof json.alias === "string" ? json.alias : "";
+            fields.alias = Array.from(rawAlias.replace(/[\u0000-\u001f\u007f]/g, "").trim()).slice(0, 64).join("");
+          }
           if (json.sessionDays !== undefined) fields.sessionDays = Math.min(Math.max(parseInt(String(json.sessionDays), 10) || 7, 1), 30);
+          const prevCfg = cfg;
           cfg = { ...cfg, ...fields } as Config;
-          saveSettings();
+          if (!saveSettings()) {
+            cfg = prevCfg; // 持久化失败：回滚内存态，不谎报成功、不发通知（审查二轮 P1）
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "settings persist failed" }));
+            return;
+          }
           pushEvent("config", "设置已保存（立即生效）");
           // 通知配置一旦齐备：立即推一条带链接+密码的消息（闭环确认 + 把当前入口送达）
           const becameReady =
@@ -774,19 +822,46 @@ function loadSettings(): Config {
     return "off";
   };
   const raw: Record<string, unknown> = (() => {
-    try { return JSON.parse(readFileSync(SETTINGS_FILE, "utf8")); }
-    catch {
-      // 首次启动：profile 用户层的运行时键一次性搬进 settings.json
+    // 三段分离（审查三轮 P1-2）：read（ENOENT=首次启动迁移；其他 I/O 向上抛）
+    // → parse（JSON 损坏=留档）→ schema（非对象=留档）；留档失败即停，不继续迁移/写盘。
+    let text: string;
+    try { text = readFileSync(SETTINGS_FILE, "utf8"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        // 首次启动：profile 用户层的运行时键一次性搬进 settings.json
+        const cur = readUserBlock();
+        const migrated: Record<string, unknown> = {};
+        if (cur) {
+          for (const k of ["enabled", "autoRestart", "notifyChannel", "notifyAppId", "notifyOpenId", "sessionDays"] as const) {
+            const v = blockValue(cur.text, k);
+            if (v !== null) migrated[k] = v === "true" ? true : v === "false" ? false : (k === "sessionDays" ? Number(v) : v);
+          }
+        }
+        return migrated;
+      }
+      throw error; // EACCES/EIO 等：明确上抛，由插件装载层上报，绝不按首次启动清盘
+    }
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); }
+    catch { parsed = undefined; } // JSON 损坏 → 走留档
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      // 非对象/null 也是损坏：留档（含 JSON.parse 失败的原文——重命名保留的是原文件本身）
+      renameSync(SETTINGS_FILE, SETTINGS_FILE + ".corrupt-" + Date.now());
+      const dir = dirname(SETTINGS_FILE);
+      const olds = readdirSync(dir).filter((f: string) => f.startsWith("settings.json.corrupt-")).sort();
+      for (const f of olds.slice(0, Math.max(0, olds.length - 5))) rmSync(join(dir, f), { force: true });
+      // 首次启动迁移同上（用户层的运行时键仍在）
       const cur = readUserBlock();
-      const s: Record<string, unknown> = {};
+      const migrated: Record<string, unknown> = {};
       if (cur) {
         for (const k of ["enabled", "autoRestart", "notifyChannel", "notifyAppId", "notifyOpenId", "sessionDays"] as const) {
           const v = blockValue(cur.text, k);
-          if (v !== null) s[k] = v === "true" ? true : v === "false" ? false : (k === "sessionDays" ? Number(v) : v);
+          if (v !== null) migrated[k] = v === "true" ? true : v === "false" ? false : (k === "sessionDays" ? Number(v) : v);
         }
       }
-      return s;
+      return migrated;
     }
+    return parsed as Record<string, unknown>;
   })();
   const s = raw as Config;
   s.notifyChannel = migrateChannel(s.notifyChannel) as Config["notifyChannel"];
@@ -799,7 +874,8 @@ function loadSettings(): Config {
   return s;
 }
 
-function saveSettings(): void {
+// 原子写（审查 P1-5）：临时文件 + rename，崩溃不留半文件；失败返回 false 由调用方上报。
+function saveSettings(): boolean {
   const s = {
     enabled: cfg.enabled === true,
     autoStart: cfg.autoStart === true,
@@ -810,8 +886,17 @@ function saveSettings(): void {
     notifyChatId: cfg.notifyChatId || "",
     notifyChatName: cfg.notifyChatName || "",
     sessionDays: Number(cfg.sessionDays) || 7,
+    alias: cfg.alias || "",
   };
-  try { writeFileSync(SETTINGS_FILE, JSON.stringify(s, null, 2)); } catch { /* best effort */ }
+  const tmp = SETTINGS_FILE + ".tmp";
+  try {
+    writeFileSync(tmp, JSON.stringify(s, null, 2));
+    renameSync(tmp, SETTINGS_FILE);
+    return true;
+  } catch {
+    try { rmSync(tmp, { force: true }); } catch { /* 清理失败忽略 */ }
+    return false;
+  }
 }
 
 async function reapOrphans(ctx: AnyCtx): Promise<void> {
@@ -845,7 +930,8 @@ function spawnCaddy(ctx: AnyCtx): void {
     if (stopping) return; // 命令式停止：不是崩溃，不重拉
     if (!alive()) return;
     pushEvent("down", "caddy 退出，5s 后自动重拉");
-    timers.add(setTimeout(() => { if (alive() && cfg.autoRestart !== false) spawnCaddy(ctx); }, RESPAWN_DELAY_MS));
+    const t = setTimeout(() => { timers.delete(t); if (alive() && cfg.autoRestart !== false) spawnCaddy(ctx); }, RESPAWN_DELAY_MS);
+    timers.add(t);
   });
 }
 
@@ -891,10 +977,15 @@ function spawnCloudflared(ctx: AnyCtx): void {
     closeSync(out);
     if (stopping) return; // 命令式停止：不是崩溃，不重拉不通知
     if (!alive()) return;
-    if (cfg.autoRestart === false) { pushEvent("down", "cloudflared 退出（自动重启已关闭）"); say(ctx, "warn", "[dsh-remote] cloudflared exited, auto-restart off"); return; }
+    if (cfg.autoRestart === false) {
+      if (urlTimer) { clearInterval(urlTimer); urlTimer = null; } // 不重拉就别再轮询已死进程的地址（审查 P2）
+      pushEvent("down", "cloudflared 退出（自动重启已关闭）"); say(ctx, "warn", "[dsh-remote] cloudflared exited, auto-restart off");
+      return;
+    }
     pushEvent("down", "cloudflared 退出，5s 后自动重拉（quick tunnel 会自己死，事实 13）");
     void sendNotify(ctx, "down", currentUrl || null);
-    timers.add(setTimeout(() => { if (alive() && cfg.autoRestart !== false) spawnCloudflared(ctx); }, RESPAWN_DELAY_MS));
+    const t = setTimeout(() => { timers.delete(t); if (alive() && cfg.autoRestart !== false) spawnCloudflared(ctx); }, RESPAWN_DELAY_MS);
+    timers.add(t);
   });
 }
 
@@ -1008,7 +1099,13 @@ function renderCaddyfile(): string {
 
 export function apply(ctx: AnyCtx, config: Config = {}) {
   (globalThis as any).__dshRemoteCtx = ctx; // secrets helpers need ctx without threading it everywhere
-  cfg = { ...config, ...loadSettings() } as Config; // settings.json 是运行时事实源（profile 只留静态项）
+  // loadSettings 的 I/O 错误（EACCES/EIO）向上抛到这里：插件降级为默认配置并明确上报，不静默清盘（审查三轮 P1-2）
+  try {
+    cfg = { ...config, ...loadSettings() } as Config;
+  } catch (error) {
+    cfg = { ...config } as Config;
+    say(ctx, "error", "[dsh-remote] settings.json 读取失败，已用默认配置启动：" + (error as Error).message);
+  }
   mkdirSync(RUN_DIR, { recursive: true });
 
   // 生命周期整体挂 ctx.effect（事实 14）：setup 现在跑，disposer 在 fiber 销毁时跑。

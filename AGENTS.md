@@ -84,6 +84,10 @@ CI 的插件守卫遍历所有 plugins/*/ 自动纳入（有 lockfile 才 `npm c
    **可发现性事实（2026-10-27 订正，勿写错）**：DSH Discover 的搜索**确实依赖名字**——`dsh-plugin-market` 的 MiniSearch 字段为 name/title/keywords/description/author/taxonomy，权重 `name: 3, title: 3, keywords: 2`。所以去掉 `dsh-` 前缀**不妨碍被列出和检索**，但「搜索排序完全不受影响」「名字不参与搜索」都不成立。另外 `package.json` keywords 与市场 keywords 是**两条链路**：npm 搜索用包 manifest，本市场索引用的是 catalog 的 `meta.keywords`（`build/lib.mjs` 的 withMeta，不会自动从 git 源 package.json 复制）——**两者都要保留**。GitHub 仓库 About/Topics 属仓库展示设置，不是 Discover 可发现性的替代或必要条件。
 - 插件版本 = 其 package.json 的 semver，各自独立演进；市场 tag（v*，本仓库）记市场里程碑。
 
+
+- **dsh-remote 软链生命周期偏离（2026-11-23 定版）**：issue #29 原设计的「插件停用/卸载撤回软链」**废止**——软链只在装载时物化，普通 stop/disposer **不回收**（无法安全区分自建/插件创建；悬空软链天然失效无副作用），删除走宿主级 `dsh plugin remove`。事实源 = dsh-remote README「软链生命周期」节。
+- **dsh-remote 机器身份公开范围（2026-11-23 定版）**：飞书卡片标题与登录页（未鉴权）展示 `别名 · 主机名 · IP前两段.***.***`；完整内网 IP 仅管理面 state 接口（鉴权后）可见。别名存 settings.json（宿主数据，插件更新不触碰）。
+
 ## 6. 环境与账号
 
 - 本地 gh 双账号：默认 OneSami；操作 oh-summy 仓库先 gh auth switch --user oh-summy，完事切回（只读操作可随手做，写操作=红线 6）。
