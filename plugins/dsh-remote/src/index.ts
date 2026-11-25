@@ -198,7 +198,25 @@ function pushEvent(type: string, detail: string) {
 
 let cfg: Config = {};
 let currentUrl = "";
-let sessionSecret = ""; // 本插件的 Cookie 门令牌：Caddy 正则门 + rc_session 值（登录后发给浏览器）
+let lastAnnouncedUrl = ""; // 已推送过的 URL（跨 spawn 去重，不随 spawn 重置）
+let sessionSecret = ""; // 本插件会话 HMAC 密钥：签发/校验 rc_session 的带过期令牌（审查 #47）
+let toggleBusy = false; // 启停串行化（审查 #48）：并发 toggle 立即 409，不叠 spawn
+// ---------- 会话令牌：HMAC(exp) 签名 + 服务端过期校验（审查 #47） ----------
+// 旧设计：rc_session = 静态 32-hex（服务端永久有效）。新设计：v1.<expB64url>.<hmac>，
+// 服务端校验签名与 exp > now；泄露的令牌在 exp 后自动失效。重置密码轮换 sessionSecret → 旧令牌全部失效。
+export function signSession(exp: number, secret: string): string {
+  const payload = Buffer.from(String(exp)).toString("base64url");
+  const sig = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+  return `v1.${payload}.${sig}`;
+}
+export function verifySession(token: string, secret: string, now = Date.now()): boolean {
+  const m = /^v1\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(token);
+  if (!m) return false;
+  const sig = crypto.createHmac("sha256", secret).update(m[1]).digest("base64url");
+  if (!timingSafeEq(m[2], sig)) return false;
+  const exp = Number(Buffer.from(m[1], "base64url").toString("utf8"));
+  return Number.isFinite(exp) && exp > now;
+}
 let dshSessionSecret = ""; // DSH 的 browser-session secret（签 dsh-auth-* cookie，读自凭据缝文件）
 let password = "";
 let caddyChild: ChildProcess | null = null;
@@ -234,6 +252,13 @@ function primaryLanIp(): string {
 }
 const MACHINE_HOST = hostname();
 const MACHINE_IP = primaryLanIp();
+// URL 捕获规则纯函数（审查三轮 P1-1 用例）：每次捕获都恢复 currentUrl；通知去重单独判。
+export function applyCapturedUrl(url: string, lastAnnouncedUrl: string): { currentUrl: string; changed: boolean; announce: boolean } {
+  const announce = url !== lastAnnouncedUrl;
+  const changed = lastAnnouncedUrl !== "" && announce; // 有已推送旧值且 URL 变化 = changed；首捕获 = started
+  return { currentUrl: url, changed, announce };
+}
+
 // 展示层 IP 掩码：只留前两段（足以区分机器，不暴露完整内网地址）。
 export function maskIp(ip: string): string {
   const parts = ip.split(".");
@@ -412,10 +437,9 @@ function classify(req: http.IncomingMessage): { isLocal: boolean; ip: string } {
   const cfIp = String(req.headers["cf-connecting-ip"] || "");
   const xff = String(req.headers["x-forwarded-for"] || "");
   const socketAddr = String(req.socket.remoteAddress || "");
-  const loopback = socketAddr.includes("127.0.0.1") || socketAddr.includes("::1");
-  // 远端（经隧道）必带 CF 边缘写入的 cf-connecting-ip；本机浏览器直连 4080 没有，
-  // 只有 Caddy 自己追加的 x-forwarded-for（值还是 loopback）。
-  const isLocal = !cfIp && loopback && (!xff || xff.includes("127.0.0.1") || xff.includes("::1"));
+  // 本机豁免收紧（审查三轮 P1-3 fail-open → fail-closed）：仅限 socket 精确 loopback
+  // 且完全无代理头。经 Caddy 的请求恒带 x-forwarded-for（Caddy 自己追加）→ 一律按远端处理。
+  const isLocal = !cfIp && !xff && (socketAddr === "127.0.0.1" || socketAddr === "::1");
   return { isLocal, ip: cfIp || xff || socketAddr };
 }
 
@@ -507,11 +531,12 @@ function startLoginServer(ctx: AnyCtx): http.Server {
         const supplied = String(new URLSearchParams(await readBody(req)).get("password") || "");
         if (timingSafeEq(supplied, password)) {
           failCounts.delete(ip);
-          // rc_session 的值就是门令牌（v0.3.x 语义）：Caddy 正则门与会话校验共用它
+          // rc_session = 带过期时间的签名令牌：服务端校验签名与 exp（审查 #47）
           const dsh = dshCookieParts(UPSTREAM_HOST);
           const days = Math.min(Math.max(Number(cfg.sessionDays) || 7, 1), 30);
-          const cookies = [`rc_session=${sessionSecret}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Lax`];
-          if (dsh) cookies.push(`${dsh.name}=${dsh.value}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Lax`);
+          // Secure：入口恒为 https 隧道；本机管理走 127.0.0.1:9091 直连 API，不依赖该 Cookie（审查二轮 P2-1）
+          const cookies = [`rc_session=${signSession(Date.now() + days * 86400000, sessionSecret)}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Strict; Secure`];
+          if (dsh) cookies.push(`${dsh.name}=${dsh.value}; HttpOnly; Path=/; Max-Age=${days * 86400}; SameSite=Strict; Secure`);
           res.writeHead(302, { Location: "/", "Set-Cookie": cookies });
           res.end();
           return;
@@ -525,10 +550,19 @@ function startLoginServer(ctx: AnyCtx): http.Server {
         return;
       }
 
+      // /rc-auth — Caddy forward_auth 的校验端点：只认有效签名会话，无任何豁免（审查三轮 P1-1/P1-3）。
+      if (req.method === "GET" && path === "/rc-auth") {
+        const cv = /rc_session=([^;]+)/.exec(String(req.headers.cookie || ""))?.[1] ?? "";
+        const ok = Boolean(cv) && verifySession(cv, sessionSecret);
+        res.writeHead(ok ? 200 : 401, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end(ok ? "ok" : "unauthorized");
+        return;
+      }
+
       // /rc-api/* — 本机直连（loopback 且无代理头）或持有门令牌的会话
       if (path.startsWith("/rc-api/")) {
         const cookieValue = /rc_session=([^;]+)/.exec(String(req.headers.cookie || ""))?.[1] ?? "";
-        const authed = isLocal || (cookieValue && timingSafeEq(cookieValue, sessionSecret));
+        const authed = isLocal || (cookieValue && verifySession(cookieValue, sessionSecret));
         if (!authed) { res.writeHead(401); res.end("unauthorized"); return; }
 
         if (req.method === "GET" && path === "/rc-api/state") {
@@ -605,8 +639,9 @@ function startLoginServer(ctx: AnyCtx): http.Server {
           await setSecret(ctx, PASSWORD_REF, password);
           sessionSecret = hex(32);
           await setSecret(ctx, SESSION_REF, sessionSecret);
-          restartCaddy(ctx); // 新 sessionSecret = 新门令牌：旧 rc_session 与 Caddy 门会话全部失效
-          pushEvent("password", "密码已重置（门会话已全部失效；已登录设备的 DSH 会话按其 7 天 TTL 仍有效）");
+          // RC_TOKEN 已移出 Caddyfile：重置无需重启 Caddy（审查三轮 P1-4 更优修复）。
+          // 旧 rc_session 因 sessionSecret 轮换全部失效；dsh-auth 单独放行路径已删除 → 远程访问彻底失效。
+          pushEvent("password", "密码已重置（所有远程会话已失效；请用新密码重新通过门禁）");
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
           return;
@@ -631,10 +666,14 @@ function startLoginServer(ctx: AnyCtx): http.Server {
         if (req.method === "POST" && path === "/rc-api/toggle") {
           // 命令式启停：不写 profile（写 = HMR 条目重启 = 9091 窗口 + 无谓换链接）。
           // 管理面全程在线；stopped 时子进程 exit 回调按 stopping 旗标跳过重拉。
-          const target = !cfg.enabled;
+          // 串行化（审查 #48）：并发 toggle 立即 409，不叠 spawn。
+          if (toggleBusy) { res.writeHead(409, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "启停操作进行中，请稍候" })); return; }
+          toggleBusy = true;
           try {
+            const target = !cfg.enabled;
             if (target) await startTunnel(ctx);
             else stopTunnel(ctx);
+            if (target && (!cloudflaredChild?.pid || !pidAlive(cloudflaredChild.pid))) throw new Error("隧道启动后进程退出——请查看 cloudflared 日志"); // await 后重查（审查 #48）
             cfg = { ...cfg, enabled: target } as Config;
             if (!saveSettings()) throw new Error("settings persist failed"); // 进程已实际切换：cfg 与之对齐，仅上报持久化失败
             res.writeHead(200, { "Content-Type": "application/json" });
@@ -642,6 +681,8 @@ function startLoginServer(ctx: AnyCtx): http.Server {
           } catch (e) {
             res.writeHead(500, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: (e as Error).message }));
+          } finally {
+            toggleBusy = false;
           }
           return;
         }
@@ -921,7 +962,7 @@ function spawnCaddy(ctx: AnyCtx): void {
   writeFileSync(caddyfile, renderCaddyfile());
   caddyChild = spawn(findBinary(cfg, "caddy"), ["run", "--config", caddyfile], {
     cwd: RUN_DIR,
-    env: { ...process.env, RC_TOKEN: sessionSecret, RC_UPSTREAM: UPSTREAM, RC_LOG_DIR: RUN_DIR },
+    env: { ...process.env, RC_UPSTREAM: UPSTREAM, RC_LOG_DIR: RUN_DIR },
     stdio: ["ignore", "ignore", "ignore"],
   });
   writeFileSync(join(RUN_DIR, "caddy.pid"), String(caddyChild.pid));
@@ -929,15 +970,15 @@ function spawnCaddy(ctx: AnyCtx): void {
   caddyChild.on("exit", () => {
     if (stopping) return; // 命令式停止：不是崩溃，不重拉
     if (!alive()) return;
+    if (cfg.autoRestart === false) {
+      if (urlTimer) { clearInterval(urlTimer); urlTimer = null; } // 不重拉就别再轮询已死进程的地址（审查 P2）
+      pushEvent("down", "caddy 退出（自动重启已关闭）");
+      return;
+    }
     pushEvent("down", "caddy 退出，5s 后自动重拉");
     const t = setTimeout(() => { timers.delete(t); if (alive() && cfg.autoRestart !== false) spawnCaddy(ctx); }, RESPAWN_DELAY_MS);
     timers.add(t);
   });
-}
-
-function restartCaddy(ctx: AnyCtx): void {
-  // 只 kill：已有的 exit 处理器会在 5s 后用模块级最新 sessionSecret 重拉（一次，不双 spawn）
-  try { if (caddyChild?.pid) process.kill(caddyChild.pid); } catch { /* gone */ }
 }
 
 function spawnCloudflared(ctx: AnyCtx): void {
@@ -953,18 +994,25 @@ function spawnCloudflared(ctx: AnyCtx): void {
   say(ctx, "info", `[dsh-remote] cloudflared spawning (pid ${cloudflaredChild.pid})`);
 
   const startedAt = Date.now();
-  let announced = currentUrl; // respawn 后 URL 未变则不重复通知
+  let announced = ""; // 每次 spawn 独立捕获（审查二轮 P2-3：无新 URL 时 45s 超时语义正确）
+  currentUrl = ""; // spawn 时清空；捕获到合法 URL（无论新旧）立即恢复（审查三轮 P1-1 回归修复）
   urlTimer = setInterval(() => {
     const text = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
     const m = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-    if (m && m[0] !== announced) {
-      const changed = announced !== "";
-      announced = m[0]; currentUrl = m[0];
+    if (m) {
+      const captured = applyCapturedUrl(m[0], lastAnnouncedUrl);
+      announced = captured.currentUrl;
+      currentUrl = captured.currentUrl;
+      writeFileSync(join(RUN_DIR, "url"), captured.currentUrl + "\n");
+      if (captured.announce) {
+        const changed = captured.changed;
+        lastAnnouncedUrl = captured.currentUrl;
       writeFileSync(join(RUN_DIR, "url"), m[0] + "\n");
       say(ctx, "info", `[dsh-remote] tunnel ${changed ? "changed" : "up"}: ${m[0]}`);
-      pushEvent(changed ? "changed" : "started", m[0]);
-      void sendNotify(ctx, changed ? "changed" : "started", m[0]);
-      // 不 clear：changed 检测需要持续监听（watchdog 语义）；disposer 统一清理
+        pushEvent(changed ? "changed" : "started", m[0]);
+        void sendNotify(ctx, changed ? "changed" : "started", m[0]);
+        // 不 clear：changed 检测需要持续监听（watchdog 语义）；disposer 统一清理
+      }
     } else if (!announced && Date.now() - startedAt > URL_TIMEOUT_MS) {
       clearInterval(urlTimer!); urlTimer = null;
       say(ctx, "warn", `[dsh-remote] no URL within 45s — see ${logFile}`);
@@ -1035,8 +1083,10 @@ function renderCaddyfile(): string {
 		}
 		level INFO
 	}
-	@authed header_regexp Cookie .*{$RC_TOKEN}.*
-	@authed-dsh header_regexp Cookie dsh-auth-.*
+	# rc_session = 签名会话令牌（v1.<exp>.<sig>）：门只做格式匹配，签名与过期在插件侧 /rc-api 校验（审查 #47）
+	# rc_session 存在才走门（无 cookie → 登录页）；门内先 forward_auth 到插件做真实校验
+	# （签名 + 过期），伪造/过期/重置前令牌一律 401（审查三轮 P1-1：格式匹配 ≠ 授权）。
+	@authed header_regexp Cookie rc_session=v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+
 	@login path /rc-login
 	@api path /rc-api/*
 	@localapi remote_ip 127.0.0.1
@@ -1058,19 +1108,13 @@ function renderCaddyfile(): string {
 	}
 
 	handle @authed {
+		# 真实会话校验（审查三轮 P1-1）：Caddy 先把原始头（含 Cookie）转发给插件 /rc-auth，
+		# verifySession 通过才放行到 DSH；删除 dsh-auth 单独放行路径（重置密码语义，审查三轮 P1-2）。
+		forward_auth 127.0.0.1:${LOGIN_PORT} {
+			uri /rc-auth
+		}
 		reverse_proxy ${UPSTREAM} {
 			# 过期/无效的 dsh-auth cookie：DSH 回 401/403 → 送回登录页（杜绝死路 403）
-			@fence status 401 403
-			handle_response @fence {
-				error 401 "fence"
-			}
-			header_up Host ${UPSTREAM_HOST}
-			header_up Origin http://${UPSTREAM_HOST}
-		}
-	}
-
-	handle @authed-dsh {
-		reverse_proxy ${UPSTREAM} {
 			@fence status 401 403
 			handle_response @fence {
 				error 401 "fence"
@@ -1145,6 +1189,8 @@ export function apply(ctx: AnyCtx, config: Config = {}) {
       if (!isAlive()) return;
       spawnCaddy(ctx);
       spawnCloudflared(ctx);
+      cfg = { ...cfg, enabled: true } as Config; // autoStart 拉起后同步状态（审查 #48：cfg 与实际一致）
+      saveSettings();
     };
     boot().catch((e) => {
       say(ctx, "error", "[dsh-remote] 启动失败：" + (e as Error).message);
