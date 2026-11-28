@@ -29,6 +29,9 @@ const zh = {
   statusRunning: "隧道运行中",
   statusStopped: "隧道已停止——远程入口关闭，无链接也无需密码",
   statusReading: "隧道状态读取中…",
+  faultTitle: "隧道故障",
+  notifyFaultTitle: "飞书通知未送达",
+  faultHint: "最近一次失败原因。若你在用代理/VPN：把 api.trycloudflare.com 加进直连规则，或关掉 TUN 模式后再试。",
   stop: "停止远程访问",
   start: "启动远程访问",
   stopping: "正在停止…",
@@ -134,6 +137,9 @@ const en = {
   statusRunning: "Tunnel running",
   statusStopped: "Tunnel stopped — the remote entrance is closed; no link and no password needed",
   statusReading: "Reading tunnel status…",
+  faultTitle: "Tunnel fault",
+  notifyFaultTitle: "Feishu notification not delivered",
+  faultHint: "Last failure reason. If you use a proxy/VPN: add api.trycloudflare.com to the direct rules, or turn TUN mode off and retry.",
   stop: "Stop remote access",
   start: "Start remote access",
   stopping: "Stopping…",
@@ -260,6 +266,8 @@ const RC_CSS = `
 .rc-link:hover{text-decoration:underline}
 .rc-msg{color:var(--dsw-alias-label-secondary);font-size:13px;min-height:18px;margin:0}
 .rc-msg.err{color:var(--dsw-alias-state-error-primary)}
+.rc-fault{border:1px solid rgba(220,38,38,.35);background:rgba(220,38,38,.08);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:4px}
+.rc-fault .rc-msg{white-space:pre-wrap;word-break:break-word;min-height:0}
 .rc-danger{color:var(--dsw-alias-state-error-primary)}
 .rc-sec{font-size:11px;font-weight:600;color:var(--dsw-alias-label-tertiary);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 0}
 .rc-events{border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md);padding:10px 12px;max-height:200px;overflow:auto;font-size:12px;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-3);display:flex;flex-direction:column;gap:2px}
@@ -489,6 +497,14 @@ function RemoteManager({ t: hostT, locale }) {
         : null,
   ] });
 
+  // 故障横幅（事故 2026-11-28 后新增）：把失败原因直接摆出来——
+  // 用户最需要知道的是「不是你插件坏了，是本机代理把 Cloudflare 域名劫持了」。
+  const faultRow = (state?.lastError || state?.notifyError) ? jsx("div", { className: "rc-fault", role: "alert", children: [
+    state?.lastError ? jsx("p", { className: "rc-msg err", children: t("faultTitle") + "：" + state.lastError }) : null,
+    state?.notifyError ? jsx("p", { className: "rc-msg err", children: t("notifyFaultTitle") + "：" + state.notifyError }) : null,
+    jsx("p", { className: "rc-msg", children: t("faultHint") }),
+  ] }) : null;
+
   const urlRow = state?.running && state.url ? jsxs("div", { className: "rc-row", children: [
     jsx("a", { className: "rc-link", target: "_blank", href: state.url, children: state.url }),
     jsx(InfoTip, { label: t("urlTip") }),
@@ -602,6 +618,7 @@ function RemoteManager({ t: hostT, locale }) {
     jsx("style", { children: RC_CSS }),
     errorRow,
     statusRow,
+    faultRow,
     autoStartRow,
     urlRow,
     passwordRow,

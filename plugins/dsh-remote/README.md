@@ -104,6 +104,33 @@ Credentials never land in configuration files — they go through DSH's credenti
 - **Primary channel (bot DM):** your Feishu open id (`ou_...`). Requires [`lark-cli`](https://github.com/larksuite/cli) installed and configured; the app bot needs IM permission and must be able to DM you.
 - **Fallback channel:** group custom-bot webhook — works without lark-cli. If both are set, DM is used and webhook only on failure.
 
+### 通知节奏（v0.5.2 起，不再刷屏）
+
+一次故障 = **两条**消息，中间绝不刷屏：
+
+| 时刻 | 推送 | 内容 |
+|---|---|---|
+| 隧道/密码门进程第一次退出 | 「远程访问已断开」 | 失败原因 + 连续失败次数 + 重试间隔说明 |
+| 故障持续中 | **不推** | 只记进事件日志；10 分钟后最多再提醒一次 |
+| 隧道恢复且稳定 30s | 「远程访问已恢复」 | 新地址 + 访问密码 |
+
+- 重拉采用指数退避：5s → 10s → 20s → 40s → 60s（封顶），网络不通时不会每 5 秒烧一次隧道请求。
+- 「远程访问已开启 / 访问地址已变化」只在**拿到真实隧道地址**时推——地址取自 cloudflared 成功日志，
+  绝不会把 `api.trycloudflare.com`（Cloudflare 的 API 端点）误当成隧道地址推给你。
+- 投递本身带重试（4 次，约 30s）：一次网络抖动不该让你收不到地址。
+
+### 排障：链接打不开 / 收不到消息
+
+插件详情页顶部的**红色横幅**直接写着最近一次失败原因，不用翻日志：
+
+- **「连接被重置」/ 报文里出现 `198.18.x.x`** —— 本机代理（Clash Verge 等）的 fake-ip / TUN 模式把
+  Cloudflare 的域名劫持了。关掉 TUN 模式，或把 `api.trycloudflare.com` 加进直连规则。
+- **「DNS 解析失败」** —— 同上，先查 DNS。
+- **「本机代理端口拒绝连接」** —— 代理软件没开，但环境变量还指着它的端口；DSH 会读取
+  `http_proxy` / `https_proxy`，启动前 `unset` 掉或把代理开起来。
+- **「DSH 上游未就绪（127.0.0.1:3080 无响应）」** —— DSH 的 web 还没起来，等几秒刷新；
+  这个提示取代了旧的「弹回登录页 → 输密码 → 再弹回」死循环。
+
 ## Requirements
 
 - macOS (x86_64 / arm64) or Linux (x86_64 / arm64); `cloudflared` + `caddy` must be installed beforehand — the plugin probes `~/.remote-control/bin/` then `PATH` at startup, and missing binaries are flagged by the management page's environment check.

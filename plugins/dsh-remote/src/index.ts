@@ -22,6 +22,16 @@ const GATE_PORT = 4080;
 const LOGIN_PORT = 9091;
 const URL_TIMEOUT_MS = 45_000;
 const RESPAWN_DELAY_MS = 5_000;
+// 重拉退避上限（事故 2026-11-28：隧道起不来时固定 5s 死循环，纯烧网络 + 刷飞书）
+const RESPAWN_MAX_DELAY_MS = 60_000;
+// 同一次持续故障的 down 通知闸门：最多 10 分钟一条（原来每 5 秒一条 → 飞书刷屏）
+const DOWN_NOTIFY_INTERVAL_MS = 10 * 60_000;
+// 隧道地址轮询间隔
+const URL_POLL_MS = 2_000;
+// 稳定窗口：隧道连续存活这么久才算「已恢复」（抖动场景永远走不到 → 不会刷「已恢复」）
+const STABILITY_MS = 30_000;
+// 上游存活探测缓存时长（/rc-auth 用，避免每次远端请求都去连一次 3080）
+const UPSTREAM_CHECK_TTL_MS = 1_500;
 const LOGIN_LOCK_MS = 300_000;
 const LOGIN_MAX_FAILS = 5;
 const REVEAL_FREQ_MS = 60_000;
@@ -228,6 +238,16 @@ let fiberAlive: (() => boolean) | null = null; // 当前 fiber 的生命旗标�
 const timers = new Set<NodeJS.Timeout>(); // respawn 定时器登记：disposer 统一清理（第 2 轮自审 P0-1）
 const failCounts = new Map<string, { count: number; until: number }>();
 const revealAt = new Map<string, number>();
+let failStreak = 0; // 连续失败次数（退避用；确认恢复后清零）
+let pendingRecovery = false; // 发生过故障且尚未确认恢复 → 恢复后要补一条「已恢复」
+let lastDownNotifyAt = 0; // 上次 down 通知时间戳：同一次持续故障的闸门
+let stabilityTimer: NodeJS.Timeout | null = null; // 稳定窗口定时器（确认恢复用）
+let gateFailStreak = 0; // 密码门（caddy）侧连续失败次数——与隧道侧各算各的
+let caddyStartedAt = 0; // 密码门本次启动时刻（判断「稳定跑过一分钟」）
+let lastFailReason = ""; // 最近一次失败原因（管理面展示 + 通知正文）
+let lastNotifyError = ""; // 最近一次飞书投递失败原因——「为什么我没收到消息」要能在页面上看到
+let upstreamReady = true; // DSH 上游 3080 是否可达（/rc-auth 探测）
+let upstreamCheckedAt = 0; // 上次探测时间戳
 
 function notifyText(): string {
   return password; // 换址通知必带完整密码（自救需要，用户拍板不做档位）
@@ -257,6 +277,83 @@ export function applyCapturedUrl(url: string, lastAnnouncedUrl: string): { curre
   const announce = url !== lastAnnouncedUrl;
   const changed = lastAnnouncedUrl !== "" && announce; // 有已推送旧值且 URL 变化 = changed；首捕获 = started
   return { currentUrl: url, changed, announce };
+}
+
+// ---------- 隧道地址解析（事故 2026-11-28 的致命项） ----------
+// cloudflared 建隧道成功时打印 https://<隧道ID>.trycloudflare.com；
+// 但它「请求隧道失败」时打印的是请求地址 https://api.trycloudflare.com/tunnel。
+// 旧正则 /https:\/\/[a-z0-9-]+\.trycloudflare\.com/ 分不清这两者，后果有两条：
+//   ① 推给飞书的「访问地址」变成 api.trycloudflare.com——打不开，密码还跟着发出去；
+//   ② 隧道根本没起来，却对外宣称「远程访问已开启」。
+// 现在只认真正的隧道地址：子域名必须是 cloudflared 分配的隧道 ID（必含连字符或数字），
+// 且不是 API 端点；失败日志行整行跳过。
+const RESERVED_TUNNEL_HOSTS = new Set(["api", "www", "blog", "docs", "help"]);
+
+export function isTunnelLabel(label: string): boolean {
+  const l = String(label || "").toLowerCase();
+  if (!l) return false;
+  if (RESERVED_TUNNEL_HOSTS.has(l)) return false;
+  return l.includes("-") || /\d/.test(l);
+}
+
+export function extractTunnelUrl(logText: string): string {
+  for (const line of String(logText || "").split("\n")) {
+    // 失败行里的 trycloudflare 域名是 API 端点，不是隧道
+    if (/failed to request|failed to create|\bERR\b|\bFATAL\b|\berror\b/i.test(line)) continue;
+    const m = /https:\/\/([a-z0-9-]+)\.trycloudflare\.com/i.exec(line);
+    if (!m) continue;
+    if (!isTunnelLabel(m[1])) continue;
+    return "https://" + m[1].toLowerCase() + ".trycloudflare.com";
+  }
+  return "";
+}
+
+// 失败原因翻译（可诊断）：cloudflared 的报错行 → 一句人话 + 原始尾巴。
+// 尾巴保留是有意的：fake-ip（198.18.0.x）这类代理劫持线索就在里面。
+export function describeTunnelFailure(logText: string): string {
+  const text = String(logText || "");
+  const m = /failed to request quick Tunnel:?\s*([^\n]*)/i.exec(text)
+    || /\b(?:ERR|FATAL)\b[^\n]*/i.exec(text)
+    || /\berror[^\n]*/i.exec(text);
+  const raw = (m ? m[1] : "").trim().replace(/["']+$/, "");
+  if (!raw) return "";
+  let reason = "";
+  if (/connection reset by peer/i.test(raw)) reason = "连接被重置";
+  else if (/no such host/i.test(raw)) reason = "DNS 解析失败";
+  else if (/timeout|timed out/i.test(raw)) reason = "连接超时";
+  else if (/connection refused/i.test(raw)) reason = "连接被拒绝";
+  else if (/forbidden|unauthorized/i.test(raw)) reason = "被拒绝";
+  else if (/certificate|tls|ssl/i.test(raw)) reason = "TLS 握手失败";
+  const tail = raw.length > 140 ? raw.slice(0, 140) + "…" : raw;
+  return reason ? reason + "：" + tail : tail;
+}
+
+// 重拉退避（纯函数，可测）：5s → 10s → 20s → 40s → 60s（封顶）。
+// 事故 2026-11-28：固定 5s 重试在「网络起不来」时等于每 5 秒烧一次 + 推一条飞书。
+export function respawnDelayMs(attempt: number): number {
+  const n = Math.max(0, Math.floor(Number(attempt) || 0));
+  return Math.min(RESPAWN_DELAY_MS * Math.pow(2, n), RESPAWN_MAX_DELAY_MS);
+}
+
+// down 通知闸门（纯函数，可测）：同一次持续故障只发一条，之后每 intervalMs 最多一条。
+export function shouldNotifyDown(lastNotifiedAt: number, now: number, intervalMs = DOWN_NOTIFY_INTERVAL_MS): boolean {
+  if (!lastNotifiedAt) return true;
+  return now - lastNotifiedAt >= intervalMs;
+}
+
+// 孤儿进程识别（纯函数，可测）：按命令行特征找出「本插件的」残留进程。
+// 特征 = 本插件 Caddyfile 路径 + 本插件的 cloudflared --url 目标——只杀自己家的。
+export function findOwnedPids(psOutput: string, markers: string[]): number[] {
+  const found: number[] = [];
+  for (const line of String(psOutput || "").split("\n")) {
+    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    if (!pid || pid === process.pid) continue;
+    if (!markers.some((k) => k && m[2].includes(k))) continue;
+    found.push(pid);
+  }
+  return found;
 }
 
 // 展示层 IP 掩码：只留前两段（足以区分机器，不暴露完整内网地址）。
@@ -330,7 +427,37 @@ async function sendApp(card: any): Promise<void> {
   if (sendJson.code !== 0) throw new Error("发送失败 code " + sendJson.code + "：" + (sendJson.msg || "unknown") + "（常见原因：应用缺 im:message 发消息权限）");
 }
 
-async function sendNotify(ctx: AnyCtx, event: string, url: string | null): Promise<{ ok: boolean; error?: string }> {
+// 错误文本（可诊断）：undici 的 "fetch failed" 本身没有信息量，真正的原因在 cause 里
+// （最常见：ECONNREFUSED 127.0.0.1:7897 —— 本机代理端口没人监听）。
+function errText(e: unknown): string {
+  const err = e as { message?: string; cause?: { code?: string; message?: string } };
+  const msg = String(err?.message || e);
+  const cause = err?.cause;
+  const detail = cause ? String(cause.code || cause.message || "") : "";
+  if (!detail) return msg;
+  if (/ECONNREFUSED/.test(detail)) return msg + "（本机代理端口拒绝连接——代理是不是没开？）";
+  return msg + "（" + detail + "）";
+}
+
+// 通知重试：飞书投递是本插件的命门——链接和密码只能靠它送到手机。
+// 一次网络抖动（代理刚重启 / 网络切换）不该让主人收不到链接。4 次尝试，约 30s 收敛。
+const NOTIFY_RETRY_DELAYS_MS = [0, 2_000, 8_000, 20_000];
+
+async function sendNotifyWithRetry(ctx: AnyCtx, event: string, url: string | null, extra?: { reason?: string; streak?: number }): Promise<boolean> {
+  let lastError = "";
+  for (let i = 0; i < NOTIFY_RETRY_DELAYS_MS.length; i++) {
+    if (NOTIFY_RETRY_DELAYS_MS[i] > 0) await new Promise((r) => setTimeout(r, NOTIFY_RETRY_DELAYS_MS[i]));
+    // 中间几次失败不写事件日志（否则 4 次重试刷 4 条），最后一次才落账
+    const r = await sendNotify(ctx, event, url, extra, i < NOTIFY_RETRY_DELAYS_MS.length - 1);
+    if (r.ok) return true;
+    lastError = r.error || "";
+  }
+  pushEvent("notify", `投递失败（${NOTIFY_RETRY_DELAYS_MS.length} 次尝试）：${lastError}`);
+  say(ctx, "warn", `[dsh-remote] 通知投递失败（已尝试 ${NOTIFY_RETRY_DELAYS_MS.length} 次）：${event}`);
+  return false;
+}
+
+async function sendNotify(ctx: AnyCtx, event: string, url: string | null, extra?: { reason?: string; streak?: number }, quiet = false): Promise<{ ok: boolean; error?: string }> {
   const channel = cfg.notifyChannel || "off";
   if (channel === "off") return { ok: false, error: "通知未开启" };
   const meta: Record<string, [string, string]> = {
@@ -344,9 +471,15 @@ async function sendNotify(ctx: AnyCtx, event: string, url: string | null): Promi
   const tier = notifyText(); // 换址必带完整密码：能自救（用户拍板，不做档位）
   // 独立区块 + 分隔线：机器身份在标题（卡片头一行即可分辨机器），地址和密码各自前后留白。
   let lines: string[];
-  if (event === "down" || event === "recovered") {
-    lines = url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"];
-
+  if (event === "recovered") {
+    // 恢复 = 新地址 + 密码直接送达（主人要的「链接和密码」闭环）
+    lines = url ? ["**访问地址**", url, "---", "**访问密码**", tier] : ["隧道已恢复，但暂时没拿到新地址。"];
+  } else if (event === "down") {
+    // 断开通知带原因与连续失败次数（事故 2026-11-28：原来只有一句「正在自动恢复」，
+    // 用户完全看不出是本机代理/VPN 把 Cloudflare 域名劫持了）
+    lines = ["隧道进程已退出，正在自动恢复。"];
+    if (extra?.reason) lines.push("**原因**", extra.reason);
+    if (extra?.streak) lines.push(`已连续失败 ${extra.streak} 次，重试间隔会自动拉长（最长 60s）；同一次故障 10 分钟内只通知一次。`);
   } else {
     lines = url ? ["**访问地址**", url, "---", "**访问密码**", tier] : ["（隧道未运行，暂无访问地址）", "**访问密码**", tier];
   }
@@ -363,11 +496,13 @@ async function sendNotify(ctx: AnyCtx, event: string, url: string | null): Promi
       await sendApp(card);
     }
     pushEvent(event, "通知已发送");
+    lastNotifyError = "";
     return { ok: true };
   } catch (e) {
-    const m = (e as Error).message;
-    pushEvent(event, "通知失败：" + m);
-    say(ctx, "warn", `[dsh-remote] notify failed: ${m}`);
+    const m = errText(e);
+    lastNotifyError = m;
+    if (!quiet) pushEvent(event, "通知失败：" + m);
+    say(ctx, "warn", "[dsh-remote] notify failed: " + m);
     return { ok: false, error: m };
   }
 }
@@ -554,8 +689,22 @@ function startLoginServer(ctx: AnyCtx): http.Server {
       if (req.method === "GET" && path === "/rc-auth") {
         const cv = /rc_session=([^;]+)/.exec(String(req.headers.cookie || ""))?.[1] ?? "";
         const ok = Boolean(cv) && verifySession(cv, sessionSecret);
-        res.writeHead(ok ? 200 : 401, { "Content-Type": "text/plain; charset=utf-8" });
-        res.end(ok ? "ok" : "unauthorized");
+        if (!ok) {
+          res.writeHead(401, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("unauthorized");
+          return;
+        }
+        // 会话有效但上游没起来 → 明确 503，而不是把用户弹回登录页（死循环）。
+        // 事故 2026-11-28 次生症状「无法进去输入密码」：Caddy 的 handle_errors 把上游
+        // 502 也重定向到 /rc-login → 输密码 → 再弹回 → 永远进不去。
+        // forward_auth 会把非 2xx 原样透给浏览器（已实测），用户一眼看到原因。
+        if (!(await upstreamAlive())) {
+          res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("DSH 上游未就绪（127.0.0.1:3080 无响应）：稍等几秒刷新；若持续如此，请在本机确认 dsh web 已启动。");
+          return;
+        }
+        res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("ok");
         return;
       }
 
@@ -589,6 +738,12 @@ function startLoginServer(ctx: AnyCtx): http.Server {
             appSecretMask: mask(appSecret, 4),
             chatId: cfg.notifyChatId || "",
             chatName: cfg.notifyChatName || "",
+            // 故障面（事故 2026-11-28 后新增）：原因 + 连续失败次数 + 上游可达性
+            lastError: lastFailReason,
+            notifyError: lastNotifyError,
+            failStreak,
+            pendingRecovery,
+            upstreamReady,
             events,
           }));
           return;
@@ -657,7 +812,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
             const ready = ch === "dm" ? !!cfg.notifyOpenId
               : ch === "group" ? (!!cfg.notifyChatId || !!(await getSecret(WEBHOOK_REF)))
               : false;
-            if (ready) void sendNotify(ctx, "enabled", currentUrl);
+            if (ready) void sendNotifyWithRetry(ctx, "enabled", currentUrl);
           }
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
@@ -739,7 +894,7 @@ function startLoginServer(ctx: AnyCtx): http.Server {
             (fields.notifyChannel && fields.notifyChannel !== "off") ||
             fields.notifyChatId ||
             fields.notifyOpenId;
-          if (becameReady && (cfg.notifyChannel || "off") !== "off" && currentUrl) void sendNotify(ctx, "enabled", currentUrl);
+          if (becameReady && (cfg.notifyChannel || "off") !== "off" && currentUrl) void sendNotifyWithRetry(ctx, "enabled", currentUrl);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
           return;
@@ -802,6 +957,34 @@ function portBusy(port: number): Promise<boolean> {
   });
 }
 
+// 带超时的端口探测（上游存活检查用；portBusy 无超时，连接被静默丢弃时会挂住）
+function portReachable(port: number, timeoutMs = 1_200): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = net.createConnection({ port, host: "127.0.0.1" });
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { s.destroy(); } catch { /* closed */ }
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    s.once("connect", () => finish(true));
+    s.once("error", () => finish(false));
+  });
+}
+
+// 上游存活探测（带 1.5s 缓存）：DSH 的 web 端口在不在监听。
+async function upstreamAlive(): Promise<boolean> {
+  const now = Date.now();
+  if (now - upstreamCheckedAt < UPSTREAM_CHECK_TTL_MS) return upstreamReady;
+  upstreamCheckedAt = now;
+  const port = Number(UPSTREAM_HOST.split(":")[1]) || 3080;
+  upstreamReady = await portReachable(port);
+  return upstreamReady;
+}
+
 function waitPortFree(port: number, tries = 10): Promise<boolean> {
   return new Promise((resolve) => {
     const tick = (left: number) => {
@@ -824,6 +1007,24 @@ function procName(pid: number): string {
 
 function readPid(name: string): number {
   try { return Number(readFileSync(join(RUN_DIR, name + ".pid"), "utf8").trim()); } catch { return 0; }
+}
+
+// 子进程回收：SIGTERM → 等 300ms → 还活着就 SIGKILL。
+// 事故 2026-11-28：DSH 退出后 caddy 仍占着 4080（孤儿进程），下一次启动直接撞端口失败。
+function killChild(child: ChildProcess | null): void {
+  const pid = child?.pid;
+  if (!pid) return;
+  try { process.kill(pid, "SIGTERM"); } catch { return; } // 已经没了
+  sleepSync(300); // 给它优雅退出的时间（只阻塞关停路径，不占事件循环线程）
+  if (!pidAlive(pid)) return;
+  try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+}
+
+// 同步小睡（仅关停路径用）：Atomics.wait 不阻塞事件循环线程
+function sleepSync(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch { /* 环境不支持就跳过 */ }
 }
 
 // 运行时设置存本插件自己的文件（RUN_DIR/settings.json）：写 profile 用户层会触发
@@ -949,6 +1150,16 @@ async function reapOrphans(ctx: AnyCtx): Promise<void> {
       rmSync(join(RUN_DIR, name + ".pid"));
     }
   }
+  // pid 文件丢失/损坏时的兜底：按命令行特征找出本插件的残留进程。
+  // 事故 2026-11-28：DSH 被强杀后 caddy 变孤儿且 pid 文件已丢 → 端口 4080 被占 →
+  // 启动直接失败（「插件没生效」）。特征只有本插件自己的路径/参数，绝不误杀外人。
+  const psOut = spawnSync("ps", ["-eo", "pid=,command="], { encoding: "utf8" }).stdout || "";
+  const owned = findOwnedPids(psOut, [join(RUN_DIR, "Caddyfile"), TUNNEL_ENTRY]);
+  for (const pid of owned) {
+    if (pid === caddyChild?.pid || pid === cloudflaredChild?.pid) continue; // 自己刚起的那个
+    try { process.kill(pid, "SIGTERM"); say(ctx, "info", `[dsh-remote] reaped orphan by cmdline (pid ${pid})`); } catch { /* gone */ }
+  }
+  if (owned.length) await waitPortFree(GATE_PORT, 20);
   if (!(await waitPortFree(GATE_PORT))) {
     throw new Error(`端口 ${GATE_PORT} 被非本插件进程占用（可能 v0.3.x 网关在跑：先 dsh-web stop）— fail loud，不抢端口`);
   }
@@ -959,6 +1170,7 @@ async function reapOrphans(ctx: AnyCtx): Promise<void> {
 function spawnCaddy(ctx: AnyCtx): void {
   const alive = () => fiberAlive?.() ?? false;
   const caddyfile = join(RUN_DIR, "Caddyfile");
+  caddyStartedAt = Date.now();
   writeFileSync(caddyfile, renderCaddyfile());
   caddyChild = spawn(findBinary(cfg, "caddy"), ["run", "--config", caddyfile], {
     cwd: RUN_DIR,
@@ -968,15 +1180,22 @@ function spawnCaddy(ctx: AnyCtx): void {
   writeFileSync(join(RUN_DIR, "caddy.pid"), String(caddyChild.pid));
   caddyChild.on("error", (e) => { pushEvent("down", "caddy 启动失败：" + e.message); say(ctx, "error", "[dsh-remote] caddy error: " + e.message); });
   caddyChild.on("exit", () => {
+    try { rmSync(join(RUN_DIR, "caddy.pid"), { force: true }); } catch { /* absent */ }
     if (stopping) return; // 命令式停止：不是崩溃，不重拉
-    if (!alive()) return;
+    if (!alive()) return; // fiber 已死（宿主关停中）：不重拉不通知
+    if (Date.now() - caddyStartedAt > 60_000) gateFailStreak = 0; // 稳定跑过 1 分钟 = 上次故障已自愈
+    gateFailStreak += 1;
+    pendingRecovery = true; // 密码门恢复后也要报「已恢复 + 链接 + 密码」
+    if (stabilityTimer) { clearTimeout(stabilityTimer); timers.delete(stabilityTimer); stabilityTimer = null; }
     if (cfg.autoRestart === false) {
       if (urlTimer) { clearInterval(urlTimer); urlTimer = null; } // 不重拉就别再轮询已死进程的地址（审查 P2）
       pushEvent("down", "caddy 退出（自动重启已关闭）");
       return;
     }
-    pushEvent("down", "caddy 退出，5s 后自动重拉");
-    const t = setTimeout(() => { timers.delete(t); if (alive() && cfg.autoRestart !== false) spawnCaddy(ctx); }, RESPAWN_DELAY_MS);
+    const delay = respawnDelayMs(gateFailStreak - 1);
+    pushEvent("down", `密码门（caddy）退出，${Math.round(delay / 1000)}s 后自动重拉（连续第 ${gateFailStreak} 次）`);
+    notifyDownOnce(ctx, "密码门进程（caddy）已退出", gateFailStreak);
+    const t = setTimeout(() => { timers.delete(t); if (alive() && cfg.autoRestart !== false) spawnCaddy(ctx); }, delay);
     timers.add(t);
   });
 }
@@ -987,6 +1206,8 @@ function spawnCloudflared(ctx: AnyCtx): void {
   const logFile = join(RUN_DIR, "cloudflared.log");
   writeFileSync(logFile, ""); // fresh log：URL grep 只看本次
   const out = openSync(logFile, "a");
+  // 上一轮的地址随进程一起失效了：先删掉，别让页面/CLI 继续显示死链
+  try { rmSync(join(RUN_DIR, "url"), { force: true }); } catch { /* absent */ }
   cloudflaredChild = spawn(findBinary(cfg, "cloudflared"),
     ["tunnel", "--url", TUNNEL_ENTRY, "--no-autoupdate", "--protocol", "http2"],
     { stdio: ["ignore", out, out] });
@@ -998,43 +1219,95 @@ function spawnCloudflared(ctx: AnyCtx): void {
   currentUrl = ""; // spawn 时清空；捕获到合法 URL（无论新旧）立即恢复（审查三轮 P1-1 回归修复）
   urlTimer = setInterval(() => {
     const text = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
-    const m = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-    if (m) {
-      const captured = applyCapturedUrl(m[0], lastAnnouncedUrl);
+    // 只认真隧道地址：失败日志里的 api.trycloudflare.com 是 API 端点（事故 2026-11-28）
+    const found = extractTunnelUrl(text);
+    if (found) {
+      const captured = applyCapturedUrl(found, lastAnnouncedUrl);
       announced = captured.currentUrl;
       currentUrl = captured.currentUrl;
       writeFileSync(join(RUN_DIR, "url"), captured.currentUrl + "\n");
-      if (captured.announce) {
-        const changed = captured.changed;
+      lastFailReason = "";
+      if (pendingRecovery) {
+        // 故障后的恢复：等稳定窗口（30s 不断）再报「已恢复」——否则抖动一次刷一条。
+        // 只在没武装时武装：URL 每 2s 轮询命中一次，反复重置会让窗口永远不结束。
+        if (!stabilityTimer) armStabilityTimer(ctx);
+      } else if (captured.announce) {
         lastAnnouncedUrl = captured.currentUrl;
-      writeFileSync(join(RUN_DIR, "url"), m[0] + "\n");
-      say(ctx, "info", `[dsh-remote] tunnel ${changed ? "changed" : "up"}: ${m[0]}`);
-        pushEvent(changed ? "changed" : "started", m[0]);
-        void sendNotify(ctx, changed ? "changed" : "started", m[0]);
+        const event = captured.changed ? "changed" : "started";
+        say(ctx, "info", `[dsh-remote] tunnel ${event}: ${captured.currentUrl}`);
+        pushEvent(event, captured.currentUrl);
+        void sendNotifyWithRetry(ctx, event, captured.currentUrl);
         // 不 clear：changed 检测需要持续监听（watchdog 语义）；disposer 统一清理
       }
     } else if (!announced && Date.now() - startedAt > URL_TIMEOUT_MS) {
       clearInterval(urlTimer!); urlTimer = null;
+      const reason = describeTunnelFailure(text);
       say(ctx, "warn", `[dsh-remote] no URL within 45s — see ${logFile}`);
-      pushEvent("down", "45s 内未捕获到 URL");
+      pushEvent("down", "45s 内未捕获到隧道地址" + (reason ? "：" + reason : ""));
     }
-  }, 2000);
+  }, URL_POLL_MS);
 
   cloudflaredChild.on("error", (e) => { pushEvent("down", "cloudflared 启动失败：" + e.message); say(ctx, "error", "[dsh-remote] cloudflared error: " + e.message); });
   cloudflaredChild.on("exit", () => {
     closeSync(out);
+    try { rmSync(join(RUN_DIR, "cloudflared.pid"), { force: true }); } catch { /* absent */ }
     if (stopping) return; // 命令式停止：不是崩溃，不重拉不通知
-    if (!alive()) return;
+    if (!alive()) return; // fiber 已死（宿主关停中）：不重拉不通知
+    failStreak += 1;
+    pendingRecovery = true;
+    // 又死了：稳定窗口重新开始算
+    if (stabilityTimer) { clearTimeout(stabilityTimer); timers.delete(stabilityTimer); stabilityTimer = null; }
+    const reason = describeTunnelFailure(existsSync(logFile) ? readFileSync(logFile, "utf8") : "");
+    lastFailReason = reason;
     if (cfg.autoRestart === false) {
       if (urlTimer) { clearInterval(urlTimer); urlTimer = null; } // 不重拉就别再轮询已死进程的地址（审查 P2）
-      pushEvent("down", "cloudflared 退出（自动重启已关闭）"); say(ctx, "warn", "[dsh-remote] cloudflared exited, auto-restart off");
+      pushEvent("down", "cloudflared 退出（自动重启已关闭）" + (reason ? "：" + reason : ""));
+      say(ctx, "warn", "[dsh-remote] cloudflared exited, auto-restart off");
+      notifyDownOnce(ctx, reason, failStreak);
       return;
     }
-    pushEvent("down", "cloudflared 退出，5s 后自动重拉（quick tunnel 会自己死，事实 13）");
-    void sendNotify(ctx, "down", currentUrl || null);
-    const t = setTimeout(() => { timers.delete(t); if (alive() && cfg.autoRestart !== false) spawnCloudflared(ctx); }, RESPAWN_DELAY_MS);
+    // 退避重拉：5s → 10s → 20s → 40s → 60s（封顶）。固定 5s 在「网络起不来」时
+    // 等于每 5 秒烧一次隧道请求 + 推一条飞书（事故 2026-11-28 的刷屏根因之一）。
+    const delay = respawnDelayMs(failStreak - 1);
+    pushEvent("down", `cloudflared 退出，${Math.round(delay / 1000)}s 后自动重拉（连续第 ${failStreak} 次）` + (reason ? "：" + reason : ""));
+    notifyDownOnce(ctx, reason, failStreak);
+    const t = setTimeout(() => { timers.delete(t); if (alive() && cfg.autoRestart !== false) spawnCloudflared(ctx); }, delay);
     timers.add(t);
   });
+}
+
+// down 通知闸门（事故 2026-11-28 的刷屏根因）：同一次持续故障只发一条通知，
+// 之后每 10 分钟最多一条；隧道真的恢复后另发「已恢复 + 新链接 + 密码」。
+function notifyDownOnce(ctx: AnyCtx, reason: string, streak: number): void {
+  const now = Date.now();
+  if (!shouldNotifyDown(lastDownNotifyAt, now)) {
+    pushEvent("down", "持续故障中：本次不再重复通知（10 分钟内最多一条）");
+    return;
+  }
+  lastDownNotifyAt = now;
+  void sendNotifyWithRetry(ctx, "down", currentUrl || null, { reason, streak });
+}
+
+// 稳定窗口：隧道连续存活 STABILITY_MS 才算「已恢复」。
+// 抖动场景（起来就死）永远走不到这里 → 不会刷「已恢复」卡片。
+function armStabilityTimer(ctx: AnyCtx): void {
+  const t = setTimeout(() => {
+    timers.delete(t);
+    stabilityTimer = null;
+    if (!pendingRecovery) return;
+    if (!cloudflaredChild?.pid || !pidAlive(cloudflaredChild.pid)) return; // 又死了：等下一次
+    pendingRecovery = false;
+    failStreak = 0; // 真稳了：退避重置
+    lastDownNotifyAt = 0; // 下次故障允许再发一条通知
+    const url = currentUrl;
+    if (!url) return;
+    lastAnnouncedUrl = url;
+    say(ctx, "info", `[dsh-remote] tunnel recovered: ${url}`);
+    pushEvent("recovered", url);
+    void sendNotifyWithRetry(ctx, "recovered", url);
+  }, STABILITY_MS);
+  stabilityTimer = t;
+  timers.add(t);
 }
 
 // ---------- 命令式启停（toggle 用；不动 profile = 不触发条目重启） ----------
@@ -1051,11 +1324,13 @@ function stopTunnel(ctx: AnyCtx): void {
   if (!cloudflaredChild && !caddyChild) { currentUrl = ""; return; }
   stopping = true;
   if (urlTimer) { clearInterval(urlTimer); urlTimer = null; }
+  if (stabilityTimer) { clearTimeout(stabilityTimer); timers.delete(stabilityTimer); stabilityTimer = null; }
   for (const t of timers) clearTimeout(t);
   timers.clear();
-  try { if (caddyChild?.pid) process.kill(caddyChild.pid); } catch { /* gone */ }
-  try { if (cloudflaredChild?.pid) process.kill(cloudflaredChild.pid); } catch { /* gone */ }
+  killChild(caddyChild);
+  killChild(cloudflaredChild);
   caddyChild = null; cloudflaredChild = null; currentUrl = "";
+  pendingRecovery = false; failStreak = 0; gateFailStreak = 0;
   for (const f of ["caddy.pid", "cloudflared.pid", "url"]) { try { rmSync(join(RUN_DIR, f)); } catch { /* absent */ } }
   pushEvent("down", "远程访问已停止（链接已失效）");
   say(ctx, "info", "[dsh-remote] tunnel + gate stopped by owner");
@@ -1201,12 +1476,15 @@ export function apply(ctx: AnyCtx, config: Config = {}) {
       dead = true;
       fiberAlive = null;
       if (urlTimer) { clearInterval(urlTimer); urlTimer = null; }
+      if (stabilityTimer) { clearTimeout(stabilityTimer); timers.delete(stabilityTimer); stabilityTimer = null; }
       for (const t of timers) clearTimeout(t);
       timers.clear();
-      try { if (caddyChild?.pid) process.kill(caddyChild.pid); } catch { /* gone */ }
-      try { if (cloudflaredChild?.pid) process.kill(cloudflaredChild.pid); } catch { /* gone */ }
+      // SIGTERM → SIGKILL 兜底：宿主退出后不留占端口的孤儿（事故 2026-11-28）
+      killChild(caddyChild);
+      killChild(cloudflaredChild);
       try { loginServer?.close(); } catch { /* closed */ }
       caddyChild = null; cloudflaredChild = null; loginServer = null; currentUrl = "";
+      pendingRecovery = false; failStreak = 0; gateFailStreak = 0;
       for (const f of ["caddy.pid", "cloudflared.pid", "url"]) { try { rmSync(join(RUN_DIR, f)); } catch { /* absent */ } }
       say(ctx, "info", "[dsh-remote] tunnel + gate + login server stopped, state cleaned");
     };

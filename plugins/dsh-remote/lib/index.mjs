@@ -17,6 +17,11 @@ const GATE_PORT = 4080;
 const LOGIN_PORT = 9091;
 const URL_TIMEOUT_MS = 45e3;
 const RESPAWN_DELAY_MS = 5e3;
+const RESPAWN_MAX_DELAY_MS = 6e4;
+const DOWN_NOTIFY_INTERVAL_MS = 6e5;
+const URL_POLL_MS = 2e3;
+const STABILITY_MS = 3e4;
+const UPSTREAM_CHECK_TTL_MS = 1500;
 const LOGIN_LOCK_MS = 3e5;
 const LOGIN_MAX_FAILS = 5;
 const REVEAL_FREQ_MS = 6e4;
@@ -193,6 +198,16 @@ let fiberAlive = null;
 const timers = /* @__PURE__ */ new Set();
 const failCounts = /* @__PURE__ */ new Map();
 const revealAt = /* @__PURE__ */ new Map();
+let failStreak = 0;
+let pendingRecovery = false;
+let lastDownNotifyAt = 0;
+let stabilityTimer = null;
+let gateFailStreak = 0;
+let caddyStartedAt = 0;
+let lastFailReason = "";
+let lastNotifyError = "";
+let upstreamReady = true;
+let upstreamCheckedAt = 0;
 function notifyText() {
 	return password;
 }
@@ -210,6 +225,64 @@ function applyCapturedUrl(url, lastAnnouncedUrl) {
 		changed: lastAnnouncedUrl !== "" && announce,
 		announce
 	};
+}
+const RESERVED_TUNNEL_HOSTS = /* @__PURE__ */ new Set([
+	"api",
+	"www",
+	"blog",
+	"docs",
+	"help"
+]);
+function isTunnelLabel(label) {
+	const l = String(label || "").toLowerCase();
+	if (!l) return false;
+	if (RESERVED_TUNNEL_HOSTS.has(l)) return false;
+	return l.includes("-") || /\d/.test(l);
+}
+function extractTunnelUrl(logText) {
+	for (const line of String(logText || "").split("\n")) {
+		if (/failed to request|failed to create|\bERR\b|\bFATAL\b|\berror\b/i.test(line)) continue;
+		const m = /https:\/\/([a-z0-9-]+)\.trycloudflare\.com/i.exec(line);
+		if (!m) continue;
+		if (!isTunnelLabel(m[1])) continue;
+		return "https://" + m[1].toLowerCase() + ".trycloudflare.com";
+	}
+	return "";
+}
+function describeTunnelFailure(logText) {
+	const text = String(logText || "");
+	const m = /failed to request quick Tunnel:?\s*([^\n]*)/i.exec(text) || /\b(?:ERR|FATAL)\b[^\n]*/i.exec(text) || /\berror[^\n]*/i.exec(text);
+	const raw = (m ? m[1] : "").trim().replace(/["']+$/, "");
+	if (!raw) return "";
+	let reason = "";
+	if (/connection reset by peer/i.test(raw)) reason = "连接被重置";
+	else if (/no such host/i.test(raw)) reason = "DNS 解析失败";
+	else if (/timeout|timed out/i.test(raw)) reason = "连接超时";
+	else if (/connection refused/i.test(raw)) reason = "连接被拒绝";
+	else if (/forbidden|unauthorized/i.test(raw)) reason = "被拒绝";
+	else if (/certificate|tls|ssl/i.test(raw)) reason = "TLS 握手失败";
+	const tail = raw.length > 140 ? raw.slice(0, 140) + "…" : raw;
+	return reason ? reason + "：" + tail : tail;
+}
+function respawnDelayMs(attempt) {
+	const n = Math.max(0, Math.floor(Number(attempt) || 0));
+	return Math.min(RESPAWN_DELAY_MS * Math.pow(2, n), RESPAWN_MAX_DELAY_MS);
+}
+function shouldNotifyDown(lastNotifiedAt, now, intervalMs = DOWN_NOTIFY_INTERVAL_MS) {
+	if (!lastNotifiedAt) return true;
+	return now - lastNotifiedAt >= intervalMs;
+}
+function findOwnedPids(psOutput, markers) {
+	const found = [];
+	for (const line of String(psOutput || "").split("\n")) {
+		const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+		if (!m) continue;
+		const pid = Number(m[1]);
+		if (!pid || pid === process.pid) continue;
+		if (!markers.some((k) => k && m[2].includes(k))) continue;
+		found.push(pid);
+	}
+	return found;
 }
 function maskIp(ip) {
 	const parts = ip.split(".");
@@ -315,7 +388,34 @@ async function sendApp(card) {
 	})).json();
 	if (sendJson.code !== 0) throw new Error("发送失败 code " + sendJson.code + "：" + (sendJson.msg || "unknown") + "（常见原因：应用缺 im:message 发消息权限）");
 }
-async function sendNotify(ctx, event, url) {
+function errText(e) {
+	const err = e;
+	const msg = String(err?.message || e);
+	const cause = err?.cause;
+	const detail = cause ? String(cause.code || cause.message || "") : "";
+	if (!detail) return msg;
+	if (/ECONNREFUSED/.test(detail)) return msg + "（本机代理端口拒绝连接——代理是不是没开？）";
+	return msg + "（" + detail + "）";
+}
+const NOTIFY_RETRY_DELAYS_MS = [
+	0,
+	2e3,
+	8e3,
+	2e4
+];
+async function sendNotifyWithRetry(ctx, event, url, extra) {
+	let lastError = "";
+	for (let i = 0; i < NOTIFY_RETRY_DELAYS_MS.length; i++) {
+		if (NOTIFY_RETRY_DELAYS_MS[i] > 0) await new Promise((r) => setTimeout(r, NOTIFY_RETRY_DELAYS_MS[i]));
+		const r = await sendNotify(ctx, event, url, extra, i < NOTIFY_RETRY_DELAYS_MS.length - 1);
+		if (r.ok) return true;
+		lastError = r.error || "";
+	}
+	pushEvent("notify", `投递失败（${NOTIFY_RETRY_DELAYS_MS.length} 次尝试）：${lastError}`);
+	say(ctx, "warn", `[dsh-remote] 通知投递失败（已尝试 ${NOTIFY_RETRY_DELAYS_MS.length} 次）：${event}`);
+	return false;
+}
+async function sendNotify(ctx, event, url, extra, quiet = false) {
 	const channel = cfg.notifyChannel || "off";
 	if (channel === "off") return {
 		ok: false,
@@ -332,8 +432,18 @@ async function sendNotify(ctx, event, url) {
 	const title = baseTitle + " · " + machineLine(cfg.alias);
 	const tier = notifyText();
 	let lines;
-	if (event === "down" || event === "recovered") lines = url ? ["**最新地址**", url] : ["隧道进程已退出，正在自动恢复。"];
-	else lines = url ? [
+	if (event === "recovered") lines = url ? [
+		"**访问地址**",
+		url,
+		"---",
+		"**访问密码**",
+		tier
+	] : ["隧道已恢复，但暂时没拿到新地址。"];
+	else if (event === "down") {
+		lines = ["隧道进程已退出，正在自动恢复。"];
+		if (extra?.reason) lines.push("**原因**", extra.reason);
+		if (extra?.streak) lines.push(`已连续失败 ${extra.streak} 次，重试间隔会自动拉长（最长 60s）；同一次故障 10 分钟内只通知一次。`);
+	} else lines = url ? [
 		"**访问地址**",
 		url,
 		"---",
@@ -356,11 +466,13 @@ async function sendNotify(ctx, event, url) {
 			await sendApp(card);
 		}
 		pushEvent(event, "通知已发送");
+		lastNotifyError = "";
 		return { ok: true };
 	} catch (e) {
-		const m = e.message;
-		pushEvent(event, "通知失败：" + m);
-		say(ctx, "warn", `[dsh-remote] notify failed: ${m}`);
+		const m = errText(e);
+		lastNotifyError = m;
+		if (!quiet) pushEvent(event, "通知失败：" + m);
+		say(ctx, "warn", "[dsh-remote] notify failed: " + m);
 		return {
 			ok: false,
 			error: m
@@ -562,9 +674,18 @@ function startLoginServer(ctx) {
 			}
 			if (req.method === "GET" && path === "/rc-auth") {
 				const cv = /rc_session=([^;]+)/.exec(String(req.headers.cookie || ""))?.[1] ?? "";
-				const ok = Boolean(cv) && verifySession(cv, sessionSecret);
-				res.writeHead(ok ? 200 : 401, { "Content-Type": "text/plain; charset=utf-8" });
-				res.end(ok ? "ok" : "unauthorized");
+				if (!(Boolean(cv) && verifySession(cv, sessionSecret))) {
+					res.writeHead(401, { "Content-Type": "text/plain; charset=utf-8" });
+					res.end("unauthorized");
+					return;
+				}
+				if (!await upstreamAlive()) {
+					res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
+					res.end("DSH 上游未就绪（127.0.0.1:3080 无响应）：稍等几秒刷新；若持续如此，请在本机确认 dsh web 已启动。");
+					return;
+				}
+				res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+				res.end("ok");
 				return;
 			}
 			if (path.startsWith("/rc-api/")) {
@@ -597,6 +718,11 @@ function startLoginServer(ctx) {
 						appSecretMask: mask(appSecret, 4),
 						chatId: cfg.notifyChatId || "",
 						chatName: cfg.notifyChatName || "",
+						lastError: lastFailReason,
+						notifyError: lastNotifyError,
+						failStreak,
+						pendingRecovery,
+						upstreamReady,
 						events
 					}));
 					return;
@@ -671,7 +797,7 @@ function startLoginServer(ctx) {
 					pushEvent("notify", "通知凭据已更新");
 					if (currentUrl) {
 						const ch = cfg.notifyChannel || "off";
-						if (ch === "dm" ? !!cfg.notifyOpenId : ch === "group" ? !!cfg.notifyChatId || !!await getSecret(WEBHOOK_REF) : false) sendNotify(ctx, "enabled", currentUrl);
+						if (ch === "dm" ? !!cfg.notifyOpenId : ch === "group" ? !!cfg.notifyChatId || !!await getSecret(WEBHOOK_REF) : false) sendNotifyWithRetry(ctx, "enabled", currentUrl);
 					}
 					res.writeHead(200, { "Content-Type": "application/json" });
 					res.end(JSON.stringify({ ok: true }));
@@ -766,7 +892,7 @@ function startLoginServer(ctx) {
 						return;
 					}
 					pushEvent("config", "设置已保存（立即生效）");
-					if ((fields.notifyChannel && fields.notifyChannel !== "off" || fields.notifyChatId || fields.notifyOpenId) && (cfg.notifyChannel || "off") !== "off" && currentUrl) sendNotify(ctx, "enabled", currentUrl);
+					if ((fields.notifyChannel && fields.notifyChannel !== "off" || fields.notifyChatId || fields.notifyOpenId) && (cfg.notifyChannel || "off") !== "off" && currentUrl) sendNotifyWithRetry(ctx, "enabled", currentUrl);
 					res.writeHead(200, { "Content-Type": "application/json" });
 					res.end(JSON.stringify({ ok: true }));
 					return;
@@ -854,6 +980,34 @@ function portBusy(port) {
 		});
 	});
 }
+function portReachable(port, timeoutMs = 1200) {
+	return new Promise((resolve) => {
+		const s = net.createConnection({
+			port,
+			host: "127.0.0.1"
+		});
+		let done = false;
+		const finish = (ok) => {
+			if (done) return;
+			done = true;
+			clearTimeout(timer);
+			try {
+				s.destroy();
+			} catch {}
+			resolve(ok);
+		};
+		const timer = setTimeout(() => finish(false), timeoutMs);
+		s.once("connect", () => finish(true));
+		s.once("error", () => finish(false));
+	});
+}
+async function upstreamAlive() {
+	const now = Date.now();
+	if (now - upstreamCheckedAt < UPSTREAM_CHECK_TTL_MS) return upstreamReady;
+	upstreamCheckedAt = now;
+	upstreamReady = await portReachable(Number(UPSTREAM_HOST.split(":")[1]) || 3080);
+	return upstreamReady;
+}
 function waitPortFree(port, tries = 10) {
 	return new Promise((resolve) => {
 		const tick = (left) => {
@@ -884,6 +1038,25 @@ function readPid(name) {
 	} catch {
 		return 0;
 	}
+}
+function killChild(child) {
+	const pid = child?.pid;
+	if (!pid) return;
+	try {
+		process.kill(pid, "SIGTERM");
+	} catch {
+		return;
+	}
+	sleepSync(300);
+	if (!pidAlive(pid)) return;
+	try {
+		process.kill(pid, "SIGKILL");
+	} catch {}
+}
+function sleepSync(ms) {
+	try {
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+	} catch {}
 }
 const PROFILE_PATCH = join(homedir(), ".dsh", "profiles", "web", "cordis.patch.yml");
 const SETTINGS_FILE = join(RUN_DIR, "settings.json");
@@ -1015,12 +1188,22 @@ async function reapOrphans(ctx) {
 			rmSync(join(RUN_DIR, name + ".pid"));
 		}
 	}
+	const owned = findOwnedPids(spawnSync("ps", ["-eo", "pid=,command="], { encoding: "utf8" }).stdout || "", [join(RUN_DIR, "Caddyfile"), TUNNEL_ENTRY]);
+	for (const pid of owned) {
+		if (pid === caddyChild?.pid || pid === cloudflaredChild?.pid) continue;
+		try {
+			process.kill(pid, "SIGTERM");
+			say(ctx, "info", `[dsh-remote] reaped orphan by cmdline (pid ${pid})`);
+		} catch {}
+	}
+	if (owned.length) await waitPortFree(GATE_PORT, 20);
 	if (!await waitPortFree(GATE_PORT)) throw new Error(`端口 ${GATE_PORT} 被非本插件进程占用（可能 v0.3.x 网关在跑：先 dsh-web stop）— fail loud，不抢端口`);
 	await waitPortFree(LOGIN_PORT);
 }
 function spawnCaddy(ctx) {
 	const alive = () => fiberAlive?.() ?? false;
 	const caddyfile = join(RUN_DIR, "Caddyfile");
+	caddyStartedAt = Date.now();
 	writeFileSync(caddyfile, renderCaddyfile());
 	caddyChild = spawn(findBinary(cfg, "caddy"), [
 		"run",
@@ -1045,8 +1228,19 @@ function spawnCaddy(ctx) {
 		say(ctx, "error", "[dsh-remote] caddy error: " + e.message);
 	});
 	caddyChild.on("exit", () => {
+		try {
+			rmSync(join(RUN_DIR, "caddy.pid"), { force: true });
+		} catch {}
 		if (stopping) return;
 		if (!alive()) return;
+		if (Date.now() - caddyStartedAt > 6e4) gateFailStreak = 0;
+		gateFailStreak += 1;
+		pendingRecovery = true;
+		if (stabilityTimer) {
+			clearTimeout(stabilityTimer);
+			timers.delete(stabilityTimer);
+			stabilityTimer = null;
+		}
 		if (cfg.autoRestart === false) {
 			if (urlTimer) {
 				clearInterval(urlTimer);
@@ -1055,11 +1249,13 @@ function spawnCaddy(ctx) {
 			pushEvent("down", "caddy 退出（自动重启已关闭）");
 			return;
 		}
-		pushEvent("down", "caddy 退出，5s 后自动重拉");
+		const delay = respawnDelayMs(gateFailStreak - 1);
+		pushEvent("down", `密码门（caddy）退出，${Math.round(delay / 1e3)}s 后自动重拉（连续第 ${gateFailStreak} 次）`);
+		notifyDownOnce(ctx, "密码门进程（caddy）已退出", gateFailStreak);
 		const t = setTimeout(() => {
 			timers.delete(t);
 			if (alive() && cfg.autoRestart !== false) spawnCaddy(ctx);
-		}, RESPAWN_DELAY_MS);
+		}, delay);
 		timers.add(t);
 	});
 }
@@ -1072,6 +1268,9 @@ function spawnCloudflared(ctx) {
 	const logFile = join(RUN_DIR, "cloudflared.log");
 	writeFileSync(logFile, "");
 	const out = openSync(logFile, "a");
+	try {
+		rmSync(join(RUN_DIR, "url"), { force: true });
+	} catch {}
 	cloudflaredChild = spawn(findBinary(cfg, "cloudflared"), [
 		"tunnel",
 		"--url",
@@ -1090,52 +1289,101 @@ function spawnCloudflared(ctx) {
 	let announced = "";
 	currentUrl = "";
 	urlTimer = setInterval(() => {
-		const m = (existsSync(logFile) ? readFileSync(logFile, "utf8") : "").match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
-		if (m) {
-			const captured = applyCapturedUrl(m[0], lastAnnouncedUrl);
+		const text = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+		const found = extractTunnelUrl(text);
+		if (found) {
+			const captured = applyCapturedUrl(found, lastAnnouncedUrl);
 			announced = captured.currentUrl;
 			currentUrl = captured.currentUrl;
 			writeFileSync(join(RUN_DIR, "url"), captured.currentUrl + "\n");
-			if (captured.announce) {
-				const changed = captured.changed;
+			lastFailReason = "";
+			if (pendingRecovery) {
+				if (!stabilityTimer) armStabilityTimer(ctx);
+			} else if (captured.announce) {
 				lastAnnouncedUrl = captured.currentUrl;
-				writeFileSync(join(RUN_DIR, "url"), m[0] + "\n");
-				say(ctx, "info", `[dsh-remote] tunnel ${changed ? "changed" : "up"}: ${m[0]}`);
-				pushEvent(changed ? "changed" : "started", m[0]);
-				sendNotify(ctx, changed ? "changed" : "started", m[0]);
+				const event = captured.changed ? "changed" : "started";
+				say(ctx, "info", `[dsh-remote] tunnel ${event}: ${captured.currentUrl}`);
+				pushEvent(event, captured.currentUrl);
+				sendNotifyWithRetry(ctx, event, captured.currentUrl);
 			}
 		} else if (!announced && Date.now() - startedAt > URL_TIMEOUT_MS) {
 			clearInterval(urlTimer);
 			urlTimer = null;
+			const reason = describeTunnelFailure(text);
 			say(ctx, "warn", `[dsh-remote] no URL within 45s — see ${logFile}`);
-			pushEvent("down", "45s 内未捕获到 URL");
+			pushEvent("down", "45s 内未捕获到隧道地址" + (reason ? "：" + reason : ""));
 		}
-	}, 2e3);
+	}, URL_POLL_MS);
 	cloudflaredChild.on("error", (e) => {
 		pushEvent("down", "cloudflared 启动失败：" + e.message);
 		say(ctx, "error", "[dsh-remote] cloudflared error: " + e.message);
 	});
 	cloudflaredChild.on("exit", () => {
 		closeSync(out);
+		try {
+			rmSync(join(RUN_DIR, "cloudflared.pid"), { force: true });
+		} catch {}
 		if (stopping) return;
 		if (!alive()) return;
+		failStreak += 1;
+		pendingRecovery = true;
+		if (stabilityTimer) {
+			clearTimeout(stabilityTimer);
+			timers.delete(stabilityTimer);
+			stabilityTimer = null;
+		}
+		const reason = describeTunnelFailure(existsSync(logFile) ? readFileSync(logFile, "utf8") : "");
+		lastFailReason = reason;
 		if (cfg.autoRestart === false) {
 			if (urlTimer) {
 				clearInterval(urlTimer);
 				urlTimer = null;
 			}
-			pushEvent("down", "cloudflared 退出（自动重启已关闭）");
+			pushEvent("down", "cloudflared 退出（自动重启已关闭）" + (reason ? "：" + reason : ""));
 			say(ctx, "warn", "[dsh-remote] cloudflared exited, auto-restart off");
+			notifyDownOnce(ctx, reason, failStreak);
 			return;
 		}
-		pushEvent("down", "cloudflared 退出，5s 后自动重拉（quick tunnel 会自己死，事实 13）");
-		sendNotify(ctx, "down", currentUrl || null);
+		const delay = respawnDelayMs(failStreak - 1);
+		pushEvent("down", `cloudflared 退出，${Math.round(delay / 1e3)}s 后自动重拉（连续第 ${failStreak} 次）` + (reason ? "：" + reason : ""));
+		notifyDownOnce(ctx, reason, failStreak);
 		const t = setTimeout(() => {
 			timers.delete(t);
 			if (alive() && cfg.autoRestart !== false) spawnCloudflared(ctx);
-		}, RESPAWN_DELAY_MS);
+		}, delay);
 		timers.add(t);
 	});
+}
+function notifyDownOnce(ctx, reason, streak) {
+	const now = Date.now();
+	if (!shouldNotifyDown(lastDownNotifyAt, now)) {
+		pushEvent("down", "持续故障中：本次不再重复通知（10 分钟内最多一条）");
+		return;
+	}
+	lastDownNotifyAt = now;
+	sendNotifyWithRetry(ctx, "down", currentUrl || null, {
+		reason,
+		streak
+	});
+}
+function armStabilityTimer(ctx) {
+	const t = setTimeout(() => {
+		timers.delete(t);
+		stabilityTimer = null;
+		if (!pendingRecovery) return;
+		if (!cloudflaredChild?.pid || !pidAlive(cloudflaredChild.pid)) return;
+		pendingRecovery = false;
+		failStreak = 0;
+		lastDownNotifyAt = 0;
+		const url = currentUrl;
+		if (!url) return;
+		lastAnnouncedUrl = url;
+		say(ctx, "info", `[dsh-remote] tunnel recovered: ${url}`);
+		pushEvent("recovered", url);
+		sendNotifyWithRetry(ctx, "recovered", url);
+	}, STABILITY_MS);
+	stabilityTimer = t;
+	timers.add(t);
 }
 async function startTunnel(ctx) {
 	if (cloudflaredChild?.pid && pidAlive(cloudflaredChild.pid)) return;
@@ -1154,17 +1402,21 @@ function stopTunnel(ctx) {
 		clearInterval(urlTimer);
 		urlTimer = null;
 	}
+	if (stabilityTimer) {
+		clearTimeout(stabilityTimer);
+		timers.delete(stabilityTimer);
+		stabilityTimer = null;
+	}
 	for (const t of timers) clearTimeout(t);
 	timers.clear();
-	try {
-		if (caddyChild?.pid) process.kill(caddyChild.pid);
-	} catch {}
-	try {
-		if (cloudflaredChild?.pid) process.kill(cloudflaredChild.pid);
-	} catch {}
+	killChild(caddyChild);
+	killChild(cloudflaredChild);
 	caddyChild = null;
 	cloudflaredChild = null;
 	currentUrl = "";
+	pendingRecovery = false;
+	failStreak = 0;
+	gateFailStreak = 0;
 	for (const f of [
 		"caddy.pid",
 		"cloudflared.pid",
@@ -1312,14 +1564,15 @@ function apply(ctx, config = {}) {
 				clearInterval(urlTimer);
 				urlTimer = null;
 			}
+			if (stabilityTimer) {
+				clearTimeout(stabilityTimer);
+				timers.delete(stabilityTimer);
+				stabilityTimer = null;
+			}
 			for (const t of timers) clearTimeout(t);
 			timers.clear();
-			try {
-				if (caddyChild?.pid) process.kill(caddyChild.pid);
-			} catch {}
-			try {
-				if (cloudflaredChild?.pid) process.kill(cloudflaredChild.pid);
-			} catch {}
+			killChild(caddyChild);
+			killChild(cloudflaredChild);
 			try {
 				loginServer?.close();
 			} catch {}
@@ -1327,6 +1580,9 @@ function apply(ctx, config = {}) {
 			cloudflaredChild = null;
 			loginServer = null;
 			currentUrl = "";
+			pendingRecovery = false;
+			failStreak = 0;
+			gateFailStreak = 0;
 			for (const f of [
 				"caddy.pid",
 				"cloudflared.pid",
@@ -1338,4 +1594,4 @@ function apply(ctx, config = {}) {
 		};
 	});
 }
-export { Config, apply, applyCapturedUrl, formatMachineLine, inject, maskIp, materializeCli, signSession, verifySession };
+export { Config, apply, applyCapturedUrl, describeTunnelFailure, extractTunnelUrl, findOwnedPids, formatMachineLine, inject, isTunnelLabel, maskIp, materializeCli, respawnDelayMs, shouldNotifyDown, signSession, verifySession };
